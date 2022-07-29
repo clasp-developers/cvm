@@ -126,7 +126,8 @@
     (loop with end = (length bytecode)
           until (eql ip end)
           when *trace*
-            do (print (list (first (disassemble bytecode :ip ip :ninstructions 1))
+            do (fresh-line)
+               (prin1 (list (first (disassemble bytecode :ip ip :ninstructions 1))
                             (subseq stack 0 bp)
                             (subseq stack bp sp)))
           do (ecase (code)
@@ -140,8 +141,14 @@
                ((#.+call-receive-one+)
                 (spush (apply (the function (spop)) (gather (next-code))))
                 (incf ip))
-               ;; TODO
-               #+(or)((#.+call-receive-fixed+))
+               ((#.+call-receive-fixed+)
+                (let ((fun (the function (spop)))
+                      (args (gather (next-code))) (mvals (next-code)))
+                  (case mvals
+                    ((0) (apply fun args))
+                    (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
+                                               0 mvals)))))
+                (incf ip))
                ((#.+bind+)
                 (loop repeat (next-code)
                       for bsp downfrom (- bp (next-code) 1)
