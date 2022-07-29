@@ -1,5 +1,6 @@
 (defpackage #:vm
-  (:use #:cl))
+  (:use #:cl)
+  (:shadow #:disassemble))
 
 (in-package #:vm)
 
@@ -25,7 +26,38 @@
 
 (defmacro assemble (&rest codes)
   `(make-array ,(length codes) :element-type '(unsigned-byte 8)
-               :initial-contents (list ,@codes)))
+                               :initial-contents (list ,@codes)))
+
+(defun disassemble (bytecode &key (ip 0) (ninstructions t))
+  (loop with blen = (length bytecode)
+        for ndis from 0
+        until (or (= ip blen) (and (integerp ninstructions) (eql ndis ninstructions)))
+        collect (macrolet ((fixed (n)
+                             `(prog1
+                                  (list op ,@(loop repeat n
+                                                   collect `(aref bytecode (incf ip))))
+                                (incf ip))))
+                  (let ((op (decode (aref bytecode ip))))
+                    (ecase op
+                      ((+make-cell+ +cell-ref+ +cell-set+
+                                    +return+
+                                    +block-close+ +tagbody-close+ +unbind+
+                                    +nil+ +eq+)
+                       (fixed 0))
+                      ((+ref+ +const+ +closure+
+                              +call+ +call-receive-one+
+                              +set+
+                              +go+ +special-bind+ +symbol-value+ +symbol-value-set+)
+                       (fixed 1))
+                      ;; These have labels, not integers, as arguments.
+                      ;; TODO: Impose labels on the disassembly.
+                      ((+jump-if+ +block-open+) (fixed 1))
+                      ((+call-receive-fixed+ +bind+ +make-closure+) (fixed 2))
+                      ((+tagbody-open+)
+                       (let ((ntags (aref bytecode (incf ip))))
+                         (prog1 (list* op ntags (loop repeat ntags
+                                                      collect (aref bytecode (incf ip))))
+                           (incf ip)))))))))
 
 (defstruct (cell (:constructor make-cell (value))) value)
 
@@ -92,7 +124,7 @@
     (loop with end = (length bytecode)
           until (eql ip end)
           when *trace*
-            do (print (list (decode (code))
+            do (print (list (first (disassemble bytecode :ip ip :ninstructions 1))
                             (subseq stack 0 bp)
                             (subseq stack bp sp)))
           do (ecase (code)
