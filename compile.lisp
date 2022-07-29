@@ -171,6 +171,7 @@
   (case head
     ((progn) (compile-progn rest env context))
     ((let) (compile-let (first rest) (rest rest) env context))
+    ((setq) (compile-setq rest env context))
     ((if) (compile-if (first rest) (second rest) (third rest) env context))
     ((function) (compile-function (first rest) env context))
     ((tagbody) (compile-tagbody rest env context))
@@ -212,6 +213,41 @@
     (update-lic)
     (assemble +bind+ (length vars) (1- *next-local-index*))
     (compile-progn body env context)))
+
+(defun compile-setq (pairs env context)
+  (if (null pairs)
+      (unless (eql context 0) (assemble +nil+))
+      (loop for (var valf . rest) on pairs by #'cddr
+            do (compile-setq-1 var valf env (if rest 0 context)))))
+
+(defun compile-setq-1 (var valf env context)
+  (cond ((nth-value 1 (macroexpand-1 var env))
+         (compile-form `(setf ,var ,valf) env context))
+        ((specialp var env)
+         (compile-form valf env 1)
+         (assemble +symbol-value-set+ (constant-index var))
+         (unless (eql context 0)
+           ;; this is a bit tricky - we can't just read the symbol-value, since
+           ;; that could have been changed in the interim.
+           ;; The right thing to do is probably to bind a new lexical variable
+           ;; to hold the value temporarily.
+           (error "Can't return the value of special variable binding ~a yet! :(" var)))
+        ((constantp var env) (error "Can't SETQ a constant: ~a" var))
+        (t ; lexical
+         (multiple-value-bind (kind index) (lexical-index var env)
+           (ecase kind
+             ((:local)
+              (assemble +ref+ index) (compile-form valf env 1) (assemble +cell-set+))
+             ((:closure)
+              (assemble +closure+ index)
+              (compile-form valf env 1)
+              (assemble +cell-set+))
+             ((nil)
+              (warn "Unknown variable ~a: treating as special" var)
+              (compile-form valf env 1)
+              (assemble +symbol-value-set+ (constant-index var))
+              (unless (eql context 0)
+                (error "Can't return the value of special variable binding ~a yet! :(" var))))))))
 
 (defun compile-if (condition then else env context)
   (compile-form condition env 1)
