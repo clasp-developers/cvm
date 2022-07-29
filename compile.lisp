@@ -45,10 +45,13 @@
 (defvar *assembly*)
 (defvar *fixups*)
 
+#+(or) ; nice if you want to trace.
+(defun assemble (&rest values)
+  (loop for val in values
+        do (vector-push-extend val *assembly*)))
+
 (defmacro assemble (&rest values)
-  `(progn
-     ,@(loop for val in values
-             collect `(vector-push-extend ,val *assembly*))))
+  `(progn ,@(loop for val in values collect `(vector-push-extend ,val *assembly*))))
 
 (defun current-ip () (length *assembly*))
 
@@ -64,12 +67,20 @@
 ;;; is bound in an outer function and so must be closed over.
 (defclass closure-environment (environment) ())
 
+(defclass tagbody-environment (environment)
+  (;; Name of a lexical variable that stores the tagbody's dynenv.
+   (%var :initarg :var :reader tbvar :type symbol)
+   (%tags :initarg :tags :reader tags :type list)))
+
 ;;; Get information about a lexical variable.
 ;;; Returns two values. The first is :CLOSURE or :LOCAL or NIL.
 ;;; The second is an index into the associated data corresponding to the symbol, or NIL.
 ;;; If the first value is NIL, the variable is unknown.
 (defgeneric lexical-index (symbol env)
   (:argument-precedence-order env symbol))
+
+(defmethod lexical-index ((symbol symbol) (env environment))
+  (lexical-index symbol (parent env)))
 
 (defmethod lexical-index ((symbol symbol) (env local-environment))
   (let ((pair (assoc symbol (lexicals env))))
@@ -162,9 +173,14 @@
     ((let) (compile-let (first rest) (rest rest) env context))
     ((if) (compile-if (first rest) (second rest) (third rest) env context))
     ((function) (compile-function (first rest) env context))
+    ((tagbody) (compile-tagbody rest env context))
+    ((go) (compile-go (first rest) env))
     (otherwise ; function call
      (dolist (arg rest) (compile-form arg env 1))
-     (assemble +fdefinition+ (constant-index head) +call+ (length rest)))))
+     (assemble +fdefinition+ (constant-index head))
+     (cond ((eq context t) (assemble +call+ (length rest)))
+           ((eql context 1) (assemble +call-receive-one+ (length rest)))
+           (t (assemble +call-receive-fixed+ (length rest) context))))))
 
 (defun compile-progn (forms env context)
   (loop for form in (butlast forms)
@@ -230,3 +246,63 @@
     (ecase kind
       ((:local) (assemble +ref+ index))
       ((:closure) (assemble +closure+ index)))))
+
+(defun go-tag-p (object) (typep object '(or symbol integer)))
+
+(defgeneric tag-index (tag env) (:argument-precedence-order env tag))
+
+(defmethod tag-index (tag (env environment)) (tag-index tag (parent env)))
+(defmethod tag-index (tag (env null)) (values nil nil))
+
+(defmethod tag-index (tag (env tagbody-environment))
+  (let ((pos (position tag (tags env))))
+    (if pos
+        (values :local (tbvar env) pos)
+        (tag-index tag (parent env)))))
+
+(defmethod tag-index (tag (env closure-environment))
+  (multiple-value-bind (kind var loc) (tag-index tag (parent env))
+    (ecase kind
+      ((:local :closure) (values :closure var loc))
+      ((nil) (values nil nil nil)))))
+
+(defun compile-tagbody (statements env context)
+  (let* ((tags (remove-if-not #'go-tag-p statements)) ; minor preprocessing
+         (ntags (length tags))
+         ;; get ready to bind the tagbody env to a lexical variable for use by NLX GO
+         ;; bit of a KLUDGE, but the actual tags are a separate namespace
+         ;; handled by the TAGBODY-ENVIRONMENT.
+         (tenv-index *next-local-index*)
+         (tenv-sym (gensym "TAGBODY"))
+         (lexenv (make-instance 'local-environment
+                   :lexicals (list (cons tenv-sym tenv-index)) :parent env))
+         (*next-local-index* (1+ *next-local-index*))
+         ;; Now make the tagbody environment.
+         (tbenv (make-instance 'tagbody-environment
+                  :var tenv-sym :tags tags :parent lexenv)))
+    (update-lic)
+    (assemble +tagbody-open+ ntags)
+    (let ((tag-fixup (current-ip)))
+      (loop repeat ntags do (assemble 0)) ; placeholders
+      ;; Bind the lexical variable to the tb dynenv.
+      ;; We don't need a cell as it is not mutable.
+      (assemble +set+ tenv-index)
+      ;; Compile the body
+      (loop for stmt in statements
+            do (if (go-tag-p stmt)
+                   (setf (aref *assembly* (+ tag-fixup (position stmt tags))) (current-ip))
+                   (compile-form stmt tbenv 0)))))
+  (assemble +tagbody-close+)
+  ;; return nil if we really have to
+  (unless (eql context 0)
+    (assemble +nil+)))
+
+(defun compile-go (tag env)
+  (multiple-value-bind (kind var loc) (tag-index tag env)
+    ;; Get the tagbody dynenv
+    (ecase kind
+      ((:local) (assemble +ref+ (nth-value 1 (lexical-index var env))))
+      ((:closure) (assemble +closure+ (nth-value 1 (lexical-index var env))))
+      ((nil) (error "GO for unknown tag ~a" tag)))
+    ;; Go
+    (assemble +go+ loc)))
