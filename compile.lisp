@@ -18,7 +18,7 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
-    +jump-if+
+    +jump+ +jump-if+
     +block-open+ +return-from+ +block-close+
     +tagbody-open+ +go+ +tagbody-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
@@ -43,11 +43,14 @@
       (vector-push-extend constant *constants*)))
 
 (defvar *assembly*)
+(defvar *fixups*)
 
 (defmacro assemble (&rest values)
   `(progn
      ,@(loop for val in values
              collect `(vector-push-extend ,val *assembly*))))
+
+(defun current-ip () (length *assembly*))
 
 (defclass environment ()
   ((%parent :initarg :parent :reader parent :type (or null environment))))
@@ -149,7 +152,7 @@
              (ecase kind
                ((:local) (assemble +ref+ index +cell-ref+))
                ((:closure) (assemble +closure+ index +cell-ref+))
-               (t
+               ((nil)
                 (warn "Unknown variable ~a: treating as special" form)
                 (assemble +symbol-value+ (constant-index form)))))))))
 
@@ -157,6 +160,7 @@
   (case head
     ((progn) (compile-progn rest env context))
     ((let) (compile-let (first rest) (rest rest) env context))
+    ((if) (compile-if (first rest) (second rest) (third rest) env context))
     ((function) (compile-function (first rest) env context))
     (otherwise ; function call
      (dolist (arg rest) (compile-form arg env 1))
@@ -192,6 +196,19 @@
     (update-lic)
     (assemble +bind+ (length vars) (1- *next-local-index*))
     (compile-progn body env context)))
+
+(defun compile-if (condition then else env context)
+  (compile-form condition env 1)
+  (assemble +jump-if+)
+  (let ((then-label-loc (current-ip)))
+    (assemble 0) ; placeholder for the then-label
+    (compile-form else env context)
+    (assemble +jump+)
+    (let ((else-label-loc (current-ip)))
+      (assemble 0)
+      (setf (aref *assembly* then-label-loc) (current-ip))
+      (compile-form then env context)
+      (setf (aref *assembly* else-label-loc) (current-ip)))))
 
 (defun compile-function (fnameoid env context)
   (unless (eql context 0)

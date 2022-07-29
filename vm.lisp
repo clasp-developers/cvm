@@ -17,7 +17,7 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
-    +jump-if+
+    +jump+ +jump-if+
     +block-open+ +return-from+ +block-close+
     +tagbody-open+ +go+ +tagbody-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
@@ -53,7 +53,7 @@
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
-                      ((+jump-if+ +block-open+) (fixed 1))
+                      ((+jump+ +jump-if+ +block-open+) (fixed 1))
                       ((+call-receive-fixed+ +bind+) (fixed 2))
                       ((+tagbody-open+)
                        (let ((ntags (aref bytecode (incf ip))))
@@ -164,6 +164,7 @@
                 (incf ip))
                ((#.+return+)
                 (return (values-list (if (eql bp sp) mv (gather (- sp bp))))))
+               ((#.+jump+) (setf ip (next-code)))
                ((#.+jump-if+)
                 (setf ip (if (spop) (next-code) (+ 2 ip))))
                ((#.+block-open+)
