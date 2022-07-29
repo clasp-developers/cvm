@@ -21,6 +21,7 @@
     +block-open+ +return-from+ +block-close+
     +tagbody-open+ +go+ +tagbody-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
+    +fdefinition+
     +nil+
     +eq+))
 
@@ -47,7 +48,8 @@
                       ((+ref+ +const+ +closure+
                               +call+ +call-receive-one+
                               +set+
-                              +go+ +special-bind+ +symbol-value+ +symbol-value-set+)
+                              +go+ +special-bind+ +symbol-value+ +symbol-value-set+
+                              +fdefinition+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
@@ -205,5 +207,6 @@
                 (setf (symbol-value (constant (next-code))) (spop))
                 (incf ip))
                ((#.+unbind+) (return (1+ ip)))
+               ((#.+fdefinition+) (spush (fdefinition (constant (next-code)))) (incf ip))
                ((#.+nil+) (spush nil) (incf ip))
                ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))))))
