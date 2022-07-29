@@ -197,13 +197,13 @@
   (unless (eql context 0)
     (if (typep fnameoid 'lambda-expression)
         (let* ((proto (compile fnameoid env))
+               (closed (function-prototype-closed proto))
                (pin (constant-index
                      (list (function-prototype-bytecode proto) 10 ; kludge
-                           (function-prototype-constants proto))))
-               (closed (function-prototype-closed proto)))
+                           (length closed) (function-prototype-constants proto)))))
           (loop for var across closed
                 do (compile-closure-var var env))
-          (assemble +make-closure+ (length closed) pin))
+          (assemble +make-closure+ pin))
         ;; TODO: Lexical functions
         (assemble +fdefinition+ (constant-index fnameoid)))))
 

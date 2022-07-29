@@ -47,14 +47,14 @@
                        (fixed 0))
                       ((+ref+ +const+ +closure+
                               +call+ +call-receive-one+
-                              +set+
+                              +set+ +make-closure+
                               +go+ +special-bind+ +symbol-value+ +symbol-value-set+
                               +fdefinition+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
                       ((+jump-if+ +block-open+) (fixed 1))
-                      ((+call-receive-fixed+ +bind+ +make-closure+) (fixed 2))
+                      ((+call-receive-fixed+ +bind+) (fixed 2))
                       ((+tagbody-open+)
                        (let ((ntags (aref bytecode (incf ip))))
                          (prog1 (list* op ntags (loop repeat ntags
@@ -156,12 +156,11 @@
                 (let ((val (spop))) (setf (cell-value (spop)) val))
                 (incf ip))
                ((#.+make-closure+)
-                (let ((closure-size (next-code)))
-                  (destructuring-bind (cbytecode stack-size cconstants)
-                      (constant (next-code))
-                    (spush (make-closure cbytecode stack-size
-                                         (coerce (gather closure-size) 'simple-vector)
-                                         cconstants))))
+                (destructuring-bind (cbytecode stack-size closure-size cconstants)
+                    (constant (next-code))
+                  (spush (make-closure cbytecode stack-size
+                                       (coerce (gather closure-size) 'simple-vector)
+                                       cconstants)))
                 (incf ip))
                ((#.+return+)
                 (return (values-list (if (eql bp sp) mv (gather (- sp bp))))))
