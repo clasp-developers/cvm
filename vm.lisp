@@ -197,15 +197,20 @@
                   (tagbody
                      (setf *dynenv*
                            (make-tagbody-dynenv
-                            (lambda (n new-sp)
-                              (setf next-ip (acode (+ ip n 1)) sp new-sp)
-                              (go loop))))
+                            (let ((old-sp sp)
+                                  (old-bp bp))
+                              (lambda (n)
+                                (setf next-ip (acode (+ ip n 1))
+                                      sp old-sp
+                                      bp old-bp)
+                                (go loop)))))
                      (spush *dynenv*)
                    loop
                      (setf (values ip sp)
                            (vm bytecode stack closure constants
                                :ip next-ip :sp sp :bp bp)))))
-               ((#.+go+) (funcall (tagbody-dynenv-fun (spop)) (next-code) sp))
+               ((#.+go+)
+                (funcall (tagbody-dynenv-fun (spop)) (next-code)))
                ((#.+tagbody-close+) (return (values (1+ ip) sp)))
                ((#.+special-bind+)
                 (let ((*dynenv* (make-sbind-dynenv)))
