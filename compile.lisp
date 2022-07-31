@@ -38,11 +38,25 @@
 
 ;;;
 
-(defun assemble (context &rest values)
-  (loop for val in values
-        do (vector-push-extend val (context-assembly context))))
+(defstruct label position backpatches)
 
-(defun current-ip (context) (length (context-assembly context)))
+(defun emit-label (context label)
+  (let* ((assembly (context-assembly context))
+         (label-position (length assembly)))
+    (setf (label-position label) label-position)
+    (dolist (backpatch (label-backpatches label))
+      ;; Relative offset here?
+      (setf (aref assembly backpatch) label-position))))
+
+(defun assemble (context &rest values)
+  (let ((assembly (context-assembly context)))
+    (dolist (value values)
+      (if (label-p value)
+          (let ((position (label-position value)))
+            (unless position
+              (push (length assembly) (label-backpatches value)))
+            (vector-push-extend (or position 0) assembly))
+          (vector-push-extend value assembly)))))
 
 (defstruct (lexical-environment (:constructor make-null-lexical-environment)
                                 (:constructor %make-lexical-environment)
@@ -282,17 +296,14 @@
 
 (defun compile-if (condition then else env context)
   (compile-form condition env (new-context context :receiving 1))
-  (assemble context +jump-if+)
-  (let ((then-label-loc (current-ip context)))
-    (assemble context 0) ; placeholder for the then-label
+  (let ((then-label (make-label))
+        (done-label (make-label)))
+    (assemble context +jump-if+ then-label)
     (compile-form else env context)
-    (assemble context +jump+)
-    (let ((else-label-loc (current-ip context))
-          (assembly (context-assembly context)))
-      (assemble context 0)
-      (setf (aref assembly then-label-loc) (current-ip context))
-      (compile-form then env context)
-      (setf (aref assembly else-label-loc) (current-ip context)))))
+    (assemble context +jump+ done-label)
+    (emit-label context then-label)
+    (compile-form then env context)
+    (emit-label context done-label)))
 
 (defun compile-function (fnameoid env context)
   (unless (eql (context-receiving context) 0)
@@ -337,29 +348,28 @@
 
 (defun compile-tagbody (statements env context)
   (let* ((tags (remove-if-not #'go-tag-p statements)) ; minor preprocessing
-         (ntags (length tags))
+         (tag-labels (loop for tag in tags
+                           collect (cons tag (make-label))))
          ;; get ready to bind the tagbody env to a lexical variable for use by NLX GO
          ;; bit of a KLUDGE, but the actual tags are a separate namespace
          ;; handled by the TAGBODY-ENVIRONMENT.
          (tag-dynenv (gensym "TAG-DYNENV"))
          (env (bind-tags tags tag-dynenv
                          (bind-vars (list tag-dynenv) env context))))
-    (assemble context +tagbody-open+ ntags)
-    (let ((tag-fixup (current-ip context))
-          (assembly (context-assembly context)))
-      (loop repeat ntags do (assemble context 0)) ; placeholders
-      ;; Bind the dynamic environment. We don't need a cell as it is
-      ;; not mutable.
-      (multiple-value-bind (kind index)
-          (var-location tag-dynenv env context)
-        (assert (eq kind :local))
-        (assemble context +set+ index))
-      ;; Compile the body
-      (dolist (statement statements)
-        (if (go-tag-p statement)
-            (setf (aref assembly (+ tag-fixup (position statement tags)))
-                  (current-ip context))
-            (compile-form statement env (new-context context :receiving 0))))))
+    (assemble context +tagbody-open+ (length tags))
+    (dolist (tag-label tag-labels)
+      (assemble context (cdr tag-label)))
+    ;; Bind the dynamic environment. We don't need a cell as it is
+    ;; not mutable.
+    (multiple-value-bind (kind index)
+        (var-location tag-dynenv env context)
+      (assert (eq kind :local))
+      (assemble context +set+ index))
+    ;; Compile the body
+    (dolist (statement statements)
+      (if (go-tag-p statement)
+          (emit-label context (cdr (assoc statement tag-labels)))
+          (compile-form statement env (new-context context :receiving 0)))))
   (assemble context +tagbody-close+)
   ;; return nil if we really have to
   (unless (eql (context-receiving context) 0)
