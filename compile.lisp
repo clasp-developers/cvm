@@ -91,8 +91,8 @@
          (var-count (length vars))
          (frame-end (+ frame-start var-count))
          (function (context-function context)))
-    (setf (function-prototype-nlocals function)
-          (max (function-prototype-nlocals function) frame-end))
+    (setf (cfunction-nlocals function)
+          (max (cfunction-nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (vars vars (rest vars))
          (new-vars (vars env) (acons (first vars) index new-vars)))
@@ -143,11 +143,11 @@
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 
-(defstruct (function-prototype (:constructor make-function-prototype
-                                 (module bytecode nlocals closed)))
-  module bytecode nlocals closed)
+(defstruct (cfunction (:constructor make-cfunction (cmodule bytecode nlocals closed)))
+  cmodule bytecode nlocals closed info)
 
-(defstruct (module (:constructor make-module (literals)))
+(defstruct (cmodule (:constructor make-cmodule (literals)))
+  cfunctions
   literals)
 
 ;;; The context contains information about what the current form needs
@@ -155,16 +155,16 @@
 (defstruct context receiving function)
 
 (defun context-module (context)
-  (function-prototype-module (context-function context)))
+  (cfunction-cmodule (context-function context)))
 
 (defun context-literals (context)
-  (module-literals (context-module context)))
+  (cmodule-literals (context-module context)))
 
 (defun context-closed (context)
-  (function-prototype-closed (context-function context)))
+  (cfunction-closed (context-function context)))
 
 (defun context-assembly (context)
-  (function-prototype-bytecode (context-function context)))
+  (cfunction-bytecode (context-function context)))
 
 (defun literal-index (literal context)
   (let ((literals (context-literals context)))
@@ -183,8 +183,8 @@
 (defun compile (lambda-expression)
   (check-type lambda-expression lambda-expression)
   (let* ((env (make-null-lexical-environment))
-         (module (make-module (make-array 0 :fill-pointer 0 :adjustable t))))
-    (compile-lambda lambda-expression env module)))
+         (module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t))))
+    (link-function (compile-lambda lambda-expression env module))))
 
 (defun compile-form (form env context)
   (let ((form (macroexpand form env)))
@@ -311,22 +311,21 @@
 (defun compile-function (fnameoid env context)
   (unless (eql (context-receiving context) 0)
     (if (typep fnameoid 'lambda-expression)
-        (let* ((proto (compile-lambda fnameoid env (context-module context)))
-               (closed (function-prototype-closed proto)))
-          (loop for var across closed
+        (let ((cfunction (compile-lambda fnameoid env (context-module context))))
+          (loop for var across (cfunction-closed cfunction)
                 do (compile-closure-var var env context))
-          (assemble context +make-closure+ (literal-index proto context)))
+          (assemble context +make-closure+ (literal-index cfunction context)))
         ;; TODO: Lexical functions
         (assemble context +fdefinition+ (literal-index fnameoid context)))))
 
-;;; Compile the lambda form.in MODULE, returining the resulting
-;;; function prototype.
+;;; Compile the lambda form in MODULE, returning the resulting
+;;; CFUNCTION.
 (defun compile-lambda (form env module)
   ;; TODO: Emit code to process lambda args.
   (let* ((lambda-list (cadr form))
          (body (cddr form))
          (function
-           (make-function-prototype
+           (make-cfunction
             module
             (make-array 0 :element-type '(unsigned-byte 8)
                           :fill-pointer 0 :adjustable t)
@@ -334,6 +333,7 @@
             (make-array 0 :fill-pointer 0 :adjustable t)))
          (context (make-context :receiving t :function function))
          (env (enclose env)))
+    (push function (cmodule-cfunctions module))
     ;; Initialize variables. Replace each value on the stack with a mutable cell
     ;; containing that value.
     (loop for i from 0 for arg in lambda-list
@@ -387,3 +387,47 @@
         ((nil) (error "BUG: No tag dynenv for tag ~a?" tag))))
     ;; Go
     (assemble context +go+ tag-index)))
+
+;;;; linkage
+
+;;; Run down the hierarchy and link the compile time representations
+;;; of modules and functions together into runtime objects. Return the
+;;; bytecode function corresponding to CFUNCTION.
+(defun link-function (cfunction)
+  (let ((cmodule (cfunction-cmodule cfunction))
+        (bytecode-size 0)
+        (bytecode-module (vm::make-bytecode-module)))
+    ;; First, create the real function objects. determining the length
+    ;; of the bytecode-module bytecode vector.
+    (dolist (cfunction (cmodule-cfunctions cmodule))
+      (let ((bytecode-function
+              (vm::make-bytecode-function
+               :module bytecode-module
+               :locals-frame-size (cfunction-nlocals cfunction)
+               :environment-size (length (cfunction-closed cfunction))
+               :entry-pc bytecode-size)))
+        (setf (cfunction-info cfunction) bytecode-function)
+        (incf bytecode-size (length (cfunction-bytecode cfunction)))))
+    (let* ((cmodule-literals (cmodule-literals cmodule))
+           (literal-length (length cmodule-literals))
+           (bytecode (make-array bytecode-size :element-type '(unsigned-byte 8)))
+           (literals (make-array literal-length)))
+      ;; Next, fill in the module bytecode vector.
+      (let ((index 0))
+        (dolist (cfunction (cmodule-cfunctions cmodule))
+          (let ((function-bytecode (cfunction-bytecode cfunction)))
+            (dotimes (local-index (length function-bytecode))
+              (setf (aref bytecode index)
+                    (aref function-bytecode local-index))
+              (incf index)))))
+      ;; Now replace the cfunctions in the cmodule literal vector with
+      ;; real bytecode functions.
+      (dotimes (index (length (cmodule-literals cmodule)))
+        (setf (aref literals index)
+              (let ((literal (aref cmodule-literals index)))
+                (if (cfunction-p literal)
+                    (cfunction-info literal)
+                    literal))))
+      (setf (vm::bytecode-module-bytecode bytecode-module) bytecode)
+      (setf (vm::bytecode-module-literals bytecode-module) literals)
+      (cfunction-info cfunction))))

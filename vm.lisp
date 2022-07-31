@@ -25,6 +25,23 @@
     +nil+
     +eq+))
 
+;;; The VM objects we need.
+
+(defstruct bytecode-module
+  bytecode
+  literals)
+
+(defstruct bytecode-closure
+  template
+  env)
+
+(defstruct bytecode-function
+  module
+  locals-frame-size
+  environment-size
+  ;; Should become entry-pcs once we have lambda list processing.
+  entry-pc)
+
 (defmacro assemble (&rest codes)
   `(make-array ,(length codes) :element-type '(unsigned-byte 8)
                                :initial-contents (list ,@codes)))
@@ -63,15 +80,22 @@
 
 (defstruct (cell (:constructor make-cell (value))) value)
 
-(defun make-closure (bytecode frame-size closure constants)
+(defun make-closure (bytecode-closure)
   (declare (type (and fixnum (integer 0))))
-  (lambda (&rest args)
-    ;; set up the stack, then call vm
-    (loop with stack = (make-array 100) ; FIXME
-          for sp from 0
-          for arg in args
-          do (setf (aref stack sp) frame-size)
-          finally (return (vm bytecode stack closure constants :sp sp)))))
+  (let* ((template (bytecode-closure-template bytecode-closure))
+         (entry-pc (bytecode-function-entry-pc template))
+         (frame-size (bytecode-function-locals-frame-size template))
+         (module (bytecode-function-module template))
+         (bytecode (bytecode-module-bytecode module))
+         (literals (bytecode-module-literals module))
+         (closure (bytecode-closure-env bytecode-closure)))
+    (lambda (&rest args)
+      ;; set up the stack, then call vm
+      (loop with stack = (make-array 100) ; FIXME
+            for sp from 0
+            for arg in args
+            do (setf (aref stack sp) arg)
+            finally (return (vm bytecode stack closure literals frame-size :sp frame-size :bp 0 :ip entry-pc))))))
 
 (defvar *trace* nil)
 
@@ -87,9 +111,9 @@
 
 (defvar *dynenv* nil)
 
-(defun vm (bytecode stack closure constants &key (ip 0) (sp 0) (bp sp) &aux (mv nil))
-  (declare ;(type (simple-array (unsigned-byte 8) (*)) bytecode)
-           ; (type (simple-array t (*)) stack closure constants)
+(defun vm (bytecode stack closure constants frame-size &key (ip 0) (sp 0) (bp sp) &aux (mv nil))
+  (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
+           (type (simple-array t (*)) stack closure constants)
            (type (and fixnum (integer 0)) start sp bp)
            (optimize debug))
   (labels ((stack (index)
@@ -128,10 +152,11 @@
           when *trace*
             do (fresh-line)
                (prin1 (list (first (disassemble bytecode :ip ip :ninstructions 1))
-                            (subseq stack 0 bp)
-                            (subseq stack bp sp)))
+                            (subseq stack 0 frame-size)
+                            ;; We take the max for partial frames.
+                            (subseq stack frame-size (max sp frame-size))))
           do (ecase (code)
-               ((#.+ref+) (spush (stack (- bp (next-code) 1))) (incf ip))
+               ((#.+ref+) (spush (stack (+ bp (next-code)))) (incf ip))
                ((#.+const+) (spush (constant (next-code))) (incf ip))
                ((#.+closure+) (spush (closure (next-code))) (incf ip))
                ((#.+call+)
@@ -151,11 +176,11 @@
                 (incf ip))
                ((#.+bind+)
                 (loop repeat (next-code)
-                      for bsp downfrom (- bp (next-code) 1)
+                      for bsp downfrom (+ bp (next-code))
                       do (setf (stack bsp) (spop)))
                 (incf ip))
                ((#.+set+)
-                (setf (stack (- bp (next-code) 1)) (spop))
+                (setf (stack (+ bp (next-code))) (spop))
                 (incf ip))
                ((#.+make-cell+) (spush (make-cell (spop))) (incf ip))
                ((#.+cell-ref+) (spush (cell-value (spop))) (incf ip))
@@ -163,17 +188,16 @@
                 (let ((val (spop))) (setf (cell-value (spop)) val))
                 (incf ip))
                ((#.+make-closure+)
-                (let ((proto (constant (next-code))))
-                  (spush (make-closure
-                          (compile-to-vm::function-prototype-bytecode proto)
-                          (compile-to-vm::function-prototype-nlocals proto)
-                          (coerce (gather (length (compile-to-vm::function-prototype-closed proto)))
-                                  'simple-vector)
-                          (compile-to-vm::module-literals
-                           (compile-to-vm::function-prototype-module proto)))))
+                (spush (make-closure
+                        (let ((template (constant (next-code))))
+                          (make-bytecode-closure
+                           :template template
+                           :env (coerce (gather
+                                         (bytecode-function-environment-size template))
+                                        'simple-vector)))))
                 (incf ip))
                ((#.+return+)
-                (return (values-list (if (eql bp sp) mv (gather (- sp bp))))))
+                (return (values-list (if (eql sp frame-size) mv (gather (- sp frame-size))))))
                ((#.+jump+) (incf ip (next-code)))
                ((#.+jump-if+)
                 (incf ip (if (spop) (next-code) (+ 2 ip))))
@@ -185,7 +209,7 @@
                                  (lambda (mv) (return (values-list mv))))))
                           (spush *dynenv*)
                           (multiple-value-list
-                           (vm bytecode stack closure constants
+                           (vm bytecode stack closure constants frame-size
                                ;; +2 to skip over this instruction, including the label
                                :ip (+ 2 ip) :sp sp :bp bp))))
                       ip (next-code)))
@@ -207,7 +231,7 @@
                      (spush *dynenv*)
                    loop
                      (setf (values ip sp)
-                           (vm bytecode stack closure constants
+                           (vm bytecode stack closure constants frame-size
                                :ip next-ip :sp sp :bp bp)))))
                ((#.+go+)
                 (funcall (tagbody-dynenv-fun (spop)) (next-code)))
@@ -216,7 +240,7 @@
                 (let ((*dynenv* (make-sbind-dynenv)))
                   (progv (list (constant (next-code))) (list (spop))
                     (setf ip
-                          (vm bytecode stack closure constants :ip ip :sp sp :bp bp)))))
+                          (vm bytecode stack closure constants frame-size :ip ip :sp sp :bp bp)))))
                ((#.+symbol-value+) (symbol-value (constant (next-code))) (incf ip))
                ((#.+symbol-value-set+)
                 (setf (symbol-value (constant (next-code))) (spop))
