@@ -31,12 +31,14 @@ First, compile and load vm.lisp and compile.lisp.
 ```lisp
 (defvar *bytecode-function* (compile-to-vm::compile '(lambda (x) (let ((y 5)) (print y) #'(lambda () (+ y x))))))
 
-(vm::disassemble *bytecode-function*)
+(vm::disassemble (vm::bytecode-function-module *bytecode-function*))
 #|
-((VM::+REF+ 0) (VM::+MAKE-CELL+) (VM::+SET+ 0) (VM::+CONST+ 0)
- (VM::+MAKE-CELL+) (VM::+BIND+ 1 1) (VM::+REF+ 1) (VM::+CELL-REF+)
- (VM::+FDEFINITION+ 1) (VM::+CALL+ 1) (VM::+REF+ 1) (VM::+REF+ 0)
- (VM::+MAKE-CLOSURE+ 2 2) (VM::+RETURN+))
+((VM::+CLOSURE+ 0) (VM::+CELL-REF+) (VM::+CLOSURE+ 1) (VM::+CELL-REF+)
+ (VM::+FDEFINITION+ 2) (VM::+CALL+ 2) (VM::+RETURN+) (VM::+REF+ 0)
+ (VM::+MAKE-CELL+) (VM::+SET+ 0) (VM::+CONST+ 0) (VM::+MAKE-CELL+)
+ (VM::+BIND+ 1 1) (VM::+REF+ 1) (VM::+CELL-REF+) (VM::+FDEFINITION+ 1)
+ (VM::+CALL-RECEIVE-FIXED+ 1 0) (VM::+REF+ 1) (VM::+REF+ 0)
+ (VM::+MAKE-CLOSURE+ 3) (VM::+RETURN+))
 |#
 
 (let ((vm::*trace* t)) (funcall (vm::make-closure (vm::make-bytecode-closure :template *bytecode-function* :env #())) 7))
