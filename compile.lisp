@@ -4,6 +4,8 @@
 
 (in-package #:compile-to-vm)
 
+(setq *print-circle* t)
+
 ;;; FIXME: New package
 (macrolet ((defcodes (&rest names)
              `(progn
@@ -36,136 +38,163 @@
 
 ;;;
 
-(defvar *constants*)
-
-(defun constant-index (constant)
-  (or (position constant *constants*)
-      (vector-push-extend constant *constants*)))
-
-(defvar *assembly*)
-(defvar *fixups*)
-
-#+(or) ; nice if you want to trace.
-(defun assemble (&rest values)
+(defun assemble (context &rest values)
   (loop for val in values
-        do (vector-push-extend val *assembly*)))
+        do (vector-push-extend val (context-assembly context))))
 
-(defmacro assemble (&rest values)
-  `(progn ,@(loop for val in values collect `(vector-push-extend ,val *assembly*))))
+(defun current-ip (context) (length (context-assembly context)))
 
-(defun current-ip () (length *assembly*))
+(defstruct (lexical-environment (:constructor make-null-lexical-environment)
+                                (:constructor %make-lexical-environment)
+                                (:conc-name nil))
+  ;; An alist of (var . frame-offset) in the current environment.
+  (vars nil :type list)
+  ;; An alist of (tag tag-dynenv . tag-index) in the current environment.
+  (tags nil :type list)
+  ;; An alist of (block . block-dynenv) in the current environment.
+  (blocks nil :type list)
+  ;; The current end of the frame.
+  (frame-end 0 :type integer)
+  ;; A list of the non-local vars in scope.
+  (closure-vars nil :type list))
 
-(defclass environment ()
-  ((%parent :initarg :parent :reader parent :type (or null environment))))
+(defun make-lexical-environment (parent &key (vars (vars parent))
+                                             (tags (tags parent))
+                                             (blocks (blocks parent))
+                                             (frame-end (frame-end parent))
+                                             (closure-vars (closure-vars parent)))
+  (%make-lexical-environment
+   :vars vars :tags tags :blocks blocks :frame-end frame-end :closure-vars closure-vars))
 
-(defclass local-environment (environment)
-  (;; An alist (symbol . index)
-   (%lexicals :initarg :lexicals :reader lexicals :type list)
-   (%parent :initarg :parent :reader parent :type (or null environment))))
+;;; Bind each variable to a stack location, returning a new lexical
+;;; environment. The max local count in the current function is also
+;;; updated.
+(defun bind-vars (vars env context)
+  (let* ((frame-start (frame-end env))
+         (var-count (length vars))
+         (frame-end (+ frame-start var-count))
+         (function (context-function context)))
+    (setf (function-prototype-nlocals function)
+          (max (function-prototype-nlocals function) frame-end))
+    (do ((index frame-start (1+ index))
+         (vars vars (rest vars))
+         (new-vars (vars env) (acons (first vars) index new-vars)))
+        ((>= index frame-end)
+         (make-lexical-environment env :vars new-vars :frame-end frame-end)))))
 
-;;; This is a "choke" put in place so that the compiler knows when a variable
-;;; is bound in an outer function and so must be closed over.
-(defclass closure-environment (environment) ())
+(defun bind-tags (tags tag-dynenv env)
+  (do ((index 0 (1+ index))
+       (tags tags (rest tags))
+       (new-tags (tags env) (acons (first tags) (cons tag-dynenv index) env)))
+      ((null tags)
+       (make-lexical-environment env :tags new-tags))))
 
-(defclass tagbody-environment (environment)
-  (;; Name of a lexical variable that stores the tagbody's dynenv.
-   (%var :initarg :var :reader tbvar :type symbol)
-   (%tags :initarg :tags :reader tags :type list)))
+(defun bind-block (block block-dynenv env)
+  (make-lexical-environment env :blocks (acons block block-dynenv (tags env))))
+
+;;; Create a new lexical environment where the old environment's
+;;; lexicals get closed over.
+(defun enclose (env)
+  (make-lexical-environment
+   env
+   :vars '()
+   :closure-vars (append (mapcar #'first (vars env)) (closure-vars env))))
 
 ;;; Get information about a lexical variable.
 ;;; Returns two values. The first is :CLOSURE or :LOCAL or NIL.
 ;;; The second is an index into the associated data corresponding to the symbol, or NIL.
 ;;; If the first value is NIL, the variable is unknown.
-(defgeneric lexical-index (symbol env)
-  (:argument-precedence-order env symbol))
-
-(defmethod lexical-index ((symbol symbol) (env environment))
-  (lexical-index symbol (parent env)))
-
-(defmethod lexical-index ((symbol symbol) (env local-environment))
-  (let ((pair (assoc symbol (lexicals env))))
+(defun var-location (symbol env context)
+  (let ((pair (assoc symbol (vars env))))
     (if pair
         (values :local (cdr pair))
-        (lexical-index symbol (parent env)))))
+        (if (member symbol (closure-vars env))
+            (values :closure (closure-index symbol context))
+            (values nil nil)))))
 
-(defvar *closure*)
+(defun tag-info (tag env)
+  (let ((pair (assoc tag (tags env))))
+    (if pair
+        (cdr pair)
+        (error "The GO tag ~a does not exist." tag))))
 
-(defun closure-index (symbol)
-  (or (position symbol *closure*) (vector-push-extend symbol *closure*)))
-
-(defmethod lexical-index ((symbol symbol) (env closure-environment))
-  ;; Make sure the variable is known. If it is, put it in the closure.
-  (if (lexical-index symbol (parent env))
-      (values :closure (closure-index symbol))
-      (values nil nil)))
-
-(defmethod lexical-index ((symbol symbol) (env null)) (values nil nil))
-
-(defvar *next-local-index*)
-(defvar *local-index-count*) ; highest value of *n-l-i* obtained while compiling
-
-(defun update-lic ()
-  (setf *local-index-count* (max *local-index-count* *next-local-index*)))
+(defun block-info (block env)
+  (let ((pair (assoc block (blocks env))))
+    (if pair
+        (cdr pair)
+        (error "The BLOCK tag ~a does not exist." block))))
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 
 (defstruct (function-prototype (:constructor make-function-prototype
-                                 (bytecode constants nlocals closed)))
-  bytecode constants nlocals closed)
+                                 (module bytecode nlocals closed)))
+  module bytecode nlocals closed)
 
-(defun compile (lambda-expression env)
+(defstruct (module (:constructor make-module (literals)))
+  literals)
+
+;;; The context contains information about what the current form needs
+;;; to know about what it is enclosed by.
+(defstruct context receiving function)
+
+(defun context-module (context)
+  (function-prototype-module (context-function context)))
+
+(defun context-literals (context)
+  (module-literals (context-module context)))
+
+(defun context-closed (context)
+  (function-prototype-closed (context-function context)))
+
+(defun context-assembly (context)
+  (function-prototype-bytecode (context-function context)))
+
+(defun literal-index (literal context)
+  (let ((literals (context-literals context)))
+    (or (position literal literals)
+        (vector-push-extend literal literals))))
+
+(defun closure-index (symbol context)
+  (let ((closed (context-closed context)))
+    (or (position symbol closed)
+        (vector-push-extend symbol closed))))
+
+(defun new-context (parent &key (receiving (context-receiving parent))
+                                (function (context-function parent)))
+  (make-context :receiving receiving :function function))
+
+(defun compile (lambda-expression)
   (check-type lambda-expression lambda-expression)
-  (let ((lambda-list (cadr lambda-expression))
-        (body (cddr lambda-expression))
-        (*assembly* (make-array 0 :element-type '(unsigned-byte 8)
-                                  :fill-pointer 0 :adjustable t))
-        (*constants* (make-array 0 :fill-pointer 0 :adjustable t))
-        (*closure* (make-array 0 :fill-pointer 0 :adjustable t))
-        (*local-index-count* 0))
-    (assert (every #'symbolp lambda-list))
-    ;; Initialize variables. Replace each value on the stack with a mutable cell
-    ;; containing that value.
-    (loop for i from 0 for arg in lambda-list
-          do (assemble +ref+ i +make-cell+ +set+ i))
-    (let ((env (make-instance 'local-environment
-                 :lexicals (loop for i from 0 for arg in lambda-list
-                                 collect (cons arg i))
-                 :parent (make-instance 'closure-environment :parent env)))
-          (*next-local-index* (length lambda-list)))
-      (update-lic)
-      (compile-progn body env t))
-    (assemble +return+)
-    (make-function-prototype (copy-seq *assembly*) (copy-seq *constants*)
-                             *local-index-count* *closure*)))
-
-;;;
+  (let* ((env (make-null-lexical-environment))
+         (module (make-module (make-array 0 :fill-pointer 0 :adjustable t))))
+    (compile-lambda lambda-expression env module)))
 
 (defun compile-form (form env context)
   (let ((form (macroexpand form env)))
     (etypecase form
       (symbol (compile-symbol form env context))
       (cons (compile-cons (car form) (cdr form) env context))
-      (t (compile-constant form env context)))))
+      (t (compile-literal form env context)))))
 
-(defun compile-constant (form env context)
+(defun compile-literal (form env context)
   (declare (ignore env))
-  (unless (eql context 0)
-    (assemble +const+ (constant-index form))))
+  (unless (eql (context-receiving context) 0)
+    (assemble context +const+ (literal-index form context))))
 
 (defun compile-symbol (form env context)
-  (unless (eql context 0)
+  (unless (eql (context-receiving context) 0)
     (cond ((specialp form env)
-           (assemble +symbol-value+ (constant-index form)))
+           (assemble context +symbol-value+ (literal-index form context)))
           ((constantp form env)
-           (assemble +const+ (constant-index (constant-form-value form env))))
+           (assemble context +const+ (literal-index (constant-form-value form env) context)))
           (t ; lexical
-           (multiple-value-bind (kind index) (lexical-index form env)
+           (multiple-value-bind (kind index) (var-location form env context)
              (ecase kind
-               ((:local) (assemble +ref+ index +cell-ref+))
-               ((:closure) (assemble +closure+ index +cell-ref+))
+               ((:local) (assemble context +ref+ index +cell-ref+))
+               ((:closure) (assemble context +closure+ index +cell-ref+))
                ((nil)
                 (warn "Unknown variable ~a: treating as special" form)
-                (assemble +symbol-value+ (constant-index form)))))))))
+                (assemble context +symbol-value+ (literal-index form context)))))))))
 
 (defun compile-cons (head rest env context)
   (case head
@@ -175,58 +204,58 @@
     ((if) (compile-if (first rest) (second rest) (third rest) env context))
     ((function) (compile-function (first rest) env context))
     ((tagbody) (compile-tagbody rest env context))
-    ((go) (compile-go (first rest) env))
+    ((go) (compile-go (first rest) env context))
+    ((quote) (compile-literal (first rest) env context))
     (otherwise ; function call
-     (dolist (arg rest) (compile-form arg env 1))
-     (assemble +fdefinition+ (constant-index head))
-     (cond ((eq context t) (assemble +call+ (length rest)))
-           ((eql context 1) (assemble +call-receive-one+ (length rest)))
-           (t (assemble +call-receive-fixed+ (length rest) context))))))
+     (dolist (arg rest)
+       (compile-form arg env (new-context context :receiving 1)))
+     (assemble context +fdefinition+ (literal-index head context))
+     (let ((receiving (context-receiving context)))
+       (cond ((eq receiving t) (assemble context +call+ (length rest)))
+             ((eql receiving 1) (assemble context +call-receive-one+ (length rest)))
+             (t (assemble context +call-receive-fixed+ (length rest) receiving)))))))
 
 (defun compile-progn (forms env context)
-  (loop for form in (butlast forms)
-        collect (compile-form form env 0))
-  (compile-form (first (last forms)) env context))
+  (do ((forms forms (rest forms)))
+      ((null (rest forms))
+       (compile-form (first forms) env context))
+    (compile-form (first forms) env (new-context context :receiving 0))))
 
 (defun compile-let (bindings body env context)
-  (let* ((vars
-           ;; Compile the values as we go.
-           ;; FIXME: NLX will complicate this.
-           (loop for binding in bindings
-                 if (symbolp binding)
-                   collect binding
-                   and do (assemble +nil+)
-                 if (and (consp binding) (null (cdr binding)))
-                   collect (car binding)
-                   and do (assemble +nil+)
-                 if (and (consp binding) (consp (cdr binding)) (null (cddr binding)))
-                   collect (car binding)
-                   and do (compile-form (cadr binding) env 1)
-                 do (assemble +make-cell+)))
-         (old-next-local-index *next-local-index*)
-         (env (make-instance 'local-environment
-                :lexicals (loop for var in vars
-                                for index from old-next-local-index
-                                collect (cons var index))
-                :parent env))
-         (*next-local-index* (+ *next-local-index* (length vars))))
-    (update-lic)
-    (assemble +bind+ (length vars) (1- *next-local-index*))
-    (compile-progn body env context)))
+  (let ((vars
+          ;; Compile the values as we go.
+          ;; FIXME: NLX will complicate this.
+          (loop for binding in bindings
+                if (symbolp binding)
+                  collect binding
+                  and do (assemble context +nil+)
+                if (and (consp binding) (null (cdr binding)))
+                  collect (car binding)
+                  and do (assemble context +nil+)
+                if (and (consp binding) (consp (cdr binding)) (null (cddr binding)))
+                  collect (car binding)
+                  and do (compile-form (cadr binding) env (new-context context :receiving 1))
+                do (assemble context +make-cell+))))
+    (assemble context +bind+ (length vars) (frame-end env))
+    (compile-progn body (bind-vars vars env context) context)))
 
 (defun compile-setq (pairs env context)
   (if (null pairs)
-      (unless (eql context 0) (assemble +nil+))
+      (unless (eql (context-receiving context) 0)
+        (assemble context +nil+))
       (loop for (var valf . rest) on pairs by #'cddr
-            do (compile-setq-1 var valf env (if rest 0 context)))))
+            do (compile-setq-1 var valf env
+                               (if rest
+                                   (new-context context :receiving 0)
+                                   context)))))
 
 (defun compile-setq-1 (var valf env context)
   (cond ((nth-value 1 (macroexpand-1 var env))
          (compile-form `(setf ,var ,valf) env context))
         ((specialp var env)
-         (compile-form valf env 1)
-         (assemble +symbol-value-set+ (constant-index var))
-         (unless (eql context 0)
+         (compile-form valf env (new-context context :receiving 1))
+         (assemble context +symbol-value-set+ (literal-index var context))
+         (unless (eql (context-receiving context) 0)
            ;; this is a bit tricky - we can't just read the symbol-value, since
            ;; that could have been changed in the interim.
            ;; The right thing to do is probably to bind a new lexical variable
@@ -234,73 +263,77 @@
            (error "Can't return the value of special variable binding ~a yet! :(" var)))
         ((constantp var env) (error "Can't SETQ a constant: ~a" var))
         (t ; lexical
-         (multiple-value-bind (kind index) (lexical-index var env)
+         (multiple-value-bind (kind index) (var-location var env context)
            (ecase kind
              ((:local)
-              (assemble +ref+ index) (compile-form valf env 1) (assemble +cell-set+))
+              (assemble context +ref+ index)
+              (compile-form valf env (new-context context :receiving 1))
+              (assemble context +cell-set+))
              ((:closure)
-              (assemble +closure+ index)
-              (compile-form valf env 1)
-              (assemble +cell-set+))
+              (assemble context +closure+ index)
+              (compile-form valf env (new-context context :receiving 1))
+              (assemble context +cell-set+))
              ((nil)
               (warn "Unknown variable ~a: treating as special" var)
-              (compile-form valf env 1)
-              (assemble +symbol-value-set+ (constant-index var))
-              (unless (eql context 0)
+              (compile-form valf env (new-context context :receiving 1))
+              (assemble context +symbol-value-set+ (literal-index var context))
+              (unless (eql (context-receiving context) 0)
                 (error "Can't return the value of special variable binding ~a yet! :(" var))))))))
 
 (defun compile-if (condition then else env context)
-  (compile-form condition env 1)
-  (assemble +jump-if+)
-  (let ((then-label-loc (current-ip)))
-    (assemble 0) ; placeholder for the then-label
+  (compile-form condition env (new-context context :receiving 1))
+  (assemble context +jump-if+)
+  (let ((then-label-loc (current-ip context)))
+    (assemble context 0) ; placeholder for the then-label
     (compile-form else env context)
-    (assemble +jump+)
-    (let ((else-label-loc (current-ip)))
-      (assemble 0)
-      (setf (aref *assembly* then-label-loc) (current-ip))
+    (assemble context +jump+)
+    (let ((else-label-loc (current-ip context))
+          (assembly (context-assembly context)))
+      (assemble context 0)
+      (setf (aref assembly then-label-loc) (current-ip context))
       (compile-form then env context)
-      (setf (aref *assembly* else-label-loc) (current-ip)))))
+      (setf (aref assembly else-label-loc) (current-ip context)))))
 
 (defun compile-function (fnameoid env context)
-  (unless (eql context 0)
+  (unless (eql (context-receiving context) 0)
     (if (typep fnameoid 'lambda-expression)
-        (let* ((proto (compile fnameoid env))
-               (closed (function-prototype-closed proto))
-               (pin (constant-index
-                     (list (function-prototype-bytecode proto) 10 ; kludge
-                           (length closed) (function-prototype-constants proto)))))
+        (let* ((proto (compile-lambda fnameoid env (context-module context)))
+               (closed (function-prototype-closed proto)))
           (loop for var across closed
-                do (compile-closure-var var env))
-          (assemble +make-closure+ pin))
+                do (compile-closure-var var env context))
+          (assemble context +make-closure+ (literal-index proto context)))
         ;; TODO: Lexical functions
-        (assemble +fdefinition+ (constant-index fnameoid)))))
+        (assemble context +fdefinition+ (literal-index fnameoid context)))))
+
+;;; Compile the lambda form.in MODULE, returining the resulting
+;;; function prototype.
+(defun compile-lambda (form env module)
+  ;; TODO: Emit code to process lambda args.
+  (let* ((lambda-list (cadr form))
+         (body (cddr form))
+         (function
+           (make-function-prototype
+            module
+            (make-array 0 :element-type '(unsigned-byte 8)
+                          :fill-pointer 0 :adjustable t)
+            0
+            (make-array 0 :fill-pointer 0 :adjustable t)))
+         (context (make-context :receiving t :function function))
+         (env (enclose env)))
+    ;; Initialize variables. Replace each value on the stack with a mutable cell
+    ;; containing that value.
+    (loop for i from 0 for arg in lambda-list
+          do (assemble context +ref+ i +make-cell+ +set+ i))
+    (compile-progn body (bind-vars lambda-list env context) context)
+    (assemble context +return+)
+    function))
 
 ;;; Compile code to get the cell for a given variable and push it to the stack.
-(defun compile-closure-var (var env)
-  (multiple-value-bind (kind index) (lexical-index var env)
+(defun compile-closure-var (var env context)
+  (multiple-value-bind (kind index) (var-location var env context)
     (ecase kind
-      ((:local) (assemble +ref+ index))
-      ((:closure) (assemble +closure+ index)))))
-
-(defun go-tag-p (object) (typep object '(or symbol integer)))
-
-(defgeneric tag-index (tag env) (:argument-precedence-order env tag))
-
-(defmethod tag-index (tag (env environment)) (tag-index tag (parent env)))
-(defmethod tag-index (tag (env null)) (values nil nil))
-
-(defmethod tag-index (tag (env tagbody-environment))
-  (let ((pos (position tag (tags env))))
-    (if pos
-        (values :local (tbvar env) pos)
-        (tag-index tag (parent env)))))
-
-(defmethod tag-index (tag (env closure-environment))
-  (multiple-value-bind (kind var loc) (tag-index tag (parent env))
-    (ecase kind
-      ((:local :closure) (values :closure var loc))
-      ((nil) (values nil nil nil)))))
+      ((:local) (assemble context +ref+ index))
+      ((:closure) (assemble context +closure+ index)))))
 
 (defun compile-tagbody (statements env context)
   (let* ((tags (remove-if-not #'go-tag-p statements)) ; minor preprocessing
@@ -308,37 +341,36 @@
          ;; get ready to bind the tagbody env to a lexical variable for use by NLX GO
          ;; bit of a KLUDGE, but the actual tags are a separate namespace
          ;; handled by the TAGBODY-ENVIRONMENT.
-         (tenv-index *next-local-index*)
-         (tenv-sym (gensym "TAGBODY"))
-         (lexenv (make-instance 'local-environment
-                   :lexicals (list (cons tenv-sym tenv-index)) :parent env))
-         (*next-local-index* (1+ *next-local-index*))
-         ;; Now make the tagbody environment.
-         (tbenv (make-instance 'tagbody-environment
-                  :var tenv-sym :tags tags :parent lexenv)))
-    (update-lic)
-    (assemble +tagbody-open+ ntags)
-    (let ((tag-fixup (current-ip)))
-      (loop repeat ntags do (assemble 0)) ; placeholders
-      ;; Bind the lexical variable to the tb dynenv.
-      ;; We don't need a cell as it is not mutable.
-      (assemble +set+ tenv-index)
+         (tag-dynenv (gensym "TAG-DYNENV"))
+         (env (bind-tags tags tag-dynenv
+                         (bind-vars (list tag-dynenv) env context))))
+    (assemble context +tagbody-open+ ntags)
+    (let ((tag-fixup (current-ip context))
+          (assembly (context-assembly context)))
+      (loop repeat ntags do (assemble context 0)) ; placeholders
+      ;; Bind the dynamic environment. We don't need a cell as it is
+      ;; not mutable.
+      (multiple-value-bind (kind index)
+          (var-location tag-dynenv env context)
+        (assert (eq kind :local))
+        (assemble context +set+ index))
       ;; Compile the body
-      (loop for stmt in statements
-            do (if (go-tag-p stmt)
-                   (setf (aref *assembly* (+ tag-fixup (position stmt tags))) (current-ip))
-                   (compile-form stmt tbenv 0)))))
-  (assemble +tagbody-close+)
+      (dolist (statement statements)
+        (if (go-tag-p statement)
+            (setf (aref assembly (+ tag-fixup (position statement tags)))
+                  (current-ip context))
+            (compile-form statement env (new-context context :receiving 0))))))
+  (assemble context +tagbody-close+)
   ;; return nil if we really have to
-  (unless (eql context 0)
-    (assemble +nil+)))
+  (unless (eql (context-receiving context) 0)
+    (assemble context +nil+)))
 
-(defun compile-go (tag env)
-  (multiple-value-bind (kind var loc) (tag-index tag env)
-    ;; Get the tagbody dynenv
-    (ecase kind
-      ((:local) (assemble +ref+ (nth-value 1 (lexical-index var env))))
-      ((:closure) (assemble +closure+ (nth-value 1 (lexical-index var env))))
-      ((nil) (error "GO for unknown tag ~a" tag)))
+(defun compile-go (tag env context)
+  (destructuring-bind (tag-dynenv . tag-index) (tag-info tag env)
+    (multiple-value-bind (kind index) (var-location tag-dynenv env context)
+      (ecase kind
+        ((:local) (assemble context +ref+ index))
+        ((:closure) (assemble context +closure+ index))
+        ((nil) (error "BUG: No tag dynenv for tag ~a?" tag))))
     ;; Go
-    (assemble +go+ loc)))
+    (assemble context +go+ tag-index)))

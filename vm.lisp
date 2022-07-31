@@ -63,14 +63,14 @@
 
 (defstruct (cell (:constructor make-cell (value))) value)
 
-(defun make-closure (bytecode stack-size closure constants)
-  (declare (type (and fixnum (integer 0)) stack-size))
+(defun make-closure (bytecode frame-size closure constants)
+  (declare (type (and fixnum (integer 0))))
   (lambda (&rest args)
     ;; set up the stack, then call vm
-    (loop with stack = (make-array stack-size)
+    (loop with stack = (make-array 100) ; FIXME
           for sp from 0
           for arg in args
-          do (setf (aref stack sp) arg)
+          do (setf (aref stack sp) frame-size)
           finally (return (vm bytecode stack closure constants :sp sp)))))
 
 (defvar *trace* nil)
@@ -88,8 +88,8 @@
 (defvar *dynenv* nil)
 
 (defun vm (bytecode stack closure constants &key (ip 0) (sp 0) (bp sp) &aux (mv nil))
-  (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
-           (type (simple-array t (*)) stack closure constants)
+  (declare ;(type (simple-array (unsigned-byte 8) (*)) bytecode)
+           ; (type (simple-array t (*)) stack closure constants)
            (type (and fixnum (integer 0)) start sp bp)
            (optimize debug))
   (labels ((stack (index)
@@ -112,10 +112,10 @@
              (aref bytecode ip))
            (constant (index)
              ;;(declare (optimize (safety 0)))
-             (svref constants index))
+             (aref constants index))
            (closure (index)
              ;;(declare (optimize (safety 0)))
-             (svref closure index))
+             (aref closure index))
            (gather (n)
              (let ((result nil)) ; put the most recent value on the end
                (loop repeat n do (push (spop) result))
@@ -163,11 +163,14 @@
                 (let ((val (spop))) (setf (cell-value (spop)) val))
                 (incf ip))
                ((#.+make-closure+)
-                (destructuring-bind (cbytecode stack-size closure-size cconstants)
-                    (constant (next-code))
-                  (spush (make-closure cbytecode stack-size
-                                       (coerce (gather closure-size) 'simple-vector)
-                                       cconstants)))
+                (let ((proto (constant (next-code))))
+                  (spush (make-closure
+                          (compile-to-vm::function-prototype-bytecode proto)
+                          (compile-to-vm::function-prototype-nlocals proto)
+                          (coerce (gather (length (compile-to-vm::function-prototype-closed proto)))
+                                  'simple-vector)
+                          (compile-to-vm::module-literals
+                           (compile-to-vm::function-prototype-module proto)))))
                 (incf ip))
                ((#.+return+)
                 (return (values-list (if (eql bp sp) mv (gather (- sp bp))))))
