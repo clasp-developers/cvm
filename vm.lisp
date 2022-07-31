@@ -174,9 +174,9 @@
                 (incf ip))
                ((#.+return+)
                 (return (values-list (if (eql bp sp) mv (gather (- sp bp))))))
-               ((#.+jump+) (setf ip (next-code)))
+               ((#.+jump+) (incf ip (next-code)))
                ((#.+jump-if+)
-                (setf ip (if (spop) (next-code) (+ 2 ip))))
+                (incf ip (if (spop) (next-code) (+ 2 ip))))
                ((#.+block-open+)
                 (setf mv
                       (block nil
@@ -200,7 +200,7 @@
                             (let ((old-sp sp)
                                   (old-bp bp))
                               (lambda (n)
-                                (setf next-ip (acode (+ ip n 1))
+                                (setf next-ip (+ ip n 1 (acode (+ ip n 1)))
                                       sp old-sp
                                       bp old-bp)
                                 (go loop)))))

@@ -45,17 +45,20 @@
          (label-position (length assembly)))
     (setf (label-position label) label-position)
     (dolist (backpatch (label-backpatches label))
-      ;; Relative offset here?
-      (setf (aref assembly backpatch) label-position))))
+      (setf (aref assembly backpatch) (- label-position backpatch)))))
 
 (defun assemble (context &rest values)
   (let ((assembly (context-assembly context)))
     (dolist (value values)
       (if (label-p value)
-          (let ((position (label-position value)))
-            (unless position
-              (push (length assembly) (label-backpatches value)))
-            (vector-push-extend (or position 0) assembly))
+          (let ((label-position (label-position value))
+                (current-position (length assembly)))
+            (cond (label-position
+                   (vector-push-extend (- label-position current-position)
+                                       assembly))
+                  (t
+                   (push current-position (label-backpatches value))
+                   (vector-push-extend 0 assembly))))
           (vector-push-extend value assembly)))))
 
 (defstruct (lexical-environment (:constructor make-null-lexical-environment)
