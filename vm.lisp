@@ -18,8 +18,7 @@
     +make-closure+
     +return+
     +jump+ +jump-if+
-    +block-open+ +return-from+ +block-close+
-    +tagbody-open+ +go+ +tagbody-close+
+    +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
     +nil+
@@ -59,24 +58,20 @@
                     (ecase op
                       ((+make-cell+ +cell-ref+ +cell-set+
                                     +return+
-                                    +block-close+ +tagbody-close+ +unbind+
+                                    +entry+
+                                    +entry-close+ +unbind+
                                     +nil+ +eq+)
                        (fixed 0))
                       ((+ref+ +const+ +closure+
                               +call+ +call-receive-one+
                               +set+ +make-closure+
-                              +go+ +special-bind+ +symbol-value+ +symbol-value-set+
+                              +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
                               +fdefinition+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
-                      ((+jump+ +jump-if+ +block-open+) (fixed 1))
-                      ((+call-receive-fixed+ +bind+) (fixed 2))
-                      ((+tagbody-open+)
-                       (let ((ntags (aref bytecode (incf ip))))
-                         (prog1 (list* op ntags (loop repeat ntags
-                                                      collect (aref bytecode (incf ip))))
-                           (incf ip)))))))))
+                      ((+jump+ +jump-if+) (fixed 1))
+                      ((+call-receive-fixed+ +bind+) (fixed 2)))))))
 
 (defun disassemble (bytecode-module)
   (disassemble-bytecode (bytecode-module-bytecode bytecode-module)))
@@ -103,11 +98,8 @@
 (defvar *trace* nil)
 
 (defstruct dynenv)
-(defstruct (block-dynenv (:include dynenv)
-                         (:constructor make-block-dynenv (fun)))
-  (fun (error "missing arg") :type function))
-(defstruct (tagbody-dynenv (:include dynenv)
-                           (:constructor make-tagbody-dynenv (fun)))
+(defstruct (entry-dynenv (:include dynenv)
+                         (:constructor make-entry-dynenv (fun)))
   (fun (error "missing arg") :type function))
 (defstruct (sbind-dynenv (:include dynenv)
                          (:constructor make-sbind-dynenv ())))
@@ -204,41 +196,28 @@
                ((#.+jump+) (incf ip (next-code)))
                ((#.+jump-if+)
                 (incf ip (if (spop) (next-code) (+ 2 ip))))
-               ((#.+block-open+)
-                (setf mv
-                      (block nil
-                        (let ((*dynenv*
-                                (make-block-dynenv
-                                 (lambda (mv) (return (values-list mv))))))
-                          (spush *dynenv*)
-                          (multiple-value-list
-                           (vm bytecode stack closure constants frame-size
-                               ;; +2 to skip over this instruction, including the label
-                               :ip (+ 2 ip) :sp sp :bp bp))))
-                      ip (next-code)))
-               ((#.+return-from+) (funcall (block-dynenv-fun (spop)) mv))
-               ((#.+block-close+) (return (values-list mv)))
-               ((#.+tagbody-open+)
-                (let ((next-ip (+ ip (next-code) 2)) ; the tagbody's prefix
-                      (*dynenv* *dynenv*))
+               ((#.+entry+)
+                (let ((*dynenv* *dynenv*))
+                  (incf ip)
                   (tagbody
                      (setf *dynenv*
-                           (make-tagbody-dynenv
-                            (let ((old-sp sp)
-                                  (old-bp bp))
-                              (lambda (n)
-                                (setf next-ip (+ ip n 1 (acode (+ ip n 1)))
-                                      sp old-sp
-                                      bp old-bp)
-                                (go loop)))))
+                           (make-entry-dynenv
+                             (let ((old-sp sp)
+                                   (old-bp bp))
+                               (lambda (next-ip new-mv)
+                                 (setf ip next-ip
+                                       mv new-mv
+                                       sp old-sp
+                                       bp old-bp)
+                                 (go loop)))))
                      (spush *dynenv*)
                    loop
                      (setf (values ip sp)
                            (vm bytecode stack closure constants frame-size
-                               :ip next-ip :sp sp :bp bp)))))
-               ((#.+go+)
-                (funcall (tagbody-dynenv-fun (spop)) (next-code)))
-               ((#.+tagbody-close+) (return (values (1+ ip) sp)))
+                               :ip ip :sp sp :bp bp)))))
+               ((#.+exit+)
+                (funcall (entry-dynenv-fun (spop)) (+ ip 1 (next-code)) mv))
+               ((#.+entry-close+) (return (values (1+ ip) sp)))
                ((#.+special-bind+)
                 (let ((*dynenv* (make-sbind-dynenv)))
                   (progv (list (constant (next-code))) (list (spop))

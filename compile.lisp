@@ -21,8 +21,7 @@
     +make-closure+
     +return+
     +jump+ +jump-if+
-    +block-open+ +return-from+ +block-close+
-    +tagbody-open+ +go+ +tagbody-close+
+    +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
     +nil+
@@ -58,9 +57,9 @@
                                 (:conc-name nil))
   ;; An alist of (var . frame-offset) in the current environment.
   (vars nil :type list)
-  ;; An alist of (tag tag-dynenv . tag-index) in the current environment.
+  ;; An alist of (tag tag-dynenv . label) in the current environment.
   (tags nil :type list)
-  ;; An alist of (block . block-dynenv) in the current environment.
+  ;; An alist of (block block-dynenv . label) in the current environment.
   (blocks nil :type list)
   ;; The current end of the frame.
   (frame-end 0 :type integer)
@@ -92,14 +91,16 @@
          (make-lexical-environment env :vars new-vars :frame-end frame-end)))))
 
 (defun bind-tags (tags tag-dynenv env)
-  (do ((index 0 (1+ index))
-       (tags tags (rest tags))
-       (new-tags (tags env) (acons (first tags) (cons tag-dynenv index) env)))
+  (do ((tags tags (rest tags))
+       (new-tags (tags env)
+                 (acons (first tags) (cons tag-dynenv (make-label))
+                        new-tags)))
       ((null tags)
        (make-lexical-environment env :tags new-tags))))
 
 (defun bind-block (block block-dynenv env)
-  (make-lexical-environment env :blocks (acons block block-dynenv (tags env))))
+  (let ((new-blocks (acons block (cons block-dynenv (make-label)) (blocks env))))
+    (make-lexical-environment env :blocks new-blocks)))
 
 ;;; Create a new lexical environment where the old environment's
 ;;; lexicals get closed over.
@@ -344,17 +345,13 @@
 
 (defun compile-tagbody (statements env context)
   (let* ((tags (remove-if-not #'go-tag-p statements)) ; minor preprocessing
-         (tag-labels (loop for tag in tags
-                           collect (cons tag (make-label))))
          ;; get ready to bind the tagbody env to a lexical variable for use by NLX GO
          ;; bit of a KLUDGE, but the actual tags are a separate namespace
          ;; handled by the TAGBODY-ENVIRONMENT.
          (tag-dynenv (gensym "TAG-DYNENV"))
          (env (bind-tags tags tag-dynenv
                          (bind-vars (list tag-dynenv) env context))))
-    (assemble context +tagbody-open+ (length tags))
-    (dolist (tag-label tag-labels)
-      (assemble context (cdr tag-label)))
+    (assemble context +entry+)
     ;; Bind the dynamic environment. We don't need a cell as it is
     ;; not mutable.
     (multiple-value-bind (kind index)
@@ -364,22 +361,22 @@
     ;; Compile the body
     (dolist (statement statements)
       (if (go-tag-p statement)
-          (emit-label context (cdr (assoc statement tag-labels)))
+          (emit-label context (cdr (tag-info statement env)))
           (compile-form statement env (new-context context :receiving 0)))))
-  (assemble context +tagbody-close+)
+  (assemble context +entry-close+)
   ;; return nil if we really have to
   (unless (eql (context-receiving context) 0)
     (assemble context +nil+)))
 
 (defun compile-go (tag env context)
-  (destructuring-bind (tag-dynenv . tag-index) (tag-info tag env)
+  (destructuring-bind (tag-dynenv . tag-label) (tag-info tag env)
     (multiple-value-bind (kind index) (var-location tag-dynenv env context)
       (ecase kind
         ((:local) (assemble context +ref+ index))
         ((:closure) (assemble context +closure+ index))
         ((nil) (error "BUG: No tag dynenv for tag ~a?" tag))))
     ;; Go
-    (assemble context +go+ tag-index)))
+    (assemble context +exit+ tag-label)))
 
 ;;;; linkage
 
