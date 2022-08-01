@@ -46,38 +46,40 @@
   `(make-array ,(length codes) :element-type '(unsigned-byte 8)
                                :initial-contents (list ,@codes)))
 
-(defun disassemble (bytecode-module &key (ip 0) (ninstructions t))
-  (let ((bytecode (bytecode-module-bytecode bytecode-module)))
-    (loop with blen = (length bytecode)
-          for ndis from 0
-          until (or (= ip blen) (and (integerp ninstructions) (eql ndis ninstructions)))
-          collect (macrolet ((fixed (n)
-                               `(prog1
-                                    (list op ,@(loop repeat n
-                                                     collect `(aref bytecode (incf ip))))
-                                  (incf ip))))
-                    (let ((op (decode (aref bytecode ip))))
-                      (ecase op
-                        ((+make-cell+ +cell-ref+ +cell-set+
-                                      +return+
-                                      +block-close+ +tagbody-close+ +unbind+
-                                      +nil+ +eq+)
-                         (fixed 0))
-                        ((+ref+ +const+ +closure+
-                                +call+ +call-receive-one+
-                                +set+ +make-closure+
-                                +go+ +special-bind+ +symbol-value+ +symbol-value-set+
-                                +fdefinition+)
-                         (fixed 1))
-                        ;; These have labels, not integers, as arguments.
-                        ;; TODO: Impose labels on the disassembly.
-                        ((+jump+ +jump-if+ +block-open+) (fixed 1))
-                        ((+call-receive-fixed+ +bind+) (fixed 2))
-                        ((+tagbody-open+)
-                         (let ((ntags (aref bytecode (incf ip))))
-                           (prog1 (list* op ntags (loop repeat ntags
-                                                        collect (aref bytecode (incf ip))))
-                             (incf ip))))))))))
+(defun disassemble-bytecode (bytecode &key (ip 0) (ninstructions t))
+  (loop with blen = (length bytecode)
+        for ndis from 0
+        until (or (= ip blen) (and (integerp ninstructions) (eql ndis ninstructions)))
+        collect (macrolet ((fixed (n)
+                             `(prog1
+                                  (list op ,@(loop repeat n
+                                                   collect `(aref bytecode (incf ip))))
+                                (incf ip))))
+                  (let ((op (decode (aref bytecode ip))))
+                    (ecase op
+                      ((+make-cell+ +cell-ref+ +cell-set+
+                                    +return+
+                                    +block-close+ +tagbody-close+ +unbind+
+                                    +nil+ +eq+)
+                       (fixed 0))
+                      ((+ref+ +const+ +closure+
+                              +call+ +call-receive-one+
+                              +set+ +make-closure+
+                              +go+ +special-bind+ +symbol-value+ +symbol-value-set+
+                              +fdefinition+)
+                       (fixed 1))
+                      ;; These have labels, not integers, as arguments.
+                      ;; TODO: Impose labels on the disassembly.
+                      ((+jump+ +jump-if+ +block-open+) (fixed 1))
+                      ((+call-receive-fixed+ +bind+) (fixed 2))
+                      ((+tagbody-open+)
+                       (let ((ntags (aref bytecode (incf ip))))
+                         (prog1 (list* op ntags (loop repeat ntags
+                                                      collect (aref bytecode (incf ip))))
+                           (incf ip)))))))))
+
+(defun disassemble (bytecode-module)
+  (disassemble-bytecode (bytecode-module-bytecode bytecode-module)))
 
 (defstruct (cell (:constructor make-cell (value))) value)
 
@@ -152,7 +154,7 @@
           until (eql ip end)
           when *trace*
             do (fresh-line)
-               (prin1 (list (first (disassemble bytecode :ip ip :ninstructions 1))
+               (prin1 (list (first (disassemble-bytecode bytecode :ip ip :ninstructions 1))
                             (subseq stack 0 frame-size)
                             ;; We take the max for partial frames.
                             (subseq stack frame-size (max sp frame-size))))
