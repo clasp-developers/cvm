@@ -345,6 +345,8 @@
       ((:local) (assemble context +ref+ index))
       ((:closure) (assemble context +closure+ index)))))
 
+(defun go-tag-p (object) (typep object '(or symbol integer)))
+
 (defun compile-tagbody (statements env context)
   (let* ((tags (remove-if-not #'go-tag-p statements)) ; minor preprocessing
          ;; get ready to bind the tagbody env to a lexical variable
