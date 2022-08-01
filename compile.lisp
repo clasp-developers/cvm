@@ -38,27 +38,19 @@
 
 ;;;
 
-(defstruct label position backpatches)
+(defstruct label function position)
 
 (defun emit-label (context label)
-  (let* ((assembly (context-assembly context))
-         (label-position (length assembly)))
-    (setf (label-position label) label-position)
-    (dolist (backpatch (label-backpatches label))
-      (setf (aref assembly backpatch) (- label-position backpatch)))))
+  (setf (label-position label) (length (context-assembly context)))
+  (setf (label-function label) (context-function context)))
 
 (defun assemble (context &rest values)
   (let ((assembly (context-assembly context)))
     (dolist (value values)
       (if (label-p value)
-          (let ((label-position (label-position value))
-                (current-position (length assembly)))
-            (cond (label-position
-                   (vector-push-extend (- label-position current-position)
-                                       assembly))
-                  (t
-                   (push current-position (label-backpatches value))
-                   (vector-push-extend 0 assembly))))
+          (let ((fixup (list value (context-function context) (length assembly))))
+            (push fixup (cmodule-fixups (context-module context)))
+            (vector-push-extend 0 assembly))
           (vector-push-extend value assembly)))))
 
 (defstruct (lexical-environment (:constructor make-null-lexical-environment)
@@ -148,7 +140,8 @@
 
 (defstruct (cmodule (:constructor make-cmodule (literals)))
   cfunctions
-  literals)
+  literals
+  fixups)
 
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
@@ -420,6 +413,18 @@
               (setf (aref bytecode index)
                     (aref function-bytecode local-index))
               (incf index)))))
+      ;; Do label fixups in the module.
+      (dolist (fixup (cmodule-fixups cmodule))
+        (destructuring-bind (label function offset) fixup
+          (flet ((compute-position (function offset)
+                   (+ (vm::bytecode-function-entry-pc
+                       (cfunction-info function))
+                      offset)))
+            (let ((position (compute-position function offset)))
+              (setf (aref bytecode position)
+                    (- (compute-position (label-function label)
+                                         (label-position label))
+                       position))))))
       ;; Now replace the cfunctions in the cmodule literal vector with
       ;; real bytecode functions.
       (dotimes (index (length (cmodule-literals cmodule)))
