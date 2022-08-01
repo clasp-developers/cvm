@@ -106,7 +106,7 @@
 
 (defvar *dynenv* nil)
 
-(defun vm (bytecode stack closure constants frame-size &key (ip 0) (sp 0) (bp sp) &aux (mv nil))
+(defun vm (bytecode stack closure constants frame-size &key (ip 0) (sp 0) (bp sp) (mv nil))
   (declare (type (simple-array (signed-byte 8) (*)) bytecode)
            (type (simple-array t (*)) stack closure constants)
            (type (and fixnum (integer 0)) start sp bp)
@@ -212,12 +212,12 @@
                                  (go loop)))))
                      (spush *dynenv*)
                    loop
-                     (setf (values ip sp)
+                     (setf (values ip sp mv)
                            (vm bytecode stack closure constants frame-size
-                               :ip ip :sp sp :bp bp)))))
+                               :ip ip :sp sp :bp bp :mv mv)))))
                ((#.+exit+)
                 (funcall (entry-dynenv-fun (spop)) (+ ip 1 (next-code)) mv))
-               ((#.+entry-close+) (return (values (1+ ip) sp)))
+               ((#.+entry-close+) (return (values (1+ ip) sp mv)))
                ((#.+special-bind+)
                 (let ((*dynenv* (make-sbind-dynenv)))
                   (progv (list (constant (next-code))) (list (spop))

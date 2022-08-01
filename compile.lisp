@@ -216,6 +216,8 @@
     ((function) (compile-function (first rest) env context))
     ((tagbody) (compile-tagbody rest env context))
     ((go) (compile-go (first rest) env context))
+    ((block) (compile-block (first rest) (rest rest) env context))
+    ((return-from) (compile-return-from (first rest) (second rest) env context))
     ((quote) (compile-literal (first rest) env context))
     (otherwise ; function call
      (dolist (arg rest)
@@ -345,9 +347,9 @@
 
 (defun compile-tagbody (statements env context)
   (let* ((tags (remove-if-not #'go-tag-p statements)) ; minor preprocessing
-         ;; get ready to bind the tagbody env to a lexical variable for use by NLX GO
-         ;; bit of a KLUDGE, but the actual tags are a separate namespace
-         ;; handled by the TAGBODY-ENVIRONMENT.
+         ;; get ready to bind the tagbody env to a lexical variable
+         ;; for use by EXIT. bit of a KLUDGE, but the actual tags are a
+         ;; separate namespace handled by the TAGBODY-ENVIRONMENT.
          (tag-dynenv (gensym "TAG-DYNENV"))
          (env (bind-tags tags tag-dynenv
                          (bind-vars (list tag-dynenv) env context))))
@@ -375,8 +377,33 @@
         ((:local) (assemble context +ref+ index))
         ((:closure) (assemble context +closure+ index))
         ((nil) (error "BUG: No tag dynenv for tag ~a?" tag))))
-    ;; Go
     (assemble context +exit+ tag-label)))
+
+(defun compile-block (name body env context)
+  (let* ((block-dynenv (gensym "BLOCK-DYNENV"))
+         (env (bind-block name block-dynenv
+                          (bind-vars (list block-dynenv) env context))))
+    (assemble context +entry+)
+    ;; Bind the dynamic environment. We don't need a cell as it is
+    ;; not mutable.
+    (multiple-value-bind (kind index)
+        (var-location block-dynenv env context)
+      (assert (eq kind :local))
+      (assemble context +set+ index))
+    (compile-progn body env context)
+    (emit-label context (cdr (block-info name env)))
+    (assemble context +entry-close+)))
+
+(defun compile-return-from (name value env context)
+  ;;; FIXME: We currently do the wrong thing with fixed return values!
+  (compile-form value env (new-context context :receiving t))
+  (destructuring-bind (block-dynenv . block-label) (block-info name env)
+    (multiple-value-bind (kind index) (var-location block-dynenv env context)
+      (ecase kind
+        ((:local) (assemble context +ref+ index))
+        ((:closure) (assemble context +closure+ index))
+        ((nil) (error "BUG: No block dynenv for block ~a?" name))))
+    (assemble context +exit+ block-label)))
 
 ;;;; linkage
 
