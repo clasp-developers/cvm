@@ -43,7 +43,7 @@
   entry-pc)
 
 (defmacro assemble (&rest codes)
-  `(make-array ,(length codes) :element-type '(unsigned-byte 8)
+  `(make-array ,(length codes) :element-type '(signed-byte 8)
                                :initial-contents (list ,@codes)))
 
 (defun disassemble-bytecode (bytecode &key (ip 0) (ninstructions t))
@@ -115,7 +115,7 @@
 (defvar *dynenv* nil)
 
 (defun vm (bytecode stack closure constants frame-size &key (ip 0) (sp 0) (bp sp) &aux (mv nil))
-  (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
+  (declare (type (simple-array (signed-byte 8) (*)) bytecode)
            (type (simple-array t (*)) stack closure constants)
            (type (and fixnum (integer 0)) start sp bp)
            (optimize debug))

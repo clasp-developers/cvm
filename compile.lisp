@@ -320,7 +320,7 @@
          (function
            (make-cfunction
             module
-            (make-array 0 :element-type '(unsigned-byte 8)
+            (make-array 0 :element-type '(signed-byte 8)
                           :fill-pointer 0 :adjustable t)
             0
             (make-array 0 :fill-pointer 0 :adjustable t)))
@@ -403,7 +403,7 @@
         (incf bytecode-size (length (cfunction-bytecode cfunction)))))
     (let* ((cmodule-literals (cmodule-literals cmodule))
            (literal-length (length cmodule-literals))
-           (bytecode (make-array bytecode-size :element-type '(unsigned-byte 8)))
+           (bytecode (make-array bytecode-size :element-type '(signed-byte 8)))
            (literals (make-array literal-length)))
       ;; Next, fill in the module bytecode vector.
       (let ((index 0))
