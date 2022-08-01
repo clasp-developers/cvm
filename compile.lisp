@@ -90,18 +90,6 @@
         ((>= index frame-end)
          (make-lexical-environment env :vars new-vars :frame-end frame-end)))))
 
-(defun bind-tags (tags tag-dynenv env)
-  (do ((tags tags (rest tags))
-       (new-tags (tags env)
-                 (acons (first tags) (cons tag-dynenv (make-label))
-                        new-tags)))
-      ((null tags)
-       (make-lexical-environment env :tags new-tags))))
-
-(defun bind-block (block block-dynenv env)
-  (let ((new-blocks (acons block (cons block-dynenv (make-label)) (blocks env))))
-    (make-lexical-environment env :blocks new-blocks)))
-
 ;;; Create a new lexical environment where the old environment's
 ;;; lexicals get closed over.
 (defun enclose (env)
@@ -348,25 +336,27 @@
 (defun go-tag-p (object) (typep object '(or symbol integer)))
 
 (defun compile-tagbody (statements env context)
-  (let* ((tags (remove-if-not #'go-tag-p statements)) ; minor preprocessing
-         ;; get ready to bind the tagbody env to a lexical variable
-         ;; for use by EXIT. bit of a KLUDGE, but the actual tags are a
-         ;; separate namespace handled by the TAGBODY-ENVIRONMENT.
-         (tag-dynenv (gensym "TAG-DYNENV"))
-         (env (bind-tags tags tag-dynenv
-                         (bind-vars (list tag-dynenv) env context))))
-    (assemble context +entry+)
-    ;; Bind the dynamic environment. We don't need a cell as it is
-    ;; not mutable.
-    (multiple-value-bind (kind index)
-        (var-location tag-dynenv env context)
-      (assert (eq kind :local))
-      (assemble context +set+ index))
-    ;; Compile the body
+  (let ((new-tags (tags env))
+        (tagbody-dynenv (gensym "TAG-DYNENV")))
     (dolist (statement statements)
-      (if (go-tag-p statement)
-          (emit-label context (cdr (tag-info statement env)))
-          (compile-form statement env (new-context context :receiving 0)))))
+      (when (go-tag-p statement)
+        (push (list* statement tagbody-dynenv (make-label))
+              new-tags)))
+    (assemble context +entry+)
+    (let ((env (make-lexical-environment
+                (bind-vars (list tagbody-dynenv) env context)
+                :tags new-tags)))
+      ;; Bind the dynamic environment. We don't need a cell as it is
+      ;; not mutable.
+      (multiple-value-bind (kind index)
+          (var-location tagbody-dynenv env context)
+        (assert (eq kind :local))
+        (assemble context +set+ index))
+      ;; Compile the body, emitting the tag destination labels.
+      (dolist (statement statements)
+        (if (go-tag-p statement)
+            (emit-label context (cdr (tag-info statement env)))
+            (compile-form statement env (new-context context :receiving 0))))))
   (assemble context +entry-close+)
   ;; return nil if we really have to
   (unless (eql (context-receiving context) 0)
@@ -383,8 +373,10 @@
 
 (defun compile-block (name body env context)
   (let* ((block-dynenv (gensym "BLOCK-DYNENV"))
-         (env (bind-block name block-dynenv
-                          (bind-vars (list block-dynenv) env context))))
+         (env (make-lexical-environment
+               (bind-vars (list block-dynenv) env context)
+               :blocks (acons name (cons block-dynenv (make-label))
+                              (blocks env)))))
     (assemble context +entry+)
     ;; Bind the dynamic environment. We don't need a cell as it is
     ;; not mutable.
