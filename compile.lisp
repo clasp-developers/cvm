@@ -393,7 +393,7 @@
       ;; Compile the body, emitting the tag destination labels.
       (dolist (statement statements)
         (if (go-tag-p statement)
-            (emit-label context (cdr (assoc statement (tags env))))
+            (emit-label context (cddr (assoc statement (tags env))))
             (compile-form statement env (new-context context :receiving 0))))))
   (assemble context +entry-close+)
   ;; return nil if we really have to
@@ -422,7 +422,7 @@
       (assert (eq kind :local))
       (assemble context +set+ index))
     (compile-progn body env context)
-    (emit-label context (cdr (block-info name env)))
+    (emit-label context (cddr (assoc name (blocks env))))
     (assemble context +entry-close+)))
 
 (defun compile-return-from (name value env context)
