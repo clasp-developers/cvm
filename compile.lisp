@@ -284,7 +284,6 @@
         (push fun-var fun-vars)
         (push (cons name fun-var) funs)
         (incf fun-count)))
-    (print env)
     (assemble context +bind+ fun-count (frame-end env))
     (let ((env (make-lexical-environment
                 (bind-vars fun-vars env context)
@@ -307,7 +306,6 @@
     (let ((env (make-lexical-environment
                 (bind-vars fun-vars env context)
                 :funs funs)))
-      (print env)
       (dolist (definition definitions)
         (reference-var (cdr (assoc (first definition) (funs env)))
                        env context)
