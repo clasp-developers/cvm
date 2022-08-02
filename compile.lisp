@@ -115,18 +115,6 @@
             (values :closure (closure-index symbol context))
             (values nil nil)))))
 
-(defun tag-info (tag env)
-  (let ((pair (assoc tag (tags env))))
-    (if pair
-        (cdr pair)
-        (error "The GO tag ~a does not exist." tag))))
-
-(defun block-info (block env)
-  (let ((pair (assoc block (blocks env))))
-    (if pair
-        (cdr pair)
-        (error "The BLOCK tag ~a does not exist." block))))
-
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 
 (defstruct (cfunction (:constructor make-cfunction (cmodule bytecode nlocals closed)))
@@ -407,7 +395,7 @@
       ;; Compile the body, emitting the tag destination labels.
       (dolist (statement statements)
         (if (go-tag-p statement)
-            (emit-label context (cdr (tag-info statement env)))
+            (emit-label context (cdr (assoc statement (tags env))))
             (compile-form statement env (new-context context :receiving 0))))))
   (assemble context +entry-close+)
   ;; return nil if we really have to
@@ -415,9 +403,12 @@
     (assemble context +nil+)))
 
 (defun compile-go (tag env context)
-  (destructuring-bind (tag-dynenv . tag-label) (tag-info tag env)
-    (reference-var tag-dynenv env context)
-    (assemble context +exit+ tag-label)))
+  (let ((pair (assoc tag (tags env))))
+    (if pair
+        (destructuring-bind (tag-dynenv . tag-label) (cdr pair)
+          (reference-var tag-dynenv env context)
+          (assemble context +exit+ tag-label))
+        (error "The GO tag ~a does not exist." tag))))
 
 (defun compile-block (name body env context)
   (let* ((block-dynenv (gensym "BLOCK-DYNENV"))
@@ -439,9 +430,12 @@
 (defun compile-return-from (name value env context)
   ;;; FIXME: We currently do the wrong thing with fixed return values!
   (compile-form value env (new-context context :receiving t))
-  (destructuring-bind (block-dynenv . block-label) (block-info name env)
-    (reference-var block-dynenv env context)
-    (assemble context +exit+ block-label)))
+  (let ((pair (assoc name (blocks env))))
+    (if pair
+        (destructuring-bind (block-dynenv . block-label) (cdr pair)
+          (reference-var block-dynenv env context)
+          (assemble context +exit+ block-label))
+        (error "The block ~a does not exist." name))))
 
 ;;;; linkage
 
