@@ -144,22 +144,16 @@
 (defun context-module (context)
   (cfunction-cmodule (context-function context)))
 
-(defun context-literals (context)
-  (cmodule-literals (context-module context)))
-
-(defun context-closed (context)
-  (cfunction-closed (context-function context)))
-
 (defun context-assembly (context)
   (cfunction-bytecode (context-function context)))
 
 (defun literal-index (literal context)
-  (let ((literals (context-literals context)))
+  (let ((literals (cmodule-literals (context-module context))))
     (or (position literal literals)
         (vector-push-extend literal literals))))
 
 (defun closure-index (symbol context)
-  (let ((closed (context-closed context)))
+  (let ((closed (cfunction-closed (context-function context))))
     (or (position symbol closed)
         (vector-push-extend symbol closed))))
 
