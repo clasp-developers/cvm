@@ -61,6 +61,8 @@
   (tags nil :type list)
   ;; An alist of (block block-dynenv . label) in the current environment.
   (blocks nil :type list)
+  ;; An alist of (fun . fun-var) in the current environment.
+  (funs nil :type list)
   ;; The current end of the frame.
   (frame-end 0 :type integer)
   ;; A list of the non-local vars in scope.
@@ -70,9 +72,11 @@
                                              (tags (tags parent))
                                              (blocks (blocks parent))
                                              (frame-end (frame-end parent))
-                                             (closure-vars (closure-vars parent)))
+                                             (closure-vars (closure-vars parent))
+                                             (funs (funs parent)))
   (%make-lexical-environment
-   :vars vars :tags tags :blocks blocks :frame-end frame-end :closure-vars closure-vars))
+   :vars vars :tags tags :blocks blocks :frame-end frame-end :closure-vars closure-vars
+   :funs funs))
 
 ;;; Bind each variable to a stack location, returning a new lexical
 ;;; environment. The max local count in the current function is also
@@ -96,6 +100,7 @@
   (make-lexical-environment
    env
    :vars '()
+   :frame-end 0
    :closure-vars (append (mapcar #'first (vars env)) (closure-vars env))))
 
 ;;; Get information about a lexical variable.
@@ -199,6 +204,7 @@
   (case head
     ((progn) (compile-progn rest env context))
     ((let) (compile-let (first rest) (rest rest) env context))
+    ((flet) (compile-flet (first rest) (rest rest) env context))
     ((setq) (compile-setq rest env context))
     ((if) (compile-if (first rest) (second rest) (third rest) env context))
     ((function) (compile-function (first rest) env context))
@@ -210,7 +216,7 @@
     (otherwise ; function call
      (dolist (arg rest)
        (compile-form arg env (new-context context :receiving 1)))
-     (assemble context +fdefinition+ (literal-index head context))
+     (compile-function head env context)
      (let ((receiving (context-receiving context)))
        (cond ((eq receiving t) (assemble context +call+ (length rest)))
              ((eql receiving 1) (assemble context +call-receive-one+ (length rest)))
@@ -281,6 +287,23 @@
               (unless (eql (context-receiving context) 0)
                 (error "Can't return the value of special variable binding ~a yet! :(" var))))))))
 
+(defun compile-flet (definitions body env context)
+  (let ((fun-vars '())
+        (funs '()))
+    (dolist (definition definitions)
+      (let ((name (first definition))
+            (fun-var (gensym "FLET-FUN")))
+        (compile-function `(lambda ,(second definition)
+                             ,@(cddr definition))
+                          env (new-context context :receiving 1))
+        (push fun-var fun-vars)
+        (push (cons name fun-var) funs)))
+    (assemble context +bind+ (length funs) (frame-end env))
+    (let ((env (make-lexical-environment
+                (bind-vars fun-vars env context)
+                :funs funs)))
+      (compile-progn body env context))))
+
 (defun compile-if (condition then else env context)
   (compile-form condition env (new-context context :receiving 1))
   (let ((then-label (make-label))
@@ -297,10 +320,12 @@
     (if (typep fnameoid 'lambda-expression)
         (let ((cfunction (compile-lambda fnameoid env (context-module context))))
           (loop for var across (cfunction-closed cfunction)
-                do (compile-closure-var var env context))
+                do (reference-var var env context))
           (assemble context +make-closure+ (literal-index cfunction context)))
-        ;; TODO: Lexical functions
-        (assemble context +fdefinition+ (literal-index fnameoid context)))))
+        (let ((pair (assoc fnameoid (funs env))))
+          (if pair
+              (reference-var (cdr pair) env context)
+              (assemble context +fdefinition+ (literal-index fnameoid context)))))))
 
 ;;; Compile the lambda form in MODULE, returning the resulting
 ;;; CFUNCTION.
@@ -326,8 +351,8 @@
     (assemble context +return+)
     function))
 
-;;; Compile code to get the cell for a given variable and push it to the stack.
-(defun compile-closure-var (var env context)
+;;; Push VAR's value to the stack.
+(defun reference-var (var env context)
   (multiple-value-bind (kind index) (var-location var env context)
     (ecase kind
       ((:local) (assemble context +ref+ index))
@@ -364,11 +389,7 @@
 
 (defun compile-go (tag env context)
   (destructuring-bind (tag-dynenv . tag-label) (tag-info tag env)
-    (multiple-value-bind (kind index) (var-location tag-dynenv env context)
-      (ecase kind
-        ((:local) (assemble context +ref+ index))
-        ((:closure) (assemble context +closure+ index))
-        ((nil) (error "BUG: No tag dynenv for tag ~a?" tag))))
+    (reference-var tag-dynenv env context)
     (assemble context +exit+ tag-label)))
 
 (defun compile-block (name body env context)
@@ -392,11 +413,7 @@
   ;;; FIXME: We currently do the wrong thing with fixed return values!
   (compile-form value env (new-context context :receiving t))
   (destructuring-bind (block-dynenv . block-label) (block-info name env)
-    (multiple-value-bind (kind index) (var-location block-dynenv env context)
-      (ecase kind
-        ((:local) (assemble context +ref+ index))
-        ((:closure) (assemble context +closure+ index))
-        ((nil) (error "BUG: No block dynenv for block ~a?" name))))
+    (reference-var block-dynenv env context)
     (assemble context +exit+ block-label)))
 
 ;;;; linkage
