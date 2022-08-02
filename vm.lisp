@@ -171,7 +171,7 @@
                 (incf ip))
                ((#.+bind+)
                 (loop repeat (next-code)
-                      for bsp downfrom (+ bp (next-code))
+                      for bsp from (next-code)
                       do (setf (stack bsp) (spop)))
                 (incf ip))
                ((#.+set+)
