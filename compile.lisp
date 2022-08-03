@@ -1,6 +1,6 @@
 (defpackage #:compile-to-vm
   (:use #:cl)
-  (:shadow #:compile #:macroexpand-1 #:macroexpand #:constantp))
+  (:shadow #:compile #:macroexpand-1 #:macroexpand))
 
 (in-package #:compile-to-vm)
 
@@ -31,9 +31,6 @@
 
 (defun macroexpand-1 (form env) (declare (ignore env)) (values form nil))
 (defun macroexpand (form env) (declare (ignore env)) (values form nil))
-(defun specialp (symbol env) (declare (ignore symbol env)) nil)
-(defun constantp (symbol env) (declare (ignore symbol env)) nil)
-(defun constant-form-value (symbol env) (declare (ignore symbol env)))
 
 ;;;
 
@@ -52,10 +49,23 @@
             (vector-push-extend 0 assembly))
           (vector-push-extend value assembly)))))
 
+;;; Different kinds of things can go in the variable namespace and they can
+;;; all shadow each other, so we use this structure to disambiguate.
+(defstruct (var-info (:constructor make-var-info (kind data)))
+  (kind (member :local :special :symbol-macro :constant))
+  data)
+
+(defun make-lexical-var-info (frame-offset)
+  (make-var-info :local frame-offset))
+(defun make-special-var-info () (make-var-info :special nil))
+(defun make-symbol-macro-var-info (expansion)
+  (make-var-info :symbol-macro expansion))
+(defun make-constant-var-info (value) (make-var-info :constant value))
+
 (defstruct (lexical-environment (:constructor make-null-lexical-environment)
                                 (:constructor %make-lexical-environment)
                                 (:conc-name nil))
-  ;; An alist of (var . frame-offset) in the current environment.
+  ;; An alist of (var . var-info) in the current environment.
   (vars nil :type list)
   ;; An alist of (tag tag-dynenv . label) in the current environment.
   (tags nil :type list)
@@ -90,30 +100,51 @@
           (max (cfunction-nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (vars vars (rest vars))
-         (new-vars (vars env) (acons (first vars) index new-vars)))
+         (new-vars (vars env)
+                   (acons (first vars) (make-lexical-var-info index) new-vars)))
         ((>= index frame-end)
          (make-lexical-environment env :vars new-vars :frame-end frame-end)))))
 
 ;;; Create a new lexical environment where the old environment's
 ;;; lexicals get closed over.
 (defun enclose (env)
-  (make-lexical-environment
-   env
-   :vars '()
-   :frame-end 0
-   :closure-vars (append (mapcar #'first (vars env)) (closure-vars env))))
+  (multiple-value-bind (lexical nonlexical)
+      (loop for pair in (vars env)
+            for (var . info) = pair
+            ;; this is necessary because we throw things on alist style
+            ;; but need to not record shadowed variables here.
+            when (member var seen)
+              do (progn)
+            else if (eq (var-info-kind info) :local)
+                   collect var into lexical
+            else
+              collect pair into nonlexical
+            collect var into seen
+            finally (return (values lexical nonlexical)))
+    (make-lexical-environment
+     env
+     :vars nonlexical
+     :frame-end 0
+     :closure-vars (append lexical (closure-vars env)))))
 
-;;; Get information about a lexical variable.
-;;; Returns two values. The first is :CLOSURE or :LOCAL or NIL.
-;;; The second is an index into the associated data corresponding to the symbol, or NIL.
-;;; If the first value is NIL, the variable is unknown.
-(defun var-location (symbol env context)
-  (let ((pair (assoc symbol (vars env))))
-    (if pair
-        (values :local (cdr pair))
-        (if (member symbol (closure-vars env))
-            (values :closure (closure-index symbol context))
-            (values nil nil)))))
+;;; Get information about a variable.
+;;; Returns two values.
+;;; The first is :CLOSURE, :LOCAL, :SPECIAL, :CONSTANT, :SYMBOL-MACRO, or NIL.
+;;; If the variable is lexical, the first is :CLOSURE or :LOCAL,
+;;; and the second is an index into the associated data.
+;;; If the variable is special, the first is :SPECIAL and the second is NIL.
+;;; If the variable is a macro, the first is :SYMBOL-MACRO and the second is
+;;; the expansion.
+;;; If the variable is a constant, :CONSTANT and the value.
+;;; If the first value is NIL, the variable is unknown, and the second
+;;; value is NIL.
+(defun var-info (symbol env context)
+  (let ((info (cdr (assoc symbol (vars env)))))
+    (cond (info (values (var-info-kind info) (var-info-data info)))
+          ((member symbol (closure-vars env))
+           (values :closure (closure-index symbol context)))
+          ((constantp symbol nil) (values :constant (eval symbol)))
+          (t (values nil nil)))))
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 
@@ -156,11 +187,10 @@
     (link-function (compile-lambda lambda-expression env module))))
 
 (defun compile-form (form env context)
-  (let ((form (macroexpand form env)))
-    (etypecase form
-      (symbol (compile-symbol form env context))
-      (cons (compile-cons (car form) (cdr form) env context))
-      (t (compile-literal form env context)))))
+  (etypecase form
+    (symbol (compile-symbol form env context))
+    (cons (compile-cons (car form) (cdr form) env context))
+    (t (compile-literal form env context))))
 
 (defun compile-literal (form env context)
   (declare (ignore env))
@@ -168,19 +198,23 @@
     (assemble context +const+ (literal-index form context))))
 
 (defun compile-symbol (form env context)
-  (unless (eql (context-receiving context) 0)
-    (cond ((specialp form env)
-           (assemble context +symbol-value+ (literal-index form context)))
-          ((constantp form env)
-           (assemble context +const+ (literal-index (constant-form-value form env) context)))
-          (t ; lexical
-           (multiple-value-bind (kind index) (var-location form env context)
-             (ecase kind
-               ((:local) (assemble context +ref+ index +cell-ref+))
-               ((:closure) (assemble context +closure+ index +cell-ref+))
-               ((nil)
-                (warn "Unknown variable ~a: treating as special" form)
-                (assemble context +symbol-value+ (literal-index form context)))))))))
+  (multiple-value-bind (kind data) (var-info form env context)
+    (cond ((eq kind :symbol-macro) (compile-form data env context))
+          ;; A symbol macro could expand into something with arbitrary side
+          ;; effects so we always have to compile that, but otherwise, if no
+          ;; values are wanted, we want to not compile anything.
+          ((eql (context-receiving context) 0))
+          (t
+           (ecase kind
+             ((:local) (assemble context +ref+ data +cell-ref+))
+             ((:special) (assemble context +symbol-value+
+                           (literal-index form context)))
+             ((:closure) (assemble context +closure+ data +cell-ref+))
+             ((:constant) (compile-literal data env context))
+             ((nil)
+              (warn "Unknown variable ~a: treating as special" form)
+              (assemble context +symbol-value+
+                (literal-index form context))))))))
 
 (defun compile-cons (head rest env context)
   (case head
@@ -240,35 +274,29 @@
                                    context)))))
 
 (defun compile-setq-1 (var valf env context)
-  (cond ((nth-value 1 (macroexpand-1 var env))
-         (compile-form `(setf ,var ,valf) env context))
-        ((specialp var env)
-         (compile-form valf env (new-context context :receiving 1))
-         (assemble context +symbol-value-set+ (literal-index var context))
-         (unless (eql (context-receiving context) 0)
-           ;; this is a bit tricky - we can't just read the symbol-value, since
-           ;; that could have been changed in the interim.
-           ;; The right thing to do is probably to bind a new lexical variable
-           ;; to hold the value temporarily.
-           (error "Can't return the value of special variable binding ~a yet! :(" var)))
-        ((constantp var env) (error "Can't SETQ a constant: ~a" var))
-        (t ; lexical
-         (multiple-value-bind (kind index) (var-location var env context)
-           (ecase kind
-             ((:local)
-              (assemble context +ref+ index)
-              (compile-form valf env (new-context context :receiving 1))
-              (assemble context +cell-set+))
-             ((:closure)
-              (assemble context +closure+ index)
-              (compile-form valf env (new-context context :receiving 1))
-              (assemble context +cell-set+))
-             ((nil)
-              (warn "Unknown variable ~a: treating as special" var)
-              (compile-form valf env (new-context context :receiving 1))
-              (assemble context +symbol-value-set+ (literal-index var context))
-              (unless (eql (context-receiving context) 0)
-                (error "Can't return the value of special variable binding ~a yet! :(" var))))))))
+  (multiple-value-bind (kind data) (var-info var env context)
+    (ecase kind
+      ((:symbol-macro)
+       (compile-form `(setf ,data ,valf) env context))
+      ((:special nil)
+       (when (null kind) 
+         (warn "Unknown variable ~a: treating as special" var))
+       (compile-form valf env (new-context context :receiving 1))
+       (assemble context +symbol-value-set+ (literal-index var context))
+       (unless (eql (context-receiving context) 0)
+         ;; this is a bit tricky - we can't just read the symbol-value, since
+         ;; that could have been changed in the interim.
+         ;; The right thing to do is probably to bind a new lexical variable
+         ;; to hold the value temporarily.
+         (error "Can't return the value of special variable binding ~a yet! :(" var)))
+      ((:local)
+       (assemble context +ref+ data)
+       (compile-form valf env (new-context context :receiving 1))
+       (assemble context +cell-set+))
+      ((:closure)
+       (assemble context +closure+ data)
+       (compile-form valf env (new-context context :receiving 1))
+       (assemble context +cell-set+)))))
 
 (defun compile-flet (definitions body env context)
   (let ((fun-vars '())
@@ -364,9 +392,9 @@
     (assemble context +return+)
     function))
 
-;;; Push VAR's value to the stack.
+;;; Push VAR's value to the stack. VAR is known to be lexical.
 (defun reference-var (var env context)
-  (multiple-value-bind (kind index) (var-location var env context)
+  (multiple-value-bind (kind index) (var-info var env context)
     (ecase kind
       ((:local) (assemble context +ref+ index))
       ((:closure) (assemble context +closure+ index)))))
@@ -387,7 +415,7 @@
       ;; Bind the dynamic environment. We don't need a cell as it is
       ;; not mutable.
       (multiple-value-bind (kind index)
-          (var-location tagbody-dynenv env context)
+          (var-info tagbody-dynenv env context)
         (assert (eq kind :local))
         (assemble context +set+ index))
       ;; Compile the body, emitting the tag destination labels.
@@ -418,7 +446,7 @@
     ;; Bind the dynamic environment. We don't need a cell as it is
     ;; not mutable.
     (multiple-value-bind (kind index)
-        (var-location block-dynenv env context)
+        (var-info block-dynenv env context)
       (assert (eq kind :local))
       (assemble context +set+ index))
     (compile-progn body env context)
