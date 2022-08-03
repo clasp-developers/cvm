@@ -284,21 +284,35 @@
        (when (null kind) 
          (warn "Unknown variable ~a: treating as special" var))
        (compile-form valf env (new-context context :receiving 1))
-       (assemble context +symbol-value-set+ (literal-index var context))
-       (unless (eql (context-receiving context) 0)
-         ;; this is a bit tricky - we can't just read the symbol-value, since
-         ;; that could have been changed in the interim.
-         ;; The right thing to do is probably to bind a new lexical variable
-         ;; to hold the value temporarily.
-         (error "Can't return the value of special variable binding ~a yet! :(" var)))
+       ;; If we need to return the new value, stick it into a new local
+       ;; variable, do the set, then return the lexical variable.
+       ;; We can't just read from the special, since some other thread may
+       ;; alter it.
+       (let ((index (frame-end env)))
+         (unless (eql (context-receiving context) 0)
+           (assemble context +set+ index +ref+ index)
+           ;; called for effect, i.e. to keep frame size correct
+           (bind-vars (list var) env context))
+         (assemble context +symbol-value-set+ (literal-index var context))
+         (unless (eql (context-receiving context) 0)
+           (assemble context +ref+ index))))
       ((:local)
        (assemble context +ref+ data)
        (compile-form valf env (new-context context :receiving 1))
-       (assemble context +cell-set+))
+       (assemble context +cell-set+)
+       (unless (eql (context-receiving context) 0)
+         (assemble context +ref+ data +cell-ref+)))
       ((:closure)
        (assemble context +closure+ data)
        (compile-form valf env (new-context context :receiving 1))
-       (assemble context +cell-set+)))))
+       ;; similar concerns to specials above.
+       (let ((index (frame-end env)))
+         (unless (eql (context-receiving context) 0)
+           (assemble context +set+ index +ref+ index)
+           (bind-vars (list var) env context))
+         (assemble context +cell-set+)
+         (unless (eql (context-receiving context) 0)
+           (assemble context +ref+ index)))))))
 
 (defun compile-flet (definitions body env context)
   (let ((fun-vars '())
