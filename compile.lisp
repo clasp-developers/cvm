@@ -230,6 +230,8 @@
     ((block) (compile-block (first rest) (rest rest) env context))
     ((return-from) (compile-return-from (first rest) (second rest) env context))
     ((quote) (compile-literal (first rest) env context))
+    ((symbol-macrolet)
+     (compile-symbol-macrolet (first rest) (rest rest) env context))
     (otherwise ; function call
      (dolist (arg rest)
        (compile-form arg env (new-context context :receiving 1)))
@@ -462,6 +464,14 @@
           (reference-var block-dynenv env context)
           (assemble context +exit+ block-label))
         (error "The block ~a does not exist." name))))
+
+(defun compile-symbol-macrolet (bindings body env context)
+  (let* ((smacros (loop for (symbol expansion) in bindings
+                        for info = (make-symbol-macro-var-info expansion)
+                        collect (cons symbol info)))
+         (new-env (make-lexical-environment
+                   env :vars (append smacros (vars env)))))
+    (compile-progn body new-env context)))
 
 ;;;; linkage
 
