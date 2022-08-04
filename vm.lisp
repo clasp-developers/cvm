@@ -17,8 +17,10 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
+    +arg+
+    +listify-rest-args+ +parse-key-args+
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
-    +jump-if-arg-count/=+
+    +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
@@ -50,6 +52,7 @@
   frame-pointer
   closure
   literals
+  args
   arg-count
   pc)
 
@@ -83,7 +86,8 @@
                                     +nil+ +eq+
                                     +invalid-arg-count+)
                        (fixed 0))
-                      ((+ref+ +const+ +closure+
+                      ((+ref+ +arg+ +const+ +closure+
+                              +listify-rest-args+
                               +call+ +call-receive-one+
                               +set+ +make-closure+
                               +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
@@ -93,14 +97,17 @@
                       ;; TODO: Impose labels on the disassembly.
                       ((+jump+ +jump-if+) (fixed 1))
                       ((+call-receive-fixed+ +bind+ +jump-if-arg-count/=+ +jump-if-arg-count<+
-                                             +jump-if-arg-count>+)
-                       (fixed 2)))))))
+                                             +jump-if-arg-count>+ +jump-if-supplied+)
+                       (fixed 2))
+                      ((+parse-key-args+) (fixed 3)))))))
 
 (defun disassemble (bytecode-module)
   (disassemble-bytecode (bytecode-module-bytecode bytecode-module)))
 
 (defstruct (cell (:constructor make-cell (value))) value)
+(defstruct (unbound-marker (:constructor make-unbound-marker)))
 
+;;; Create a native callable trmapoline.
 (defun make-closure (bytecode-closure)
   (declare (type (and fixnum (integer 0))))
   (let* ((template (bytecode-closure-template bytecode-closure))
@@ -113,22 +120,24 @@
     (lambda (&rest args)
       ;; Set up the stack, then call VM.
       (let* ((vm *vm*)
-             (stack (vm-stack vm)))
+             (stack (vm-stack vm))
+             (original-sp (vm-stack-top vm)))
+        (setf (vm-args vm) (vm-stack-top vm))
+        ;; Pass the argments on the stack.
+        (dolist (arg args)
+          (setf (aref stack (vm-stack-top vm)) arg)
+          (incf (vm-stack-top vm)))
+        (setf (vm-arg-count vm) (length args))
         (incf (vm-stack-top vm) 2)
         ;; Save the previous frame pointer and pc
         (setf (aref stack (- (vm-stack-top vm) 2)) (vm-pc vm))
         (setf (aref stack (- (vm-stack-top vm) 1)) (vm-frame-pointer vm))
         (setf (vm-frame-pointer vm) (vm-stack-top vm))
         (setf (vm-pc vm) entry-pc)
-        (vm-frame-pointer vm)
-        ;; Figure out what the hell is going on here.
-        (dolist (arg args)
-          (setf (aref stack (vm-stack-top vm)) arg)
-          (incf (vm-stack-top vm)))
-        (setf (vm-arg-count vm) (length args))
         (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
         ;; set up the stack, then call vm
         (vm bytecode closure literals frame-size)
+        (setf (vm-stack-top vm) original-sp)
         (values-list (vm-values vm))))))
 
 (defvar *trace* nil)
@@ -193,6 +202,7 @@
                                   (subseq stack frame-end (max sp frame-end)))))
               do (ecase (code)
                    ((#.+ref+) (spush (stack (+ bp (next-code)))) (incf ip))
+                   ((#.+arg+) (spush (stack (+ (vm-args vm) (next-code)))) (incf ip))
                    ((#.+const+) (spush (constant (next-code))) (incf ip))
                    ((#.+closure+) (spush (closure (next-code))) (incf ip))
                    ((#.+call+)
@@ -252,6 +262,49 @@
                     (incf ip (if (> (vm-arg-count vm) (next-code)) (next-code) 2)))
                    ((#.+jump-if-arg-count/=+)
                     (incf ip (if (/= (vm-arg-count vm) (next-code)) (next-code) 2)))
+                   ((#.+jump-if-supplied+)
+                    (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
+                                 2
+                                 (next-code))))
+                   ((#.+listify-rest-args+)
+                    (spush (loop for index from (next-code) below (vm-arg-count vm)
+                                 collect (stack (+ (vm-args vm) index))))
+                    (incf ip))
+                   ((#.+parse-key-args+)
+                    (let* ((args (vm-args vm))
+                           (end (+ args (vm-arg-count vm)))
+                           (more-start (+ args (next-code)))
+                           (key-count-info (next-code))
+                           (key-count (abs key-count-info))
+                           (key-literal-start (next-code))
+                           (key-literal-end (+ key-literal-start key-count))
+                           (key-frame-start (+ bp (next-code)))
+                           (unknown-key-p nil)
+                           (allow-other-keys-p nil))
+                      ;; Initialize all key values to #<unbound-marker>
+                      (loop for index from key-frame-start below (+ key-frame-start key-count)
+                            do (setf (stack index) (make-unbound-marker)))
+                      (do ((arg-index (- end 1) (- arg-index 2)))
+                          ((< arg-index more-start)
+                           (cond ((= arg-index (1- more-start)))
+                                 ((= arg-index (- more-start 2))
+                                  (error "Passed odd number of &KEY args!"))
+                                 (t
+                                  (error "BUG! This can't happen!"))))
+                        (let ((key (stack (1- arg-index))))
+                          (if (eq key :allow-other-keys)
+                              (setf allow-other-keys-p (stack arg-index))
+                              (loop for key-index from key-literal-start below key-literal-end
+                                    for offset from key-frame-start
+                                    do (when (eq (constant key-index) key)
+                                         (setf (stack offset) (stack arg-index))
+                                         (return))
+                                    finally (setf unknown-key-p key)))))
+                      (when (and (not (or (minusp key-count-info)
+                                          allow-other-keys-p))
+                                 unknown-key-p)
+                        (error "Unknown key arg ~a!" unknown-key-p)))
+                    (incf ip))
                    ((#.+entry+)
                     (let ((*dynenv* *dynenv*))
                       (incf ip)

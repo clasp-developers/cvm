@@ -20,8 +20,10 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
+    +arg+
+    +listify-rest-args+ +parse-key-args+
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
-    +jump-if-arg-count/=+
+    +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
