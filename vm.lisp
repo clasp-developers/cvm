@@ -238,7 +238,7 @@
                     (return))
                    ((#.+jump+) (incf ip (next-code)))
                    ((#.+jump-if+)
-                    (incf ip (if (spop) (next-code) (+ 2 ip))))
+                    (incf ip (if (spop) (next-code) 2)))
                    ((#.+entry+)
                     (let ((*dynenv* *dynenv*))
                       (incf ip)
