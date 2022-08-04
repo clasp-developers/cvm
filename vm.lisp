@@ -17,7 +17,9 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
-    +jump+ +jump-if+
+    +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
+    +jump-if-arg-count/=+
+    +invalid-arg-count+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
@@ -48,6 +50,7 @@
   frame-pointer
   closure
   literals
+  arg-count
   pc)
 
 (defvar *vm* nil)
@@ -77,7 +80,8 @@
                                     +return+
                                     +entry+
                                     +entry-close+ +unbind+
-                                    +nil+ +eq+)
+                                    +nil+ +eq+
+                                    +invalid-arg-count+)
                        (fixed 0))
                       ((+ref+ +const+ +closure+
                               +call+ +call-receive-one+
@@ -88,7 +92,9 @@
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
                       ((+jump+ +jump-if+) (fixed 1))
-                      ((+call-receive-fixed+ +bind+) (fixed 2)))))))
+                      ((+call-receive-fixed+ +bind+ +jump-if-arg-count/=+ +jump-if-arg-count<+
+                                             +jump-if-arg-count>+)
+                       (fixed 2)))))))
 
 (defun disassemble (bytecode-module)
   (disassemble-bytecode (bytecode-module-bytecode bytecode-module)))
@@ -119,6 +125,7 @@
         (dolist (arg args)
           (setf (aref stack (vm-stack-top vm)) arg)
           (incf (vm-stack-top vm)))
+        (setf (vm-arg-count vm) (length args))
         (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
         ;; set up the stack, then call vm
         (vm bytecode closure literals frame-size)
@@ -239,6 +246,12 @@
                    ((#.+jump+) (incf ip (next-code)))
                    ((#.+jump-if+)
                     (incf ip (if (spop) (next-code) 2)))
+                   ((#.+jump-if-arg-count<+)
+                    (incf ip (if (< (vm-arg-count vm) (next-code)) (next-code) 2)))
+                   ((#.+jump-if-arg-count>+)
+                    (incf ip (if (> (vm-arg-count vm) (next-code)) (next-code) 2)))
+                   ((#.+jump-if-arg-count/=+)
+                    (incf ip (if (/= (vm-arg-count vm) (next-code)) (next-code) 2)))
                    ((#.+entry+)
                     (let ((*dynenv* *dynenv*))
                       (incf ip)
@@ -271,6 +284,9 @@
                    ((#.+unbind+)
                     (incf ip)
                     (return))
+                   ((#.+invalid-arg-count+)
+                    (error "Invalid number of arguments! Got ~d."
+                           (vm-arg-count vm)))
                    ((#.+fdefinition+) (spush (fdefinition (constant (next-code)))) (incf ip))
                    ((#.+nil+) (spush nil) (incf ip))
                    ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))))))))

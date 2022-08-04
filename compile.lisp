@@ -20,7 +20,9 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
-    +jump+ +jump-if+
+    +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
+    +jump-if-arg-count/=+
+    +invalid-arg-count+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
