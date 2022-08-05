@@ -27,7 +27,8 @@
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
     +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
-    +push-values+ +pop-values+
+    +push-values+ +append-values+ +pop-values+
+    +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
@@ -249,6 +250,8 @@
     ((quote) (compile-literal (first rest) env context))
     ((symbol-macrolet)
      (compile-symbol-macrolet (first rest) (rest rest) env context))
+    ((multiple-value-call)
+     (compile-multiple-value-call (first rest) (rest rest) env context))
     ((multiple-value-prog1)
      (compile-multiple-value-prog1 (first rest) (rest rest) env context))
     (otherwise ; function call
@@ -670,6 +673,22 @@
          (new-env (make-lexical-environment
                    env :vars (append smacros (vars env)))))
     (compile-progn body new-env context)))
+
+(defun compile-multiple-value-call (function-form forms env context)
+  (compile-form function-form env (new-context context :receiving 1))
+  (let ((first (first forms))
+        (rest (rest forms)))
+    (compile-form first env (new-context context :receiving t))
+    (when rest
+      (assemble context +push-values+)
+      (dolist (form rest)
+        (compile-form form env (new-context context :receiving t))
+        (assemble context +append-values+))
+      (assemble context +pop-values+)))
+  (let ((receiving (context-receiving context)))
+    (cond ((eq receiving t) (assemble context +mv-call+))
+          ((eql receiving 1) (assemble context +mv-call-receive-one+))
+          (t (assemble context +mv-call-receive-fixed+)))))
 
 (defun compile-multiple-value-prog1 (first-form forms env context)
   (compile-form first-form env context)

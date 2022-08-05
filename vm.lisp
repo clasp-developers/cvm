@@ -22,7 +22,8 @@
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
     +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
-    +push-values+ +pop-values+
+    +push-values+ +append-values+ +pop-values+
+    +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
@@ -86,14 +87,17 @@
                                     +entry-close+ +unbind+
                                     +nil+ +eq+
                                     +invalid-arg-count+
-                                    +push-values+ +pop-values+)
+                                    +push-values+ +pop-values+
+                                    +append-values+
+                                    +mv-call+
+                                    +mv-call-receive-one+)
                        (fixed 0))
                       ((+ref+ +arg+ +const+ +closure+
                               +listify-rest-args+
                               +call+ +call-receive-one+
                               +set+ +make-closure+
                               +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
-                              +fdefinition+)
+                              +fdefinition+ +mv-call-receive-fixed+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
@@ -350,8 +354,31 @@
                       (spush value))
                     (spush (length (vm-values vm)))
                     (incf ip))
+                   ((#.+append-values+)
+                    (let ((n (spop)))
+                      (dolist (value (vm-values vm))
+                        (spush value))
+                      (spush (+ n (length (vm-values vm))))
+                      (incf ip)))
                    ((#.+pop-values+)
                     (setf (vm-values vm) (gather (spop)))
+                    (incf ip))
+                   ((#.+mv-call+)
+                    (setf (vm-values vm)
+                          (multiple-value-list
+                           (apply (the function (spop)) (vm-values vm))))
+                    (incf ip))
+                   ((#.+mv-call-receive-one+)
+                    (spush (apply (the function (spop)) (vm-values vm)))
+                    (incf ip))
+                   ((#.+mv-call-receive-fixed+)
+                    (let ((args (vm-values vm))
+                          (mvals (next-code))
+                          (fun (the function (spop))))
+                      (case mvals
+                        ((0) (apply fun args))
+                        (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
+                                                   0 mvals)))))
                     (incf ip))
                    ((#.+fdefinition+) (spush (fdefinition (constant (next-code)))) (incf ip))
                    ((#.+nil+) (spush nil) (incf ip))
