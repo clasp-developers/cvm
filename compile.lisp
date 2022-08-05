@@ -27,6 +27,7 @@
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
     +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
+    +push-values+ +pop-values+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
@@ -248,6 +249,8 @@
     ((quote) (compile-literal (first rest) env context))
     ((symbol-macrolet)
      (compile-symbol-macrolet (first rest) (rest rest) env context))
+    ((multiple-value-prog1)
+     (compile-multiple-value-prog1 (first rest) (rest rest) env context))
     (otherwise ; function call
      (compile-function head env (new-context context :receiving 1))
      (dolist (arg rest)
@@ -667,6 +670,15 @@
          (new-env (make-lexical-environment
                    env :vars (append smacros (vars env)))))
     (compile-progn body new-env context)))
+
+(defun compile-multiple-value-prog1 (first-form forms env context)
+  (compile-form first-form env context)
+  (unless (member (context-receiving context) '(0 1))
+    (assemble context +push-values+))
+  (dolist (form forms)
+    (compile-form form env (new-context context :receiving 0)))
+  (unless (member (context-receiving context) '(0 1))
+    (assemble context +pop-values+)))
 
 ;;;; linkage
 

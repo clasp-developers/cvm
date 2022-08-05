@@ -22,6 +22,7 @@
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
     +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
+    +push-values+ +pop-values+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +fdefinition+
@@ -84,7 +85,8 @@
                                     +entry+
                                     +entry-close+ +unbind+
                                     +nil+ +eq+
-                                    +invalid-arg-count+)
+                                    +invalid-arg-count+
+                                    +push-values+ +pop-values+)
                        (fixed 0))
                       ((+ref+ +arg+ +const+ +closure+
                               +listify-rest-args+
@@ -343,6 +345,14 @@
                    ((#.+invalid-arg-count+)
                     (error "Invalid number of arguments! Got ~d."
                            (vm-arg-count vm)))
+                   ((#.+push-values+)
+                    (dolist (value (vm-values vm))
+                      (spush value))
+                    (spush (length (vm-values vm)))
+                    (incf ip))
+                   ((#.+pop-values+)
+                    (setf (vm-values vm) (gather (spop)))
+                    (incf ip))
                    ((#.+fdefinition+) (spush (fdefinition (constant (next-code)))) (incf ip))
                    ((#.+nil+) (spush nil) (incf ip))
                    ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))))))))
