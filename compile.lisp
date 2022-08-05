@@ -1,3 +1,5 @@
+(ql:quickload '#:alexandria)
+
 (defpackage #:compile-to-vm
   (:use #:cl)
   (:shadow #:compile #:macroexpand-1 #:macroexpand))
@@ -107,7 +109,9 @@
          (new-vars (vars env)
                    (acons (first vars) (make-lexical-var-info index) new-vars)))
         ((>= index frame-end)
-         (make-lexical-environment env :vars new-vars :frame-end frame-end)))))
+         (make-lexical-environment env :vars new-vars :frame-end frame-end))
+      (when (constantp (first vars))
+        (error "Cannot bind constant value ~a!" (first vars))))))
 
 ;;; Create a new lexical environment where the old environment's
 ;;; lexicals get closed over.
@@ -152,8 +156,16 @@
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 
-(defstruct (cfunction (:constructor make-cfunction (cmodule bytecode nlocals closed)))
-  cmodule bytecode nlocals closed info)
+(defstruct (cfunction (:constructor make-cfunction (cmodule)))
+  cmodule
+  (bytecode (make-array 0
+                        :element-type '(signed-byte 8)
+                        :fill-pointer 0 :adjustable t))
+  (nlocals 0)
+  (closed (make-array 0 :fill-pointer 0 :adjustable t))
+  (entry-point (make-label))
+  module-offset
+  info)
 
 (defstruct (cmodule (:constructor make-cmodule (literals)))
   cfunctions
@@ -388,27 +400,155 @@
                 (t
                  (assemble context +fdefinition+ (literal-index fnameoid context))))))))
 
+;;; Deal with lambda lists. Return the new environment resulting from
+;;; binding these lambda vars.
+(defun compile-lambda-list (lambda-list env context)
+  (multiple-value-bind (required optionals rest keys aok-p aux)
+      (alexandria:parse-ordinary-lambda-list lambda-list)
+    (let* ((function (context-function context))
+           (entry-point (cfunction-entry-point function))
+           (error-label (make-label))
+           (min-count (length required))
+           (optional-count (length optionals))
+           (max-count (+ min-count optional-count))
+           (entry-points (make-array (1+ (- max-count min-count))))
+           (key-count (length keys))
+           (more-p (or rest keys))
+           (env (bind-vars required env context)))
+      (when (or required (not more-p))
+        (emit-label context error-label)
+        (assemble context +invalid-arg-count+))
+      (emit-label context entry-point)
+      ;; Check that a valid number of arguments have been
+      ;; supplied to this function.
+      (cond ((and required (= min-count max-count) (not more-p))
+             (assemble context +jump-if-arg-count/=+ min-count error-label))
+            (t
+             (when required
+               (assemble context +jump-if-arg-count<+ min-count error-label))
+             (when (not more-p)
+               (assemble context +jump-if-arg-count>+ max-count error-label))))
+      ;; Bind each required value on the stack with a mutable cell
+      ;; containing that value.
+      (loop for i from (1- min-count) downto 0 do
+        (assemble context +arg+ i +make-cell+))
+      (when required
+        (assemble context +bind+ min-count 0))
+      ;; Start defaulting optional arguments.
+      (dotimes (i (length entry-points))
+        (setf (aref entry-points i) (make-label)))
+      (let ((index (frame-end env)))
+        (loop for arg-count from min-count to (1- max-count)
+              for (var defaulting-form supplied-var) in optionals
+              for i from 0
+              do (emit-label context (aref entry-points i))
+                 ;; Default the &optional and supply the supplied-p
+                 ;; var. We have to make a cell for each lexical.
+                 (flet ((default (suppliedp)
+                          (if suppliedp
+                              (assemble context +arg+ arg-count)
+                              (compile-form defaulting-form env
+                                            (new-context context :receiving 1)))
+                          (assemble context +make-cell+)
+                          (assemble context +set+ index))
+                        (supply (suppliedp)
+                          (if suppliedp
+                              (compile-literal t env (new-context context :receiving 1))
+                              (assemble context +nil+))
+                          (assemble context +make-cell+)
+                          (assemble context +set+ (1+ index))))
+                   (let ((next (aref entry-points (1+ i)))
+                         (supplied-label (make-label)))
+                     (assemble context +jump-if-arg-count<+ (1+ arg-count) supplied-label)
+                     (default t)
+                     (when supplied-var
+                       (supply t))
+                     (assemble context +jump+ next)
+                     (emit-label context supplied-label)
+                     (default nil)
+                     (when supplied-var
+                       (supply nil)))
+                   (incf index (if supplied-var 2 1))
+                   (setq env (bind-vars (if supplied-var
+                                            (list var supplied-var)
+                                            (list var))
+                                        env context)))))
+      (unless (= min-count max-count)
+        (emit-label context (aref entry-points (- max-count min-count))))
+      (when rest
+        (assemble context +listify-rest-arg+ max-count)
+        (assemble context +make-cell+)
+        (assemble context +set+ (frame-end env))
+        (setq env (bind-vars (list rest) env context)))
+      ;; Key handling must be done in two steps:
+      ;;
+      ;; 1. Parse the passed arguments from the end, binding any
+      ;; supplied key vars to the passed values.
+      ;;
+      ;; 2. Default any unsupplied key values and set the
+      ;; corresponding suppliedp var for each key.
+      (let ((key-name (mapcar #'caar keys)))
+        (assemble context +parse-key-args+
+          max-count
+          (if aok-p (- key-count) key-count)
+          (literal-index (first key-name) context)
+          (frame-end env))
+        (dolist (key-name (rest key-name))
+          (literal-index key-name context)))
+      (setq env (bind-vars (mapcar #'cadar keys) env context))
+      ;; Duplicate keys are not legal so there is no chance of
+      ;; shadowing between key variables at least. Supplied variables
+      ;; must be sequentially bound however.
+      (do ((keys keys (rest keys))
+           (key-label (make-label) next-key-label)
+           (next-key-label (make-label) (make-label)))
+          ((null keys)
+           (emit-label context key-label))
+        (emit-label context key-label)
+        (destructuring-bind ((key-name key-var) defaulting-form supplied-var)
+            (first keys)
+          (declare (ignore key-name))
+          (flet ((default (suppliedp where)
+                   (if suppliedp
+                       (assemble context +ref+ where)
+                       (compile-form defaulting-form env
+                                     (new-context context :receiving 1)))
+                   (assemble context +make-cell+)
+                   (assemble context +set+ where))
+                 (supply (suppliedp where)
+                   (if suppliedp
+                       (compile-literal t env (new-context context :receiving 1))
+                       (assemble context +nil+))
+                   (assemble context +make-cell+)
+                   (assemble context +set+ where)))
+            (let ((supplied-label (make-label))
+                  (var-where (nth-value 1 (var-info key-var env context)))
+                  (supplied-var-where (frame-end env)))
+              (assemble context +jump-if-supplied+ var-where supplied-label)
+              (default nil var-where)
+              (when supplied-var
+                (supply nil supplied-var-where))
+              (assemble context +jump+ next-key-label)
+              (emit-label context supplied-label)
+              (default t var-where)
+              (when supplied-var
+                (supply t supplied-var-where)))
+            (when supplied-var
+              (setq env (bind-vars (list supplied-var) env context))))))
+      ;;;;; TODO: DEAL WITH AUX!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! PROBABLY WITH LET*
+      env)))
+
 ;;; Compile the lambda form in MODULE, returning the resulting
 ;;; CFUNCTION.
 (defun compile-lambda (form env module)
   ;; TODO: Emit code to process lambda args.
   (let* ((lambda-list (cadr form))
          (body (cddr form))
-         (function
-           (make-cfunction
-            module
-            (make-array 0 :element-type '(signed-byte 8)
-                          :fill-pointer 0 :adjustable t)
-            0
-            (make-array 0 :fill-pointer 0 :adjustable t)))
+         (function (make-cfunction module))
          (context (make-context :receiving t :function function))
          (env (enclose env)))
     (push function (cmodule-cfunctions module))
-    ;; Initialize variables. Replace each value on the stack with a mutable cell
-    ;; containing that value.
-    (loop for i from 0 for arg in lambda-list
-          do (assemble context +ref+ i +make-cell+ +set+ i))
-    (compile-progn body (bind-vars lambda-list env context) context)
+    (compile-progn body (compile-lambda-list lambda-list env context) context)
     (assemble context +return+)
     function))
 
@@ -507,8 +647,8 @@
               (vm::make-bytecode-function
                :module bytecode-module
                :locals-frame-size (cfunction-nlocals cfunction)
-               :environment-size (length (cfunction-closed cfunction))
-               :entry-pc bytecode-size)))
+               :environment-size (length (cfunction-closed cfunction)))))
+        (setf (cfunction-module-offset cfunction) bytecode-size)
         (setf (cfunction-info cfunction) bytecode-function)
         (incf bytecode-size (length (cfunction-bytecode cfunction)))))
     (let* ((cmodule-literals (cmodule-literals cmodule))
@@ -523,18 +663,21 @@
               (setf (aref bytecode index)
                     (aref function-bytecode local-index))
               (incf index)))))
-      ;; Do label fixups in the module.
-      (dolist (fixup (cmodule-fixups cmodule))
-        (destructuring-bind (label function offset) fixup
-          (flet ((compute-position (function offset)
-                   (+ (vm::bytecode-function-entry-pc
-                       (cfunction-info function))
-                      offset)))
+      (flet ((compute-position (function offset)
+               (+ (cfunction-module-offset function) offset)))
+        ;; Do label fixups in the module.
+        (dolist (fixup (cmodule-fixups cmodule))
+          (destructuring-bind (label function offset) fixup
             (let ((position (compute-position function offset)))
               (setf (aref bytecode position)
                     (- (compute-position (label-function label)
                                          (label-position label))
-                       position))))))
+                       position)))))
+        ;; Compute entry points.
+        (dolist (cfunction (cmodule-cfunctions cmodule))
+          (setf (vm::bytecode-function-entry-pc (cfunction-info cfunction))
+                (compute-position cfunction
+                                  (label-position (cfunction-entry-point cfunction))))))
       ;; Now replace the cfunctions in the cmodule literal vector with
       ;; real bytecode functions.
       (dotimes (index (length (cmodule-literals cmodule)))
