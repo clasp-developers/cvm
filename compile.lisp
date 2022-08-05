@@ -249,9 +249,9 @@
     ((symbol-macrolet)
      (compile-symbol-macrolet (first rest) (rest rest) env context))
     (otherwise ; function call
+     (compile-function head env (new-context context :receiving 1))
      (dolist (arg rest)
        (compile-form arg env (new-context context :receiving 1)))
-     (compile-function head env (new-context context :receiving 1))
      (let ((receiving (context-receiving context)))
        (cond ((eq receiving t) (assemble context +call+ (length rest)))
              ((eql receiving 1) (assemble context +call-receive-one+ (length rest)))
