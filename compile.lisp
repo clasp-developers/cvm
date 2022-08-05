@@ -263,23 +263,58 @@
        (compile-form (first forms) env context))
     (compile-form (first forms) env (new-context context :receiving 0))))
 
+;;; Given some declaration expressions, return a list of all variables
+;;; declared special.
+(defun process-declarations (declarations)
+  (loop for (_ . specifiers) in declarations
+        nconc (loop for (id . stuff) in specifiers
+                    when (eq id 'special)
+                      append stuff)))
+
 (defun compile-let (bindings body env context)
-  (let ((vars
-          ;; Compile the values as we go.
-          ;; FIXME: NLX will complicate this.
-          (loop for binding in bindings
-                if (symbolp binding)
-                  collect binding
-                  and do (assemble context +nil+)
-                if (and (consp binding) (null (cdr binding)))
-                  collect (car binding)
-                  and do (assemble context +nil+)
-                if (and (consp binding) (consp (cdr binding)) (null (cddr binding)))
-                  collect (car binding)
-                  and do (compile-form (cadr binding) env (new-context context :receiving 1))
-                do (assemble context +make-cell+))))
-    (assemble context +bind+ (length vars) (frame-end env))
-    (compile-progn body (bind-vars vars env context) context)))
+  (multiple-value-bind (body decls) (alexandria:parse-body body)
+    ;; For specials, we do the lazy thing: treat all bindings as lexical,
+    ;; then make a new environment on top of that with special bindings.
+    ;; This wastes space both in making unneeded cells and in using more
+    ;; lexical variables than are really needed.
+    (let ((vars
+            ;; Compile the values as we go.
+            ;; FIXME: NLX will complicate this.
+            (loop for binding in bindings
+                  if (symbolp binding)
+                    collect binding
+                    and do (assemble context +nil+)
+                  if (and (consp binding) (null (cdr binding)))
+                    collect (car binding)
+                    and do (assemble context +nil+)
+                  if (and (consp binding) (consp (cdr binding)) (null (cddr binding)))
+                    collect (car binding)
+                    and do (compile-form (cadr binding) env (new-context context :receiving 1))
+                  do (assemble context +make-cell+))))
+      (assemble context +bind+ (length vars) (frame-end env))
+      (let* (;; Note that these specials can include specials that aren't bound
+             ;; here, in which case we only need to note them in the lexenv.
+             (specials (process-declarations decls))
+             (new-env-1 (bind-vars vars env context))
+             (nbinds
+               ;; Generate binding code
+               (loop for var in vars
+                     when (member var specials)
+                       sum (let ((index
+                                   (nth-value 1 (var-info var new-env-1 context))))
+                             (assemble context +ref+ index +cell-ref+
+                               +special-bind+ (literal-index var context))
+                             1))))
+        (compile-progn body (if specials
+                                (make-lexical-environment
+                                 new-env-1
+                                 :vars (loop for var in vars
+                                             for info = (make-special-var-info)
+                                             collect (cons var info)))
+                                new-env-1)
+                       context)
+        (loop repeat nbinds
+              do (assemble context +unbind+))))))
 
 (defun compile-setq (pairs env context)
   (if (null pairs)
@@ -405,6 +440,7 @@
 (defun compile-lambda-list (lambda-list env context)
   (multiple-value-bind (required optionals rest keys aok-p aux)
       (alexandria:parse-ordinary-lambda-list lambda-list)
+    (declare (ignore aux)) ; TODO
     (let* ((function (context-function context))
            (entry-point (cfunction-entry-point function))
            (error-label (make-label))
@@ -476,7 +512,7 @@
       (unless (= min-count max-count)
         (emit-label context (aref entry-points (- max-count min-count))))
       (when rest
-        (assemble context +listify-rest-arg+ max-count)
+        (assemble context +listify-rest-args+ max-count)
         (assemble context +make-cell+)
         (assemble context +set+ (frame-end env))
         (setq env (bind-vars (list rest) env context)))

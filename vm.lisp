@@ -329,6 +329,7 @@
                    ((#.+special-bind+)
                     (let ((*dynenv* (make-sbind-dynenv)))
                       (progv (list (constant (next-code))) (list (spop))
+                        (incf ip)
                         (vm bytecode closure constants frame-size))))
                    ((#.+symbol-value+) (symbol-value (constant (next-code))) (incf ip))
                    ((#.+symbol-value-set+)
