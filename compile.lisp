@@ -487,54 +487,55 @@
       ;;
       ;; 2. Default any unsupplied key values and set the
       ;; corresponding suppliedp var for each key.
-      (let ((key-name (mapcar #'caar keys)))
-        (assemble context +parse-key-args+
-          max-count
-          (if aok-p (- key-count) key-count)
-          (literal-index (first key-name) context)
-          (frame-end env))
-        (dolist (key-name (rest key-name))
-          (literal-index key-name context)))
-      (setq env (bind-vars (mapcar #'cadar keys) env context))
-      ;; Duplicate keys are not legal so there is no chance of
-      ;; shadowing between key variables at least. Supplied variables
-      ;; must be sequentially bound however.
-      (do ((keys keys (rest keys))
-           (key-label (make-label) next-key-label)
-           (next-key-label (make-label) (make-label)))
-          ((null keys)
-           (emit-label context key-label))
-        (emit-label context key-label)
-        (destructuring-bind ((key-name key-var) defaulting-form supplied-var)
-            (first keys)
-          (declare (ignore key-name))
-          (flet ((default (suppliedp where)
-                   (if suppliedp
-                       (assemble context +ref+ where)
-                       (compile-form defaulting-form env
-                                     (new-context context :receiving 1)))
-                   (assemble context +make-cell+)
-                   (assemble context +set+ where))
-                 (supply (suppliedp where)
-                   (if suppliedp
-                       (compile-literal t env (new-context context :receiving 1))
-                       (assemble context +nil+))
-                   (assemble context +make-cell+)
-                   (assemble context +set+ where)))
-            (let ((supplied-label (make-label))
-                  (var-where (nth-value 1 (var-info key-var env context)))
-                  (supplied-var-where (frame-end env)))
-              (assemble context +jump-if-supplied+ var-where supplied-label)
-              (default nil var-where)
+      (when keys
+        (let ((key-name (mapcar #'caar keys)))
+          (assemble context +parse-key-args+
+            max-count
+            (if aok-p (- key-count) key-count)
+            (literal-index (first key-name) context)
+            (frame-end env))
+          (dolist (key-name (rest key-name))
+            (literal-index key-name context)))
+        (setq env (bind-vars (mapcar #'cadar keys) env context))
+        ;; Duplicate keys are not legal so there is no chance of
+        ;; shadowing between key variables at least. Supplied variables
+        ;; must be sequentially bound however.
+        (do ((keys keys (rest keys))
+             (key-label (make-label) next-key-label)
+             (next-key-label (make-label) (make-label)))
+            ((null keys)
+             (emit-label context key-label))
+          (emit-label context key-label)
+          (destructuring-bind ((key-name key-var) defaulting-form supplied-var)
+              (first keys)
+            (declare (ignore key-name))
+            (flet ((default (suppliedp where)
+                     (if suppliedp
+                         (assemble context +ref+ where)
+                         (compile-form defaulting-form env
+                                       (new-context context :receiving 1)))
+                     (assemble context +make-cell+)
+                     (assemble context +set+ where))
+                   (supply (suppliedp where)
+                     (if suppliedp
+                         (compile-literal t env (new-context context :receiving 1))
+                         (assemble context +nil+))
+                     (assemble context +make-cell+)
+                     (assemble context +set+ where)))
+              (let ((supplied-label (make-label))
+                    (var-where (nth-value 1 (var-info key-var env context)))
+                    (supplied-var-where (frame-end env)))
+                (assemble context +jump-if-supplied+ var-where supplied-label)
+                (default nil var-where)
+                (when supplied-var
+                  (supply nil supplied-var-where))
+                (assemble context +jump+ next-key-label)
+                (emit-label context supplied-label)
+                (default t var-where)
+                (when supplied-var
+                  (supply t supplied-var-where)))
               (when supplied-var
-                (supply nil supplied-var-where))
-              (assemble context +jump+ next-key-label)
-              (emit-label context supplied-label)
-              (default t var-where)
-              (when supplied-var
-                (supply t supplied-var-where)))
-            (when supplied-var
-              (setq env (bind-vars (list supplied-var) env context))))))
+                (setq env (bind-vars (list supplied-var) env context)))))))
       ;;;;; TODO: DEAL WITH AUX!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! PROBABLY WITH LET*
       env)))
 
