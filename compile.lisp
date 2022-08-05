@@ -305,7 +305,11 @@
              (nbinds
                ;; Generate binding code
                (loop for var in vars
-                     when (member var specials)
+                     when (or (member var specials)
+                              ;; Also make sure we special-bind any variables
+                              ;; that were declared special in some enclosing
+                              ;; environment and/or globally.
+                              (eq (var-info var env context) :special))
                        sum (let ((index
                                    (nth-value 1 (var-info var new-env-1 context))))
                              (assemble context +ref+ index +cell-ref+
@@ -314,9 +318,11 @@
         (compile-progn body (if specials
                                 (make-lexical-environment
                                  new-env-1
-                                 :vars (loop for var in vars
-                                             for info = (make-special-var-info)
-                                             collect (cons var info)))
+                                 :vars (append
+                                        (loop for var in specials
+                                              for info = (make-special-var-info)
+                                              collect (cons var info))
+                                        (vars new-env-1)))
                                 new-env-1)
                        context)
         (loop repeat nbinds
