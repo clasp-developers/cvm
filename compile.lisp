@@ -14,6 +14,7 @@
                 ,@(loop for i from 0
                         for name in names
                         collect `(defconstant ,name ,i))
+                (defparameter *codes* '(,@names))
                 (defun decode (code)
                   (nth code '(,@names))))))
   (defcodes +ref+ +const+ +closure+
@@ -60,7 +61,7 @@
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
-  (kind (member :local :special :symbol-macro :constant))
+  (kind #+(or)(member :local :special :symbol-macro :constant))
   data)
 
 (defun make-lexical-var-info (frame-offset)
@@ -763,3 +764,35 @@
       (setf (vm::bytecode-module-bytecode bytecode-module) bytecode)
       (setf (vm::bytecode-module-literals bytecode-module) literals)
       (cfunction-info cfunction))))
+
+;;; --------------------------------------------------
+;;;
+;;; Generate C++ code for the VM bytecodes
+;;;
+;;; Generate an enum called vm_codes that sets the values
+;;; for all of the vm bytecodes according to the order in
+;;; which they are defined above in *codes*.
+;;;
+
+(defun c++ify (name)
+  (with-output-to-string (sout)
+    (loop for index below (length name)
+          for remain = (subseq name index)
+          for chr = (elt remain 0)
+          do (cond
+               ((and (>= (length remain) 2) (string= "/=" remain :start2 0 :end2 2))
+                (format sout "_NE_")
+                (incf index))
+               ((char= chr #\<) (format sout "_LT_"))
+               ((char= chr #\>) (format sout "_GT_"))
+               ((char= chr #\-) (format sout "_"))
+               (t (format sout "~a" chr))))))
+
+(defun generate-header (&optional (file-name "virtualMachine.h"))
+  (with-open-file (fout file-name :direction :output :if-exists :supersede)
+    (let ((enums (loop for sym in *codes*
+                       for index from 0
+                       for trimmed-sym-name = (string-downcase (string-trim "+" (symbol-name sym)))
+                       for sym-name = (format nil "vm_~a" (c++ify trimmed-sym-name))
+                       collect (format nil "~a=~a" sym-name index))))
+      (format fout "enum vm_codes {~%~{   ~a~^,~^~%~} };~%" enums))))
