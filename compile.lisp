@@ -449,6 +449,12 @@
 
 ;;; Deal with lambda lists. Return the new environment resulting from
 ;;; binding these lambda vars.
+;;; Optional/key handling is done in two steps:
+;;;
+;;; 1. Bind any supplied optional/key vars to the passed values.
+;;;
+;;; 2. Default any unsupplied optional/key values and set the
+;;; corresponding suppliedp var for each optional/key.
 (defun compile-lambda-list (lambda-list env context)
   (multiple-value-bind (required optionals rest keys aok-p aux)
       (alexandria:parse-ordinary-lambda-list lambda-list)
@@ -481,18 +487,35 @@
         (assemble context +arg+ i +make-cell+))
       (when required
         (assemble context +bind+ min-count 0))
-      ;; Optional handling is done in two steps:
-      ;;
-      ;; 1. Bind any supplied optional vars to the passed values.
-      ;;
-      ;; 2. Default any unsupplied optional values and set the
-      ;; corresponding suppliedp var for each optional.
       (when optionals
         (assemble context +bind-optional-args+
           min-count
           optional-count
           (frame-end env))
-        (setq env (bind-vars (mapcar #'first optionals) env context))
+        (setq env (bind-vars (mapcar #'first optionals) env context)))
+      (when rest
+        (assemble context +listify-rest-args+ max-count)
+        (assemble context +make-cell+)
+        (assemble context +set+ (frame-end env))
+        (setq env (bind-vars (list rest) env context)))
+      (when keys
+        (let ((key-name (mapcar #'caar keys)))
+          (assemble context +parse-key-args+
+            max-count
+            (if aok-p (- key-count) key-count)
+            (literal-index (first key-name) context)
+            (frame-end env))
+          (dolist (key-name (rest key-name))
+            (literal-index key-name context)))
+        (setq env (bind-vars (mapcar #'cadar keys) env context)))
+      ;; Now emit code to default unsupplied values after the args
+      ;; area and arg count are no longer needed, so it is safe to
+      ;; destroy those with arbitrary code. Duplicate variables are
+      ;; not allowed so we don't need to worry much about shadowing in
+      ;; the environment. Supplied variables must be sequentially
+      ;; bound however. KLUDGE: There has to be some way to share the
+      ;; code below???
+      (when optionals
         (do ((optionals optionals (rest optionals))
              (optional-label (make-label) next-optional-label)
              (next-optional-label (make-label) (make-label)))
@@ -528,31 +551,7 @@
                   (supply t supplied-var-where)))
               (when supplied-var
                 (setq env (bind-vars (list supplied-var) env context)))))))
-      (when rest
-        (assemble context +listify-rest-args+ max-count)
-        (assemble context +make-cell+)
-        (assemble context +set+ (frame-end env))
-        (setq env (bind-vars (list rest) env context)))
-      ;; Key handling is done in two steps:
-      ;;
-      ;; 1. Parse the passed arguments from the end, binding any
-      ;; supplied key vars to the passed values.
-      ;;
-      ;; 2. Default any unsupplied key values and set the
-      ;; corresponding suppliedp var for each key.
       (when keys
-        (let ((key-name (mapcar #'caar keys)))
-          (assemble context +parse-key-args+
-            max-count
-            (if aok-p (- key-count) key-count)
-            (literal-index (first key-name) context)
-            (frame-end env))
-          (dolist (key-name (rest key-name))
-            (literal-index key-name context)))
-        (setq env (bind-vars (mapcar #'cadar keys) env context))
-        ;; Duplicate keys are not legal so there is no chance of
-        ;; shadowing between key variables at least. Supplied variables
-        ;; must be sequentially bound however.
         (do ((keys keys (rest keys))
              (key-label (make-label) next-key-label)
              (next-key-label (make-label) (make-label)))
