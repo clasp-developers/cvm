@@ -487,8 +487,7 @@
       (when optionals
         (assemble context +bind-optional-args+
           min-count
-          optional-count
-          (frame-end env))
+          optional-count)
         (setq env (bind-vars (mapcar #'first optionals) env context)))
       (when rest
         (assemble context +listify-rest-args+ max-count)
