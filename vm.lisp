@@ -17,8 +17,8 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
-    +arg+
-    +bind-optional-args+ +listify-rest-args+ +parse-key-args+
+    +bind-required-args+ +bind-optional-args+
+    +listify-rest-args+ +parse-key-args+
     +jump+ +jump-if+ +jump-if-supplied+
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
@@ -90,11 +90,12 @@
                                     +mv-call+
                                     +mv-call-receive-one+)
                        (fixed 0))
-                      ((+ref+ +arg+ +const+ +closure+
+                      ((+ref+ +const+ +closure+
                               +listify-rest-args+
                               +call+ +call-receive-one+
                               +set+ +make-closure+
                               +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
+                              +bind-required-args+
                               +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
                               +fdefinition+ +mv-call-receive-fixed+)
                        (fixed 1))
@@ -207,7 +208,6 @@
                                   (subseq stack frame-end (max sp frame-end)))))
               do (ecase (code)
                    ((#.+ref+) (spush (stack (+ bp (next-code)))) (incf ip))
-                   ((#.+arg+) (spush (stack (+ (vm-args vm) (next-code)))) (incf ip))
                    ((#.+const+) (spush (constant (next-code))) (incf ip))
                    ((#.+closure+) (spush (closure (next-code))) (incf ip))
                    ((#.+call+)
@@ -285,12 +285,21 @@
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  2
                                  (next-code))))
+                   ((#.+bind-required-args+)
+                    ;; Use memcpy for this.
+                    (let* ((args (vm-args vm))
+                           (args-end (+ args (next-code))))
+                      (do ((arg-index args (1+ arg-index))
+                           (frame-slot bp (1+ frame-slot)))
+                          ((>= arg-index args-end))
+                        (setf (stack frame-slot) (stack arg-index))))
+                    (incf ip))
                    ((#.+bind-optional-args+)
                     (let* ((args (vm-args vm))
                            (required-count (next-code))
                            (optional-start (+ args required-count))
                            (optional-count (next-code))
-                           (args-end (+ (vm-args vm) (vm-arg-count vm)))
+                           (args-end (+ args (vm-arg-count vm)))
                            (end (+ optional-start optional-count))
                            (optional-frame-offset (+ bp required-count))
                            (optional-frame-end (+ optional-frame-offset optional-count)))

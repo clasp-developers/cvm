@@ -22,8 +22,8 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
-    +arg+
-    +bind-optional-args+ +listify-rest-args+ +parse-key-args+
+    +bind-required-args+ +bind-optional-args+
+    +listify-rest-args+ +parse-key-args+
     +jump+ +jump-if+ +jump-if-supplied+
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
@@ -478,12 +478,13 @@
                (assemble context +check-arg-count>=+ min-count))
              (when (not more-p)
                (assemble context +check-arg-count<=+ max-count))))
-      ;; Bind each required value on the stack with a mutable cell
-      ;; containing that value.
-      (loop for i from (1- min-count) downto 0 do
-        (assemble context +arg+ i +make-cell+))
       (when required
-        (assemble context +bind+ min-count 0))
+        (assemble context +bind-required-args+ min-count)
+        ;; Make mutable cells.
+        (loop for i from (1- min-count) downto 0 do
+          (assemble context +ref+ i +make-cell+))
+        (when required
+          (assemble context +bind+ min-count 0)))
       (when optionals
         (assemble context +bind-optional-args+
           min-count
