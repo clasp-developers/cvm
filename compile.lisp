@@ -31,6 +31,7 @@
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
+    +progv+
     +fdefinition+
     +nil+
     +eq+))
@@ -250,6 +251,7 @@
     ((go) (compile-go (first rest) env context))
     ((block) (compile-block (first rest) (rest rest) env context))
     ((return-from) (compile-return-from (first rest) (second rest) env context))
+    ((progv) (compile-progv (first rest) (second rest) (rest (rest rest)) env context))
     ((quote) (compile-literal (first rest) env context))
     ((symbol-macrolet)
      (compile-symbol-macrolet (first rest) (rest rest) env context))
@@ -680,6 +682,13 @@
           (reference-var block-dynenv env context)
           (assemble context +exit+ block-label))
         (error "The block ~a does not exist." name))))
+
+(defun compile-progv (symbols values body env context)
+  (compile-form symbols env (new-context context :receiving 1))
+  (compile-form values env (new-context context :receiving 1))
+  (assemble context +progv+)
+  (compile-progn body env context)
+  (assemble context +unbind+))
 
 (defun compile-symbol-macrolet (bindings body env context)
   (let* ((smacros (loop for (symbol expansion) in bindings

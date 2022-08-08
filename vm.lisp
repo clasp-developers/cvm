@@ -25,6 +25,7 @@
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
+    +progv+
     +fdefinition+
     +nil+
     +eq+))
@@ -83,6 +84,7 @@
                                     +return+
                                     +entry+
                                     +entry-close+ +unbind+
+                                    +progv+
                                     +nil+ +eq+
                                     +push-values+ +pop-values+
                                     +append-values+
@@ -391,6 +393,14 @@
                    ((#.+symbol-value-set+)
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
+                   ((#.+progv+)
+                    (let ((*dynenv* (make-sbind-dynenv))
+                          (values (spop)))
+                      (progv (spop) values
+                        (print ip)
+                        (incf ip)
+                        (print ip)
+                        (vm bytecode closure constants frame-size))))
                    ((#.+unbind+)
                     (incf ip)
                     (return))
