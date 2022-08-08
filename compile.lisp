@@ -270,64 +270,53 @@
        (compile-form (first forms) env context))
     (compile-form (first forms) env (new-context context :receiving 0))))
 
-;;; Given some declaration expressions, return a list of all variables
-;;; declared special.
-(defun process-declarations (declarations)
-  (loop for (_ . specifiers) in declarations
-        nconc (loop for (id . stuff) in specifiers
-                    when (eq id 'special)
-                      append stuff)))
+;;; Perform the effects of DECLARATIONS on ENV.
+(defun process-declarations (declarations env)
+  (dolist (declaration declarations)
+    (dolist (specifier (cdr declaration))
+      (case (first specifier)
+        (special (do ((vars (rest specifier) (rest vars))
+                      (new-vars (vars env) (acons (first vars)
+                                                  (make-special-var-info)
+                                                  new-vars)))
+                     ((null vars)
+                      (setq env (make-lexical-environment env :vars new-vars))))))))
+  env)
+
+(defun parse-let (bindings env context)
+  (let ((lexical-bindings '())
+        (special-bindings '()))
+    (dolist (binding bindings)
+      (if (symbolp binding)
+          (if (eq (var-info binding env context) :special)
+              (push (cons binding nil) special-bindings)
+              (push (cons binding nil) lexical-bindings))
+          (if (eq (var-info (first binding) env context) :special)
+              (push binding special-bindings)
+              (push binding lexical-bindings))))
+    (values (nreverse lexical-bindings) (nreverse special-bindings))))
 
 (defun compile-let (bindings body env context)
   (multiple-value-bind (body decls) (alexandria:parse-body body)
-    ;; For specials, we do the lazy thing: treat all bindings as lexical,
-    ;; then make a new environment on top of that with special bindings.
-    ;; This wastes space both in making unneeded cells and in using more
-    ;; lexical variables than are really needed.
-    (let ((vars
-            ;; Compile the values as we go.
-            ;; FIXME: NLX will complicate this.
-            (loop for binding in bindings
-                  if (symbolp binding)
-                    collect binding
-                    and do (assemble context +nil+)
-                  if (and (consp binding) (null (cdr binding)))
-                    collect (car binding)
-                    and do (assemble context +nil+)
-                  if (and (consp binding) (consp (cdr binding)) (null (cddr binding)))
-                    collect (car binding)
-                    and do (compile-form (cadr binding) env (new-context context :receiving 1))
-                  do (assemble context +make-cell+))))
-      (assemble context +bind+ (length vars) (frame-end env))
-      (let* (;; Note that these specials can include specials that aren't bound
-             ;; here, in which case we only need to note them in the lexenv.
-             (specials (process-declarations decls))
-             (new-env-1 (bind-vars vars env context))
-             (nbinds
-               ;; Generate binding code
-               (loop for var in vars
-                     when (or (member var specials)
-                              ;; Also make sure we special-bind any variables
-                              ;; that were declared special in some enclosing
-                              ;; environment and/or globally.
-                              (eq (var-info var env context) :special))
-                       sum (let ((index
-                                   (nth-value 1 (var-info var new-env-1 context))))
-                             (assemble context +ref+ index +cell-ref+
-                               +special-bind+ (literal-index var context))
-                             1))))
-        (compile-progn body (if specials
-                                (make-lexical-environment
-                                 new-env-1
-                                 :vars (append
-                                        (loop for var in specials
-                                              for info = (make-special-var-info)
-                                              collect (cons var info))
-                                        (vars new-env-1)))
-                                new-env-1)
-                       context)
-        (loop repeat nbinds
-              do (assemble context +unbind+))))))
+    (let ((env (process-declarations decls env))
+          (lexical-count 0))
+      (multiple-value-bind (lexical-bindings special-bindings)
+          (parse-let bindings env context)
+        (dolist (binding lexical-bindings)
+          (compile-form (second binding) env (new-context context :receiving 1))
+          (assemble context +make-cell+)
+          (incf lexical-count))
+        (when lexical-bindings
+          (assemble context +bind+ lexical-count (frame-end env)))
+        (let ((env (bind-vars (mapcar #'first lexical-bindings) env context))
+              (special-count 0))
+          (dolist (binding special-bindings)
+            (compile-form (second binding) env (new-context context :receiving 1))
+            (assemble context +special-bind+ (literal-index (first binding) context))
+            (incf special-count))
+          (compile-progn body env context)
+          (dotimes (_ special-count)
+            (assemble context +unbind+)))))))
 
 (defun compile-setq (pairs env context)
   (if (null pairs)
