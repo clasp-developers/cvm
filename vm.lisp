@@ -18,7 +18,7 @@
     +make-closure+
     +return+
     +arg+
-    +listify-rest-args+ +parse-key-args+
+    +bind-optional-args+ +listify-rest-args+ +parse-key-args+
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
     +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
@@ -105,7 +105,8 @@
                       ((+call-receive-fixed+ +bind+ +jump-if-arg-count/=+ +jump-if-arg-count<+
                                              +jump-if-arg-count>+ +jump-if-supplied+)
                        (fixed 2))
-                      ((+parse-key-args+) (fixed 3)))))))
+                      ((+bind-optional-args+) (fixed 3))
+                      ((+parse-key-args+) (fixed 4)))))))
 
 (defun disassemble (bytecode-module)
   (disassemble-bytecode (bytecode-module-bytecode bytecode-module)))
@@ -274,6 +275,31 @@
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  2
                                  (next-code))))
+                   ((#.+bind-optional-args+)
+                    (let* ((args (vm-args vm))
+                           (optional-start (+ args (next-code)))
+                           (optional-count (next-code))
+                           (args-end (+ (vm-args vm) (vm-arg-count vm)))
+                           (end (+ args optional-count))
+                           (optional-frame-offset (+ bp (next-code)))
+                           (optional-frame-end (+ optional-frame-offset optional-count)))
+                      (if (< optional-count (vm-arg-count vm))
+                          ;; Could be coded as memcpy in C.
+                          (do ((arg-index optional-start (1+ arg-index))
+                               (frame-slot optional-frame-offset (1+ frame-slot)))
+                              ((>= arg-index end))
+                            (setf (stack frame-slot) (stack arg-index)))
+                          ;; Could also be coded as memcpy.
+                          (do ((arg-index optional-start (1+ arg-index))
+                               (frame-slot optional-frame-offset (1+ frame-slot)))
+                              ((>= arg-index args-end)
+                               ;; memcpy or similar. (blit bit
+                               ;; pattern?)
+                               (do ((frame-slot frame-slot (1+ frame-slot)))
+                                   ((>= frame-slot optional-frame-end))
+                                 (setf (stack frame-slot) (make-unbound-marker))))
+                            (setf (stack (print frame-slot)) (stack arg-index))))
+                      (incf ip)))
                    ((#.+listify-rest-args+)
                     (spush (loop for index from (next-code) below (vm-arg-count vm)
                                  collect (stack (+ (vm-args vm) index))))

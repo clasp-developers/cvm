@@ -23,7 +23,7 @@
     +make-closure+
     +return+
     +arg+
-    +listify-rest-args+ +parse-key-args+
+    +bind-optional-args+ +listify-rest-args+ +parse-key-args+
     +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
     +jump-if-arg-count/=+ +jump-if-supplied+
     +invalid-arg-count+
@@ -459,7 +459,6 @@
            (min-count (length required))
            (optional-count (length optionals))
            (max-count (+ min-count optional-count))
-           (entry-points (make-array (1+ (- max-count min-count))))
            (key-count (length keys))
            (more-p (or rest keys))
            (env (bind-vars required env context)))
@@ -482,53 +481,59 @@
         (assemble context +arg+ i +make-cell+))
       (when required
         (assemble context +bind+ min-count 0))
-      ;; Start defaulting optional arguments.
-      (dotimes (i (length entry-points))
-        (setf (aref entry-points i) (make-label)))
-      (let ((index (frame-end env)))
-        (loop for arg-count from min-count to (1- max-count)
-              for (var defaulting-form supplied-var) in optionals
-              for i from 0
-              do (emit-label context (aref entry-points i))
-                 ;; Default the &optional and supply the supplied-p
-                 ;; var. We have to make a cell for each lexical.
-                 (flet ((default (suppliedp)
-                          (if suppliedp
-                              (assemble context +arg+ arg-count)
-                              (compile-form defaulting-form env
-                                            (new-context context :receiving 1)))
-                          (assemble context +make-cell+)
-                          (assemble context +set+ index))
-                        (supply (suppliedp)
-                          (if suppliedp
-                              (compile-literal t env (new-context context :receiving 1))
-                              (assemble context +nil+))
-                          (assemble context +make-cell+)
-                          (assemble context +set+ (1+ index))))
-                   (let ((next (aref entry-points (1+ i)))
-                         (supplied-label (make-label)))
-                     (assemble context +jump-if-arg-count<+ (1+ arg-count) supplied-label)
-                     (default t)
-                     (when supplied-var
-                       (supply t))
-                     (assemble context +jump+ next)
-                     (emit-label context supplied-label)
-                     (default nil)
-                     (when supplied-var
-                       (supply nil)))
-                   (incf index (if supplied-var 2 1))
-                   (setq env (bind-vars (if supplied-var
-                                            (list var supplied-var)
-                                            (list var))
-                                        env context)))))
-      (unless (= min-count max-count)
-        (emit-label context (aref entry-points (- max-count min-count))))
+      ;; Optional handling is done in two steps:
+      ;;
+      ;; 1. Bind any supplied optional vars to the passed values.
+      ;;
+      ;; 2. Default any unsupplied optional values and set the
+      ;; corresponding suppliedp var for each optional.
+      (when optionals
+        (assemble context +bind-optional-args+
+          min-count
+          optional-count
+          (frame-end env))
+        (setq env (bind-vars (mapcar #'first optionals) env context))
+        (do ((optionals optionals (rest optionals))
+             (optional-label (make-label) next-optional-label)
+             (next-optional-label (make-label) (make-label)))
+            ((null optionals)
+             (emit-label context optional-label))
+          (emit-label context optional-label)
+          (destructuring-bind (optional-var defaulting-form supplied-var)
+              (first optionals)
+            (flet ((default (suppliedp where)
+                     (if suppliedp
+                         (assemble context +ref+ where)
+                         (compile-form defaulting-form env
+                                       (new-context context :receiving 1)))
+                     (assemble context +make-cell+)
+                     (assemble context +set+ where))
+                   (supply (suppliedp where)
+                     (if suppliedp
+                         (compile-literal t env (new-context context :receiving 1))
+                         (assemble context +nil+))
+                     (assemble context +make-cell+)
+                     (assemble context +set+ where)))
+              (let ((supplied-label (make-label))
+                    (var-where (nth-value 1 (var-info optional-var env context)))
+                    (supplied-var-where (frame-end env)))
+                (assemble context +jump-if-supplied+ var-where supplied-label)
+                (default nil var-where)
+                (when supplied-var
+                  (supply nil supplied-var-where))
+                (assemble context +jump+ next-optional-label)
+                (emit-label context supplied-label)
+                (default t var-where)
+                (when supplied-var
+                  (supply t supplied-var-where)))
+              (when supplied-var
+                (setq env (bind-vars (list supplied-var) env context)))))))
       (when rest
         (assemble context +listify-rest-args+ max-count)
         (assemble context +make-cell+)
         (assemble context +set+ (frame-end env))
         (setq env (bind-vars (list rest) env context)))
-      ;; Key handling must be done in two steps:
+      ;; Key handling is done in two steps:
       ;;
       ;; 1. Parse the passed arguments from the end, binding any
       ;; supplied key vars to the passed values.
