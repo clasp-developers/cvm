@@ -24,9 +24,8 @@
     +return+
     +arg+
     +bind-optional-args+ +listify-rest-args+ +parse-key-args+
-    +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
-    +jump-if-arg-count/=+ +jump-if-supplied+
-    +invalid-arg-count+
+    +jump+ +jump-if+ +jump-if-supplied+
+    +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
@@ -461,26 +460,22 @@
     (declare (ignore aux)) ; TODO
     (let* ((function (context-function context))
            (entry-point (cfunction-entry-point function))
-           (error-label (make-label))
            (min-count (length required))
            (optional-count (length optionals))
            (max-count (+ min-count optional-count))
            (key-count (length keys))
            (more-p (or rest keys))
            (env (bind-vars required env context)))
-      (when (or required (not more-p))
-        (emit-label context error-label)
-        (assemble context +invalid-arg-count+))
       (emit-label context entry-point)
       ;; Check that a valid number of arguments have been
       ;; supplied to this function.
       (cond ((and required (= min-count max-count) (not more-p))
-             (assemble context +jump-if-arg-count/=+ min-count error-label))
+             (assemble context +check-arg-count=+ min-count))
             (t
              (when required
-               (assemble context +jump-if-arg-count<+ min-count error-label))
+               (assemble context +check-arg-count>=+ min-count))
              (when (not more-p)
-               (assemble context +jump-if-arg-count>+ max-count error-label))))
+               (assemble context +check-arg-count<=+ max-count))))
       ;; Bind each required value on the stack with a mutable cell
       ;; containing that value.
       (loop for i from (1- min-count) downto 0 do

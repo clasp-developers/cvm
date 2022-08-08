@@ -19,9 +19,8 @@
     +return+
     +arg+
     +bind-optional-args+ +listify-rest-args+ +parse-key-args+
-    +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
-    +jump-if-arg-count/=+ +jump-if-supplied+
-    +invalid-arg-count+
+    +jump+ +jump-if+ +jump-if-supplied+
+    +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
@@ -86,7 +85,6 @@
                                     +entry+
                                     +entry-close+ +unbind+
                                     +nil+ +eq+
-                                    +invalid-arg-count+
                                     +push-values+ +pop-values+
                                     +append-values+
                                     +mv-call+
@@ -96,14 +94,14 @@
                               +listify-rest-args+
                               +call+ +call-receive-one+
                               +set+ +make-closure+
+                              +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
                               +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
                               +fdefinition+ +mv-call-receive-fixed+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
                       ((+jump+ +jump-if+) (fixed 1))
-                      ((+call-receive-fixed+ +bind+ +jump-if-arg-count/=+ +jump-if-arg-count<+
-                                             +jump-if-arg-count>+ +jump-if-supplied+)
+                      ((+call-receive-fixed+ +bind+ +jump-if-supplied+)
                        (fixed 2))
                       ((+bind-optional-args+) (fixed 3))
                       ((+parse-key-args+) (fixed 4)))))))
@@ -265,12 +263,24 @@
                    ((#.+jump+) (incf ip (next-code)))
                    ((#.+jump-if+)
                     (incf ip (if (spop) (next-code) 2)))
-                   ((#.+jump-if-arg-count<+)
-                    (incf ip (if (< (vm-arg-count vm) (next-code)) (next-code) 2)))
-                   ((#.+jump-if-arg-count>+)
-                    (incf ip (if (> (vm-arg-count vm) (next-code)) (next-code) 2)))
-                   ((#.+jump-if-arg-count/=+)
-                    (incf ip (if (/= (vm-arg-count vm) (next-code)) (next-code) 2)))
+                   ((#.+check-arg-count<=+)
+                    (let ((n (next-code)))
+                      (unless (<= (vm-arg-count vm) n)
+                        (error "Invalid number of arguments: Got ~d, need at most ~d."
+                               (vm-arg-count vm) n)))
+                    (incf ip))
+                   ((#.+check-arg-count>=+)
+                    (let ((n (next-code)))
+                      (unless (>= (vm-arg-count vm) n)
+                        (error "Invalid number of arguments: Got ~d, need at least ~d."
+                               (vm-arg-count vm) n)))
+                    (incf ip))
+                   ((#.+check-arg-count=+)
+                    (let ((n (next-code)))
+                      (unless (= (vm-arg-count vm) n)
+                        (error "Invalid number of arguments: Got ~d, need exactly ~d."
+                               (vm-arg-count vm) n)))
+                    (incf ip))
                    ((#.+jump-if-supplied+)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  2
@@ -372,9 +382,6 @@
                    ((#.+unbind+)
                     (incf ip)
                     (return))
-                   ((#.+invalid-arg-count+)
-                    (error "Invalid number of arguments! Got ~d."
-                           (vm-arg-count vm)))
                    ((#.+push-values+)
                     (dolist (value (vm-values vm))
                       (spush value))
