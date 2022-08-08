@@ -212,7 +212,9 @@
 (defun compile-literal (form env context)
   (declare (ignore env))
   (unless (eql (context-receiving context) 0)
-    (assemble context +const+ (literal-index form context))))
+    (case form
+      ((nil) (assemble context +nil+))
+      (t (assemble context +const+ (literal-index form context))))))
 
 (defun compile-symbol (form env context)
   (multiple-value-bind (kind data) (var-info form env context)
