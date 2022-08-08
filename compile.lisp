@@ -599,16 +599,13 @@
 ;;; Compile the lambda form in MODULE, returning the resulting
 ;;; CFUNCTION.
 (defun compile-lambda (form env module)
-  ;; TODO: Emit code to process lambda args.
-  (let* ((lambda-list (cadr form))
-         (body (cddr form))
-         (function (make-cfunction module))
+  (let* ((function (make-cfunction module))
          (context (make-context :receiving t :function function))
          (env (enclose env)))
     (push function (cmodule-cfunctions module))
     (multiple-value-bind (aux-bindings env)
-        (compile-lambda-list lambda-list env context)
-      (compile-let* aux-bindings body env context))
+        (compile-lambda-list (cadr form) env context)
+      (compile-let* aux-bindings (cddr form) env context))
     (assemble context +return+)
     function))
 
