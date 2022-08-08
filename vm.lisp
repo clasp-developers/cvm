@@ -43,7 +43,6 @@
   module
   locals-frame-size
   environment-size
-  ;; Should become entry-pcs once we have lambda list processing.
   entry-pc)
 
 (defstruct vm
