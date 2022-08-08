@@ -17,11 +17,10 @@
     +make-cell+ +cell-ref+ +cell-set+
     +make-closure+
     +return+
-    +arg+
+    +bind-required-args+ +bind-optional-args+
     +listify-rest-args+ +parse-key-args+
-    +jump+ +jump-if+ +jump-if-arg-count<+ +jump-if-arg-count>+
-    +jump-if-arg-count/=+ +jump-if-supplied+
-    +invalid-arg-count+
+    +jump+ +jump-if+ +jump-if-supplied+
+    +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
@@ -44,7 +43,6 @@
   module
   locals-frame-size
   environment-size
-  ;; Should become entry-pcs once we have lambda list processing.
   entry-pc)
 
 (defstruct vm
@@ -86,26 +84,27 @@
                                     +entry+
                                     +entry-close+ +unbind+
                                     +nil+ +eq+
-                                    +invalid-arg-count+
                                     +push-values+ +pop-values+
                                     +append-values+
                                     +mv-call+
                                     +mv-call-receive-one+)
                        (fixed 0))
-                      ((+ref+ +arg+ +const+ +closure+
+                      ((+ref+ +const+ +closure+
                               +listify-rest-args+
                               +call+ +call-receive-one+
                               +set+ +make-closure+
+                              +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
+                              +bind-required-args+
                               +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
                               +fdefinition+ +mv-call-receive-fixed+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
                       ((+jump+ +jump-if+) (fixed 1))
-                      ((+call-receive-fixed+ +bind+ +jump-if-arg-count/=+ +jump-if-arg-count<+
-                                             +jump-if-arg-count>+ +jump-if-supplied+)
+                      ((+call-receive-fixed+ +bind+ +jump-if-supplied+)
                        (fixed 2))
-                      ((+parse-key-args+) (fixed 3)))))))
+                      ((+bind-optional-args+) (fixed 3))
+                      ((+parse-key-args+) (fixed 4)))))))
 
 (defun disassemble (bytecode-module)
   (disassemble-bytecode (bytecode-module-bytecode bytecode-module)))
@@ -208,7 +207,6 @@
                                   (subseq stack frame-end (max sp frame-end)))))
               do (ecase (code)
                    ((#.+ref+) (spush (stack (+ bp (next-code)))) (incf ip))
-                   ((#.+arg+) (spush (stack (+ (vm-args vm) (next-code)))) (incf ip))
                    ((#.+const+) (spush (constant (next-code))) (incf ip))
                    ((#.+closure+) (spush (closure (next-code))) (incf ip))
                    ((#.+call+)
@@ -264,16 +262,63 @@
                    ((#.+jump+) (incf ip (next-code)))
                    ((#.+jump-if+)
                     (incf ip (if (spop) (next-code) 2)))
-                   ((#.+jump-if-arg-count<+)
-                    (incf ip (if (< (vm-arg-count vm) (next-code)) (next-code) 2)))
-                   ((#.+jump-if-arg-count>+)
-                    (incf ip (if (> (vm-arg-count vm) (next-code)) (next-code) 2)))
-                   ((#.+jump-if-arg-count/=+)
-                    (incf ip (if (/= (vm-arg-count vm) (next-code)) (next-code) 2)))
+                   ((#.+check-arg-count<=+)
+                    (let ((n (next-code)))
+                      (unless (<= (vm-arg-count vm) n)
+                        (error "Invalid number of arguments: Got ~d, need at most ~d."
+                               (vm-arg-count vm) n)))
+                    (incf ip))
+                   ((#.+check-arg-count>=+)
+                    (let ((n (next-code)))
+                      (unless (>= (vm-arg-count vm) n)
+                        (error "Invalid number of arguments: Got ~d, need at least ~d."
+                               (vm-arg-count vm) n)))
+                    (incf ip))
+                   ((#.+check-arg-count=+)
+                    (let ((n (next-code)))
+                      (unless (= (vm-arg-count vm) n)
+                        (error "Invalid number of arguments: Got ~d, need exactly ~d."
+                               (vm-arg-count vm) n)))
+                    (incf ip))
                    ((#.+jump-if-supplied+)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  2
                                  (next-code))))
+                   ((#.+bind-required-args+)
+                    ;; Use memcpy for this.
+                    (let* ((args (vm-args vm))
+                           (args-end (+ args (next-code))))
+                      (do ((arg-index args (1+ arg-index))
+                           (frame-slot bp (1+ frame-slot)))
+                          ((>= arg-index args-end))
+                        (setf (stack frame-slot) (stack arg-index))))
+                    (incf ip))
+                   ((#.+bind-optional-args+)
+                    (let* ((args (vm-args vm))
+                           (required-count (next-code))
+                           (optional-start (+ args required-count))
+                           (optional-count (next-code))
+                           (args-end (+ args (vm-arg-count vm)))
+                           (end (+ optional-start optional-count))
+                           (optional-frame-offset (+ bp required-count))
+                           (optional-frame-end (+ optional-frame-offset optional-count)))
+                      (if (<= args-end end)
+                          ;; Could be coded as memcpy in C.
+                          (do ((arg-index optional-start (1+ arg-index))
+                               (frame-slot optional-frame-offset (1+ frame-slot)))
+                              ((>= arg-index args-end)
+                               ;; memcpy or similar. (blit bit
+                               ;; pattern?)
+                               (do ((frame-slot frame-slot (1+ frame-slot)))
+                                   ((>= frame-slot optional-frame-end))
+                                 (setf (stack frame-slot) (make-unbound-marker))))
+                            (setf (stack frame-slot) (stack arg-index)))
+                          ;; Could also be coded as memcpy.
+                          (do ((arg-index optional-start (1+ arg-index))
+                               (frame-slot optional-frame-offset (1+ frame-slot)))
+                              ((>= arg-index end))
+                            (setf (stack frame-slot) (stack arg-index))))
+                      (incf ip)))
                    ((#.+listify-rest-args+)
                     (spush (loop for index from (next-code) below (vm-arg-count vm)
                                  collect (stack (+ (vm-args vm) index))))
@@ -292,22 +337,23 @@
                       ;; Initialize all key values to #<unbound-marker>
                       (loop for index from key-frame-start below (+ key-frame-start key-count)
                             do (setf (stack index) (make-unbound-marker)))
-                      (do ((arg-index (- end 1) (- arg-index 2)))
-                          ((< arg-index more-start)
-                           (cond ((= arg-index (1- more-start)))
-                                 ((= arg-index (- more-start 2))
-                                  (error "Passed odd number of &KEY args!"))
-                                 (t
-                                  (error "BUG! This can't happen!"))))
-                        (let ((key (stack (1- arg-index))))
-                          (if (eq key :allow-other-keys)
-                              (setf allow-other-keys-p (stack arg-index))
-                              (loop for key-index from key-literal-start below key-literal-end
-                                    for offset from key-frame-start
-                                    do (when (eq (constant key-index) key)
-                                         (setf (stack offset) (stack arg-index))
-                                         (return))
-                                    finally (setf unknown-key-p key)))))
+                      (when (> end more-start)
+                        (do ((arg-index (- end 1) (- arg-index 2)))
+                            ((< arg-index (print more-start))
+                             (cond ((= arg-index (1- more-start)))
+                                   ((= arg-index (- more-start 2))
+                                    (error "Passed odd number of &KEY args!"))
+                                   (t
+                                    (error "BUG! This can't happen!"))))
+                          (let ((key (stack (1- arg-index))))
+                            (if (eq key :allow-other-keys)
+                                (setf allow-other-keys-p (stack arg-index))
+                                (loop for key-index from key-literal-start below key-literal-end
+                                      for offset from key-frame-start
+                                      do (when (eq (constant key-index) key)
+                                           (setf (stack offset) (stack arg-index))
+                                           (return))
+                                      finally (setf unknown-key-p key))))))
                       (when (and (not (or (minusp key-count-info)
                                           allow-other-keys-p))
                                  unknown-key-p)
@@ -339,16 +385,15 @@
                       (progv (list (constant (next-code))) (list (spop))
                         (incf ip)
                         (vm bytecode closure constants frame-size))))
-                   ((#.+symbol-value+) (symbol-value (constant (next-code))) (incf ip))
+                   ((#.+symbol-value+)
+                    (spush (symbol-value (constant (next-code))))
+                    (incf ip))
                    ((#.+symbol-value-set+)
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
                    ((#.+unbind+)
                     (incf ip)
                     (return))
-                   ((#.+invalid-arg-count+)
-                    (error "Invalid number of arguments! Got ~d."
-                           (vm-arg-count vm)))
                    ((#.+push-values+)
                     (dolist (value (vm-values vm))
                       (spush value))
