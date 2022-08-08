@@ -471,7 +471,6 @@
 (defun compile-lambda-list (lambda-list env context)
   (multiple-value-bind (required optionals rest keys aok-p aux)
       (alexandria:parse-ordinary-lambda-list lambda-list)
-    (declare (ignore aux)) ; TODO
     (let* ((function (context-function context))
            (entry-point (cfunction-entry-point function))
            (min-count (length required))
@@ -597,8 +596,7 @@
                   (supply t supplied-var-where)))
               (when supplied-var
                 (setq env (bind-vars (list supplied-var) env context)))))))
-      ;;;;; TODO: DEAL WITH AUX!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! PROBABLY WITH LET*
-      env)))
+      (values aux env))))
 
 ;;; Compile the lambda form in MODULE, returning the resulting
 ;;; CFUNCTION.
@@ -610,7 +608,9 @@
          (context (make-context :receiving t :function function))
          (env (enclose env)))
     (push function (cmodule-cfunctions module))
-    (compile-progn body (compile-lambda-list lambda-list env context) context)
+    (multiple-value-bind (aux-bindings env)
+        (compile-lambda-list lambda-list env context)
+      (compile-let* aux-bindings body env context))
     (assemble context +return+)
     function))
 
