@@ -118,45 +118,43 @@
 (defstruct (cell (:constructor make-cell (value))) value)
 (defstruct (unbound-marker (:constructor make-unbound-marker)))
 
-;;; Create a native callable trmapoline.
-(defun make-closure (bytecode-closure)
-  (declare (type (and fixnum (integer 0))))
-  (let* ((template (bytecode-closure-template bytecode-closure))
-         (entry-pc (bytecode-function-entry-pc template))
-         (frame-size (bytecode-function-locals-frame-size template))
-         (module (bytecode-function-module template))
-         (bytecode (bytecode-module-bytecode module))
-         (literals (bytecode-module-literals module))
-         (closure (bytecode-closure-env bytecode-closure)))
-    (lambda (&rest args)
-      ;; Set up the stack, then call VM.
-      (let* ((vm *vm*)
-             (stack (vm-stack vm))
-             (original-sp (vm-stack-top vm)))
-        (setf (vm-args vm) (vm-stack-top vm))
-        ;; Pass the argments on the stack.
-        (dolist (arg args)
-          (setf (aref stack (vm-stack-top vm)) arg)
-          (incf (vm-stack-top vm)))
-        (setf (vm-arg-count vm) (length args))
-        (incf (vm-stack-top vm) 2)
-        ;; Save the previous frame pointer and pc
-        (setf (aref stack (- (vm-stack-top vm) 2)) (vm-pc vm))
-        (setf (aref stack (- (vm-stack-top vm) 1)) (vm-frame-pointer vm))
-        (setf (vm-frame-pointer vm) (vm-stack-top vm))
-        (setf (vm-pc vm) entry-pc)
-        (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
-        ;; set up the stack, then call vm
-        (vm bytecode closure literals frame-size)
-        (setf (vm-stack-top vm) original-sp)
-        (values-list (vm-values vm))))))
+(defun apply* (fun args)
+  (etypecase fun
+    (function (apply fun args))
+    ((or bytecode-closure bytecode-function)
+     (let* ((template (if (typep fun 'bytecode-function)
+                          fun
+                          (bytecode-closure-template fun)))
+            (entry-pc (bytecode-function-entry-pc template))
+            (frame-size (bytecode-function-locals-frame-size template))
+            (module (bytecode-function-module template))
+            (bytecode (bytecode-module-bytecode module))
+            (literals (bytecode-module-literals module))
+            (closure (if (typep fun 'bytecode-function)
+                         #()
+                         (bytecode-closure-env fun))))
+       ;; Set up the stack, then call VM.
+       (let* ((vm *vm*)
+              (stack (vm-stack vm))
+              (original-sp (vm-stack-top vm)))
+         (setf (vm-args vm) (vm-stack-top vm))
+         ;; Pass the argments on the stack.
+         (dolist (arg args)
+           (setf (aref stack (vm-stack-top vm)) arg)
+           (incf (vm-stack-top vm)))
+         (setf (vm-arg-count vm) (length args))
+         (incf (vm-stack-top vm) 2)
+         ;; Save the previous frame pointer and pc
+         (setf (aref stack (- (vm-stack-top vm) 2)) (vm-pc vm))
+         (setf (aref stack (- (vm-stack-top vm) 1)) (vm-frame-pointer vm))
+         (setf (vm-frame-pointer vm) (vm-stack-top vm))
+         (setf (vm-pc vm) entry-pc)
+         (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
+         ;; set up the stack, then call vm
+         (vm bytecode closure literals frame-size)
+         (setf (vm-stack-top vm) original-sp)
+         (values-list (vm-values vm)))))))
 
-(defun apply* (fun values)
-  (if (functionp fun)
-      (apply fun values)
-      (if (bytecode-closure-p fun)
-          (apply (make-closure fun) values)
-          (error "Not a function!"))))
 (defvar *trace* nil)
 
 (defstruct dynenv)
@@ -253,13 +251,12 @@
                     (let ((val (spop))) (setf (cell-value (spop)) val))
                     (incf ip))
                    ((#.+make-closure+)
-                    (spush (make-closure
-                            (let ((template (constant (next-code))))
-                              (make-bytecode-closure
-                               :template template
-                               :env (coerce (gather
-                                             (bytecode-function-environment-size template))
-                                            'simple-vector)))))
+                    (spush (let ((template (constant (next-code))))
+                             (make-bytecode-closure
+                              :template template
+                              :env (coerce (gather
+                                            (bytecode-function-environment-size template))
+                                           'simple-vector))))
                     (incf ip))
                    ((#.+make-uninitialized-closure+)
                     (spush (let ((template (constant (next-code))))

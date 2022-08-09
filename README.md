@@ -31,6 +31,8 @@ First, compile and load vm.lisp and compile.lisp.
 ```lisp
 (defvar *bytecode-function* (compile-to-vm::compile '(lambda (x) (let ((y 5)) (print y) #'(lambda () (+ y x))))))
 
+(vm::initialize-vm 2048)
+
 (vm::disassemble (vm::bytecode-function-module *bytecode-function*))
 #|
 ((VM::+CLOSURE+ 0) (VM::+CELL-REF+) (VM::+CLOSURE+ 1) (VM::+CELL-REF+)
@@ -41,7 +43,7 @@ First, compile and load vm.lisp and compile.lisp.
  (VM::+MAKE-CLOSURE+ 3) (VM::+RETURN+))
 |#
 
-(let ((vm::*trace* t)) (funcall (vm::make-closure (vm::make-bytecode-closure :template *bytecode-function* :env #())) 7))
+(let ((vm::*trace* t)) (vm::apply* *bytecode-function* '(7)))
 #|
 ((VM::+REF+ 0) #(7 0) #())
 ((VM::+MAKE-CELL+) #(7 0) #(7))
@@ -64,7 +66,7 @@ First, compile and load vm.lisp and compile.lisp.
 #<FUNCTION (LAMBDA (&REST VM::ARGS) :IN VM::MAKE-CLOSURE) {10066812BB}>
 |#
 
-(let ((vm::*trace* t)) (funcall *))
+(let ((vm::*trace* t)) (vm::apply* * '()))
 #|
 ((VM::+CLOSURE+ 0) #(0 0) #())
 ((VM::+CELL-REF+) #(0 0) #(#S(VM::CELL :VALUE 5)))
