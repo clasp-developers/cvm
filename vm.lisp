@@ -15,7 +15,7 @@
     +call+ +call-receive-one+ +call-receive-fixed+
     +bind+ +set+
     +make-cell+ +cell-ref+ +cell-set+
-    +make-closure+
+    +make-closure+ +make-uninitialized-closure+ +initialize-closure+
     +return+
     +bind-required-args+ +bind-optional-args+
     +listify-rest-args+ +parse-key-args+
@@ -97,7 +97,7 @@
                       ((+ref+ +const+ +closure+
                               +listify-rest-args+
                               +call+ +call-receive-one+
-                              +set+ +make-closure+
+                              +set+ +make-closure+ +make-uninitialized-closure+ +initialize-closure+
                               +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
                               +bind-required-args+
                               +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
@@ -151,6 +151,12 @@
         (setf (vm-stack-top vm) original-sp)
         (values-list (vm-values vm))))))
 
+(defun apply* (fun values)
+  (if (functionp fun)
+      (apply fun values)
+      (if (bytecode-closure-p fun)
+          (apply (make-closure fun) values)
+          (error "Not a function!"))))
 (defvar *trace* nil)
 
 (defstruct dynenv)
@@ -219,17 +225,17 @@
                     (setf (vm-values vm)
                           (multiple-value-list
                            (let ((args (gather (next-code))))
-                             (apply (the function (spop)) args))))
+                             (apply* (spop) args))))
                     (incf ip))
                    ((#.+call-receive-one+)
                     (spush (let ((args (gather (next-code))))
-                             (apply (the function (spop)) args)))
+                             (apply* (spop) args)))
                     (incf ip))
                    ((#.+call-receive-fixed+)
                     (let ((args (gather (next-code))) (mvals (next-code))
-                          (fun (the function (spop))))
+                          (fun (spop)))
                       (case mvals
-                        ((0) (apply fun args))
+                        ((0) (apply* fun args))
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))
@@ -254,6 +260,18 @@
                                :env (coerce (gather
                                              (bytecode-function-environment-size template))
                                             'simple-vector)))))
+                    (incf ip))
+                   ((#.+make-uninitialized-closure+)
+                    (spush (let ((template (constant (next-code))))
+                             (make-bytecode-closure
+                              :template template
+                              :env (make-array
+                                    (bytecode-function-environment-size template)))))
+                    (incf ip))
+                   ((#.+initialize-closure+)
+                    (let ((env (bytecode-closure-env (stack (+ bp (next-code))))))
+                      (loop for i from (1- (length env)) downto 0 do
+                        (setf (aref env i) (spop))))
                     (incf ip))
                    ((#.+return+)
                     ;; Tear down the stack frame.
@@ -438,17 +456,17 @@
                    ((#.+mv-call+)
                     (setf (vm-values vm)
                           (multiple-value-list
-                           (apply (the function (spop)) (vm-values vm))))
+                           (apply* (spop) (vm-values vm))))
                     (incf ip))
                    ((#.+mv-call-receive-one+)
-                    (spush (apply (the function (spop)) (vm-values vm)))
+                    (spush (apply* (spop) (vm-values vm)))
                     (incf ip))
                    ((#.+mv-call-receive-fixed+)
                     (let ((args (vm-values vm))
                           (mvals (next-code))
-                          (fun (the function (spop))))
+                          (fun (spop)))
                       (case mvals
-                        ((0) (apply fun args))
+                        ((0) (apply* fun args))
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))

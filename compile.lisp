@@ -21,7 +21,7 @@
     +call+ +call-receive-one+ +call-receive-fixed+
     +bind+ +set+
     +make-cell+ +cell-ref+ +cell-set+
-    +make-closure+
+    +make-closure+ +make-uninitialized-closure+ +initialize-closure+
     +return+
     +bind-required-args+ +bind-optional-args+
     +listify-rest-args+ +parse-key-args+
@@ -203,8 +203,10 @@
 (defun compile (lambda-expression)
   (check-type lambda-expression lambda-expression)
   (let* ((env (make-null-lexical-environment))
-         (module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t))))
-    (link-function (compile-lambda lambda-expression env module))))
+         (module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t)))
+         (lambda-list (cadr lambda-expression))
+         (body (cddr lambda-expression)))
+    (link-function (compile-lambda lambda-list body env module))))
 
 (defun compile-form (form env context)
   (etypecase form
@@ -404,40 +406,41 @@
         (compile-function `(lambda ,(second definition)
                              ,@(cddr definition))
                           env (new-context context :receiving 1))
-        (assemble context +make-cell+)
         (push fun-var fun-vars)
         (push (cons name fun-var) funs)
         (incf fun-count)))
     (assemble context +bind+ fun-count (frame-end env))
     (let ((env (make-lexical-environment
                 (bind-vars fun-vars env context)
-                :funs funs)))
+                :funs (append funs (funs env)))))
       (compile-progn body env context))))
 
 (defun compile-labels (definitions body env context)
-  (let ((fun-vars '())
-        (funs '())
-        (fun-count 0))
+  (let ((fun-count 0)
+        (fun-infos '())
+        (env env)
+        (frame-start (frame-end env)))
     (dolist (definition definitions)
       (let ((name (first definition))
-            (fun-var (gensym "LABELS-FUN")))
-        (push (cons name fun-var) funs)
-        (push fun-var fun-vars)
+            (fun-var (gensym "LABELS-FUN"))
+            (index (frame-end env)))
+        (setq env (make-lexical-environment
+                   (bind-vars (list fun-var) env context)
+                   :funs (acons name fun-var (funs env))))
+        (let ((fun (compile-lambda (second definition)
+                                   (rest (rest definition))
+                                   env
+                                   (context-module context))))
+          (push (cons fun index) fun-infos)
+          (assemble context +make-uninitialized-closure+
+            (literal-index fun context)))
         (incf fun-count)))
-    (dotimes (i fun-count)
-      (assemble context +nil+ +make-cell+))
-    (assemble context +bind+ fun-count (frame-end env))
-    (let ((env (make-lexical-environment
-                (bind-vars fun-vars env context)
-                :funs funs)))
-      (dolist (definition definitions)
-        (reference-var (cdr (assoc (first definition) (funs env)))
-                       env context)
-        (compile-function `(lambda ,(second definition)
-                             ,@(cddr definition))
-                          env (new-context context :receiving 1))
-        (assemble context +cell-set+))
-      (compile-progn body env context))))
+    (assemble context +bind+ fun-count frame-start)
+    (dolist (fun-info fun-infos)
+      (loop for var across (cfunction-closed (car fun-info))
+            do (reference-var var env context))
+      (assemble context +initialize-closure+ (cdr fun-info)))
+    (compile-progn body env context)))
 
 (defun compile-if (condition then else env context)
   (compile-form condition env (new-context context :receiving 1))
@@ -453,14 +456,14 @@
 (defun compile-function (fnameoid env context)
   (unless (eql (context-receiving context) 0)
     (if (typep fnameoid 'lambda-expression)
-        (let ((cfunction (compile-lambda fnameoid env (context-module context))))
+        (let ((cfunction (compile-lambda (cadr fnameoid) (cddr fnameoid)
+                                         env (context-module context))))
           (loop for var across (cfunction-closed cfunction)
                 do (reference-var var env context))
           (assemble context +make-closure+ (literal-index cfunction context)))
         (let ((pair (assoc fnameoid (funs env))))
           (cond (pair
-                 (reference-var (cdr pair) env context)
-                 (assemble context +cell-ref+))
+                 (reference-var (cdr pair) env context))
                 (t
                  (assemble context +fdefinition+ (literal-index fnameoid context))))))))
 
@@ -602,16 +605,16 @@
                 (setq env (bind-vars (list supplied-var) env context)))))))
       (values aux env))))
 
-;;; Compile the lambda form in MODULE, returning the resulting
+;;; Compile the lambda in MODULE, returning the resulting
 ;;; CFUNCTION.
-(defun compile-lambda (form env module)
+(defun compile-lambda (lambda-list body env module)
   (let* ((function (make-cfunction module))
          (context (make-context :receiving t :function function))
          (env (enclose env)))
     (push function (cmodule-cfunctions module))
     (multiple-value-bind (aux-bindings env)
-        (compile-lambda-list (cadr form) env context)
-      (compile-let* aux-bindings (cddr form) env context))
+        (compile-lambda-list lambda-list env context)
+      (compile-let* aux-bindings body env context))
     (assemble context +return+)
     function))
 
