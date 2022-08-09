@@ -62,7 +62,8 @@
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
-  (kind #+(or)(member :local :special :symbol-macro :constant))
+  (kind (error "kind required")
+   :type (member :local :special :symbol-macro :constant))
   data)
 
 (defun make-lexical-var-info (frame-offset)
@@ -172,9 +173,9 @@
   info)
 
 (defstruct (cmodule (:constructor make-cmodule (literals)))
-  cfunctions
+  (cfunctions nil)
   literals
-  fixups)
+  (fixups nil))
 
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
@@ -758,6 +759,7 @@
 ;;; of modules and functions together into runtime objects. Return the
 ;;; bytecode function corresponding to CFUNCTION.
 (defun link-function (cfunction)
+  (declare (optimize debug))
   (let ((cmodule (cfunction-cmodule cfunction))
         (bytecode-size 0)
         (bytecode-module (vm::make-bytecode-module)))
