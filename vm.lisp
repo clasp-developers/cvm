@@ -416,9 +416,7 @@
                     (let ((*dynenv* (make-sbind-dynenv))
                           (values (spop)))
                       (progv (spop) values
-                        (print ip)
                         (incf ip)
-                        (print ip)
                         (vm bytecode closure constants frame-size))))
                    ((#.+unbind+)
                     (incf ip)
