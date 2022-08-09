@@ -24,7 +24,9 @@
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
+    +catch+ +throw+ +catch-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
+    +progv+
     +fdefinition+
     +nil+
     +eq+))
@@ -83,6 +85,9 @@
                                     +return+
                                     +entry+
                                     +entry-close+ +unbind+
+                                    +catch-close+
+                                    +throw+
+                                    +progv+
                                     +nil+ +eq+
                                     +push-values+ +pop-values+
                                     +append-values+
@@ -96,6 +101,7 @@
                               +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
                               +bind-required-args+
                               +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
+                              +catch+
                               +fdefinition+ +mv-call-receive-fixed+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
@@ -374,6 +380,21 @@
                          (spush *dynenv*)
                        loop
                          (vm bytecode closure constants frame-size))))
+                   ((#.+catch+)
+                    (let ((target (+ ip (next-code) 1))
+                          (tag (spop))
+                          (old-sp sp)
+                          (old-bp bp))
+                      (incf ip)
+                      (catch tag
+                        (vm bytecode closure constants frame-size))
+                      (setf ip target)
+                      (setf sp old-sp)
+                      (setf bp old-bp)))
+                   ((#.+throw+) (throw (spop) (values)))
+                   ((#.+catch-close+)
+                    (incf ip)
+                    (return))
                    ((#.+exit+)
                     (incf ip (next-code))
                     (funcall (entry-dynenv-fun (spop))))
@@ -391,6 +412,14 @@
                    ((#.+symbol-value-set+)
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
+                   ((#.+progv+)
+                    (let ((*dynenv* (make-sbind-dynenv))
+                          (values (spop)))
+                      (progv (spop) values
+                        (print ip)
+                        (incf ip)
+                        (print ip)
+                        (vm bytecode closure constants frame-size))))
                    ((#.+unbind+)
                     (incf ip)
                     (return))

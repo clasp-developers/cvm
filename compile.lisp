@@ -30,7 +30,9 @@
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+ +exit+ +entry-close+
+    +catch+ +throw+ +catch-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
+    +progv+
     +fdefinition+
     +nil+
     +eq+))
@@ -250,6 +252,9 @@
     ((go) (compile-go (first rest) env context))
     ((block) (compile-block (first rest) (rest rest) env context))
     ((return-from) (compile-return-from (first rest) (second rest) env context))
+    ((catch) (compile-catch (first rest) (rest rest) env context))
+    ((throw) (compile-throw (first rest) (second rest) env context))
+    ((progv) (compile-progv (first rest) (second rest) (rest (rest rest)) env context))
     ((quote) (compile-literal (first rest) env context))
     ((symbol-macrolet)
      (compile-symbol-macrolet (first rest) (rest rest) env context))
@@ -680,6 +685,29 @@
           (reference-var block-dynenv env context)
           (assemble context +exit+ block-label))
         (error "The block ~a does not exist." name))))
+
+(defun compile-catch (tag body env context)
+  (compile-form tag env (new-context context :receiving 1))
+  (let ((target (make-label)))
+    (assemble context +catch+ target)
+    (compile-progn body env context)
+    (assemble context +catch-close+)
+    (emit-label context target)))
+
+(defun compile-throw (tag result env context)
+  (compile-form tag env (new-context context :receiving 1))
+  ;; FIXME: same values problem as with RETURN-FROM, except worse,
+  ;; because we rely on no additional stack values here to even
+  ;; perform the throw!
+  (compile-form result env (new-context context :receiving t))
+  (assemble context +throw+))
+
+(defun compile-progv (symbols values body env context)
+  (compile-form symbols env (new-context context :receiving 1))
+  (compile-form values env (new-context context :receiving 1))
+  (assemble context +progv+)
+  (compile-progn body env context)
+  (assemble context +unbind+))
 
 (defun compile-symbol-macrolet (bindings body env context)
   (let* ((smacros (loop for (symbol expansion) in bindings
