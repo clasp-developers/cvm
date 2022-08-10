@@ -507,8 +507,7 @@
       (when required
         (assemble context +bind-required-args+ min-count)
         ;; Make mutable cells.
-        (loop for i from (1- min-count) downto 0 do
-          (assemble context +ref+ i +make-cell+))
+        (dotimes (i min-count) (assemble context +ref+ i +make-cell+))
         (when required
           (assemble context +bind+ min-count 0)))
       (when optionals
