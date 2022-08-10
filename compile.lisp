@@ -758,6 +758,7 @@
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects. Return the
 ;;; bytecode function corresponding to CFUNCTION.
+#-clasp
 (defun link-function (cfunction)
   (declare (optimize debug))
   (let ((cmodule (cfunction-cmodule cfunction))
@@ -812,6 +813,62 @@
       (setf (vm::bytecode-module-bytecode bytecode-module) bytecode)
       (setf (vm::bytecode-module-literals bytecode-module) literals)
       (cfunction-info cfunction))))
+
+#+clasp
+(defun link-function (cfunction)
+  (declare (optimize debug))
+  (let ((cmodule (cfunction-cmodule cfunction))
+        (bytecode-size 0)
+        (bytecode-module (core:bytecode-module/make)))
+    ;; Determine the length of the runtime module's bytecode vector, and assign
+    ;; each function's offset into that vector.
+    (dolist (cfunction (cmodule-cfunctions cmodule))
+      (setf (cfunction-module-offset cfunction) bytecode-size)
+      (incf bytecode-size (length (cfunction-bytecode cfunction))))
+    (let ((bytecode (make-array bytecode-size :element-type '(signed-byte 8))))
+      ;; Next, fill in the module bytecode vector.
+      (dolist (cfunction (cmodule-cfunctions cmodule))
+        (let ((cfunction-bytecode (cfunction-bytecode cfunction)))
+          (replace bytecode cfunction-bytecode
+                   :start1 (cfunction-module-offset cfunction))))
+      (flet ((compute-position (function offset)
+               (+ (cfunction-module-offset function) offset)))
+        ;; Do label fixups in the module.
+        (dolist (fixup (cmodule-fixups cmodule))
+          (destructuring-bind (label function offset) fixup
+            (let ((position (compute-position function offset)))
+              (setf (aref bytecode position)
+                    (- (compute-position (label-function label)
+                                         (label-position label))
+                       position)))))
+        ;; Compute entry points and create the actual bytecode functions (GBEPs).
+        (dolist (cfunction (cmodule-cfunctions cmodule))
+          (setf (cfunction-info cfunction)
+                (core:global-bytecode-entry-point/make
+                 (core:function-description/make :function-name 'test)
+                 bytecode-module
+                 (cfunction-nlocals cfunction)
+                 0 0 0 0 nil 0 ; unused at the moment
+                 (length (cfunction-closed cfunction))
+                 (make-list 7 :initial-element
+                            (compute-position cfunction
+                                              (label-position
+                                               (cfunction-entry-point cfunction))))))))
+      ;; Now install the runtime literals vector, which is that of the cmodule
+      ;; but with all cfunctions replaced by the GBEPs we just made.
+      ;; FIXME: Name this as a setf function
+      (core:bytecode-module/setf-literals
+       bytecode-module
+       (map 'vector
+            (lambda (literal) (if (cfunction-p literal) (cfunction-info literal) literal))
+            (cmodule-literals cmodule)))
+      ;; Now just install the bytecode and Bob's your uncle.
+      (core:bytecode-module/setf-bytecode bytecode-module bytecode)
+      (cfunction-info cfunction))))
+
+#+clasp
+(defun bcompile (lambda-expression)
+  (core:bytecode-closure/make (compile lambda-expression) 0))
 
 ;;; --------------------------------------------------
 ;;;
