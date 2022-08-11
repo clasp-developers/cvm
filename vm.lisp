@@ -170,8 +170,16 @@
                       ((+bind-optional-args+) (fixed 3))
                       ((+parse-key-args+) (fixed 4)))))))
 
-(defun disassemble (bytecode-module)
-  (disassemble-bytecode (bytecode-module-bytecode bytecode-module)))
+(defgeneric disassemble (thing))
+
+(defmethod disassemble ((module bytecode-module))
+  (disassemble-bytecode (bytecode-module-bytecode module)))
+
+(defmethod disassemble ((function bytecode-function))
+  (disassemble (bytecode-function-module function)))
+
+(defmethod disassemble ((function bytecode-closure))
+  (disassemble (bytecode-closure-template function)))
 
 (defstruct (cell (:constructor make-cell (value))) value)
 (defstruct (unbound-marker (:constructor make-unbound-marker)))
