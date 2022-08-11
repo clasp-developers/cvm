@@ -29,7 +29,8 @@
     +progv+
     +fdefinition+
     +nil+
-    +eq+))
+    +eq+
+    +pop+))
 
 ;;; The VM objects we need.
 
@@ -92,7 +93,8 @@
                                     +push-values+ +pop-values+
                                     +append-values+
                                     +mv-call+
-                                    +mv-call-receive-one+)
+                                    +mv-call-receive-one+
+                                    +pop+)
                        (fixed 0))
                       ((+ref+ +const+ +closure+
                               +listify-rest-args+
@@ -271,9 +273,8 @@
                         (setf (aref env i) (spop))))
                     (incf ip))
                    ((#.+return+)
-                    ;; Tear down the stack frame.
-                    (unless (eql sp (+ bp frame-size))
-                      (setf (vm-values vm) (gather (- sp (+ bp frame-size)))))
+                    ;; Assert that all temporaries are popped off..
+                    (assert (eql sp (+ bp frame-size)))
                     ;; Restore previous sp and bp and tear down the stack frame.
                     (let ((old-bp (aref stack (- bp 1))))
                       (setf (vm-pc vm) (aref stack (- bp 2)))
@@ -469,4 +470,5 @@
                     (incf ip))
                    ((#.+fdefinition+) (spush (fdefinition (constant (next-code)))) (incf ip))
                    ((#.+nil+) (spush nil) (incf ip))
-                   ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))))))))
+                   ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))
+                   ((#.+pop+) (setf (vm-values vm) (list (spop))) (incf ip))))))))

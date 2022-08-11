@@ -35,7 +35,8 @@
     +progv+
     +fdefinition+
     +nil+
-    +eq+))
+    +eq+
+    +pop+))
 
 ;;;
 
@@ -220,7 +221,9 @@
   (unless (eql (context-receiving context) 0)
     (case form
       ((nil) (assemble context +nil+))
-      (t (assemble context +const+ (literal-index form context))))))
+      (t (assemble context +const+ (literal-index form context))))
+    (when (eql (context-receiving context) t)
+      (assemble context +pop+))))
 
 (defun compile-symbol (form env context)
   (multiple-value-bind (kind data) (var-info form env context)
@@ -239,7 +242,9 @@
              ((nil)
               (warn "Unknown variable ~a: treating as special" form)
               (assemble context +symbol-value+
-                (literal-index form context))))))))
+                (literal-index form context))))
+           (when (eq (context-receiving context) t)
+             (assemble context +pop+))))))
 
 (defun compile-cons (head rest env context)
   (case head
@@ -378,13 +383,17 @@
            (bind-vars (list var) env context))
          (assemble context +symbol-value-set+ (literal-index var context))
          (unless (eql (context-receiving context) 0)
-           (assemble context +ref+ index))))
+           (assemble context +ref+ index)
+           (when (eql (context-receiving context) t)
+             (assemble context +pop+)))))
       ((:local)
        (assemble context +ref+ data)
        (compile-form valf env (new-context context :receiving 1))
        (assemble context +cell-set+)
        (unless (eql (context-receiving context) 0)
-         (assemble context +ref+ data +cell-ref+)))
+         (assemble context +ref+ data +cell-ref+)
+         (when (eql (context-receiving context) t)
+           (assemble context +pop+))))
       ((:closure)
        (assemble context +closure+ data)
        (compile-form valf env (new-context context :receiving 1))
@@ -395,7 +404,9 @@
            (bind-vars (list var) env context))
          (assemble context +cell-set+)
          (unless (eql (context-receiving context) 0)
-           (assemble context +ref+ index)))))))
+           (assemble context +ref+ index)
+           (when (eql (context-receiving context) t)
+             (assemble context +pop+))))))))
 
 (defun compile-flet (definitions body env context)
   (let ((fun-vars '())
@@ -473,7 +484,9 @@
           (cond (pair
                  (reference-var (cdr pair) env context))
                 (t
-                 (assemble context +fdefinition+ (literal-index fnameoid context))))))))
+                 (assemble context +fdefinition+ (literal-index fnameoid context))))))
+    (when (eql (context-receiving context) t)
+      (assemble +pop+))))
 
 ;;; Deal with lambda lists. Return the new environment resulting from
 ;;; binding these lambda vars.
@@ -659,7 +672,9 @@
   (assemble context +entry-close+)
   ;; return nil if we really have to
   (unless (eql (context-receiving context) 0)
-    (assemble context +nil+)))
+    (assemble context +nil+)
+    (when (eql (context-receiving context) t)
+      (assemble context +pop+))))
 
 (defun compile-go (tag env context)
   (let ((pair (assoc tag (tags env))))
@@ -687,7 +702,6 @@
     (assemble context +entry-close+)))
 
 (defun compile-return-from (name value env context)
-  ;;; FIXME: We currently do the wrong thing with fixed return values!
   (compile-form value env (new-context context :receiving t))
   (let ((pair (assoc name (blocks env))))
     (if pair
@@ -706,9 +720,6 @@
 
 (defun compile-throw (tag result env context)
   (compile-form tag env (new-context context :receiving 1))
-  ;; FIXME: same values problem as with RETURN-FROM, except worse,
-  ;; because we rely on no additional stack values here to even
-  ;; perform the throw!
   (compile-form result env (new-context context :receiving t))
   (assemble context +throw+))
 
