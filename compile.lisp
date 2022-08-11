@@ -271,6 +271,8 @@
      (compile-multiple-value-call (first rest) (rest rest) env context))
     ((multiple-value-prog1)
      (compile-multiple-value-prog1 (first rest) (rest rest) env context))
+    ((the) ; don't do anything.
+     (compile-form (second rest) env context))
     (otherwise ; function call
      (compile-function head env (new-context context :receiving 1))
      (dolist (arg rest)
