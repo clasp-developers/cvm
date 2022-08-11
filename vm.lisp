@@ -267,9 +267,11 @@
                                                    0 mvals)))))
                     (incf ip))
                    ((#.+bind+)
-                    (loop repeat (next-code)
-                          for bsp from (+ bp (next-code))
-                          do (setf (stack bsp) (spop)))
+                    ;; Most recent push goes to the last local.
+                    (let ((nvars (next-code)))
+                      (loop repeat nvars
+                            for bsp downfrom (+ bp (next-code) nvars -1)
+                            do (setf (stack bsp) (spop))))
                     (incf ip))
                    ((#.+set+)
                     (setf (stack (+ bp (next-code))) (spop))

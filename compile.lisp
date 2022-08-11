@@ -328,7 +328,7 @@
           (incf lexical-count))
         (when lexical-bindings
           (assemble context +bind+ lexical-count (frame-end env)))
-        (let ((env (bind-vars (nreverse (mapcar #'first lexical-bindings)) env context))
+        (let ((env (bind-vars (mapcar #'first lexical-bindings) env context))
               (special-count 0))
           (dolist (binding special-bindings)
             (compile-form (second binding) env (new-context context :receiving 1))
