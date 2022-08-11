@@ -239,7 +239,8 @@
              ((:special) (assemble context +symbol-value+
                            (literal-index form context)))
              ((:closure) (assemble context +closure+ data +cell-ref+))
-             ((:constant) (compile-literal data env context))
+             ((:constant) (return-from compile-symbol ; don't pop again.
+                            (compile-literal data env context)))
              ((nil)
               (warn "Unknown variable ~a: treating as special" form)
               (assemble context +symbol-value+
