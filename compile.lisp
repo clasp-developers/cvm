@@ -490,7 +490,7 @@
                 (t
                  (assemble context +fdefinition+ (literal-index fnameoid context))))))
     (when (eql (context-receiving context) t)
-      (assemble +pop+))))
+      (assemble context +pop+))))
 
 ;;; Deal with lambda lists. Return the new environment resulting from
 ;;; binding these lambda vars.
