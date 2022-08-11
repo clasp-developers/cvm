@@ -75,6 +75,20 @@
   (make-var-info :symbol-macro expansion))
 (defun make-constant-var-info (value) (make-var-info :constant value))
 
+(defstruct (fun-info (:constructor make-fun-info (kind data)))
+  (kind (error "kind required")
+   :type (member :global-function :global-macro
+                 :local-function :local-macro))
+  data)
+
+(defun make-global-function-fun-info () (make-fun-info :global-function nil))
+(defun make-global-macro-fun-info (expander)
+  (make-fun-info :global-macro expander))
+(defun make-local-function-fun-info (fun-var)
+  (make-fun-info :local-function fun-var))
+(defun make-local-macro-fun-info (expander)
+  (make-fun-info :local-macro expander))
+
 (defstruct (lexical-environment (:constructor make-null-lexical-environment)
                                 (:constructor %make-lexical-environment)
                                 (:conc-name nil))
@@ -159,6 +173,17 @@
           ((member symbol (closure-vars env))
            (values :closure (closure-index symbol context)))
           ((constantp symbol nil) (values :constant (eval symbol)))
+          (t (values nil nil)))))
+
+;;; Like the above. Check the struct for details.
+(defun fun-info (symbol env)
+  (let ((info (cdr (assoc symbol (funs env)))))
+    (cond (info (values (fun-info-kind info) (fun-info-data info)))
+          ((macro-function symbol nil)
+           (values :global-macro (macro-function symbol nil)))
+          ((special-operator-p symbol)
+           (error "Tried to get FUN-INFO for a special operator - impossible"))
+          ((fboundp symbol) (values :global-function nil))
           (t (values nil nil)))))
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
@@ -274,14 +299,24 @@
      (compile-multiple-value-prog1 (first rest) (rest rest) env context))
     ((the) ; don't do anything.
      (compile-form (second rest) env context))
-    (otherwise ; function call
-     (compile-function head env (new-context context :receiving 1))
-     (dolist (arg rest)
-       (compile-form arg env (new-context context :receiving 1)))
-     (let ((receiving (context-receiving context)))
-       (cond ((eq receiving t) (assemble context +call+ (length rest)))
-             ((eql receiving 1) (assemble context +call-receive-one+ (length rest)))
-             (t (assemble context +call-receive-fixed+ (length rest) receiving)))))))
+    (otherwise ; function call or macro
+     (multiple-value-bind (kind data) (fun-info head env)
+       (ecase kind
+         ((:global-macro :local-macro)
+          (compile-form (funcall *macroexpand-hook* data (cons head rest) env)
+                        env context))
+         ((:global-function :local-function nil)
+          ;; unknown function warning handled by compile-function
+          ;; note we do a double lookup, which is inefficient
+          (compile-function head env (new-context context :receiving 1))
+          (dolist (arg rest)
+            (compile-form arg env (new-context context :receiving 1)))
+          (let ((receiving (context-receiving context)))
+            (cond ((eq receiving t) (assemble context +call+ (length rest)))
+                  ((eql receiving 1)
+                   (assemble context +call-receive-one+ (length rest)))
+                  (t (assemble context
+                       +call-receive-fixed+ (length rest) receiving))))))))))
 
 (defun compile-progn (forms env context)
   (do ((forms forms (rest forms)))
@@ -423,7 +458,7 @@
                              ,@(cddr definition))
                           env (new-context context :receiving 1))
         (push fun-var fun-vars)
-        (push (cons name fun-var) funs)
+        (push (cons name (make-local-function-fun-info fun-var)) funs)
         (incf fun-count)))
     (assemble context +bind+ fun-count (frame-end env))
     (let ((env (make-lexical-environment
@@ -442,7 +477,8 @@
             (frame-slot (frame-end env)))
         (setq env (make-lexical-environment
                    (bind-vars (list fun-var) env context)
-                   :funs (acons name fun-var (funs env))))
+                   :funs (acons name (make-local-function-fun-info fun-var)
+                                (funs env))))
         (let* ((fun (compile-lambda (second definition)
                                     (rest (rest definition))
                                     env
@@ -484,11 +520,13 @@
           (if (zerop (length closed))
               (assemble context +const+ (literal-index cfunction context))
               (assemble context +make-closure+ (literal-index cfunction context))))
-        (let ((pair (assoc fnameoid (funs env))))
-          (cond (pair
-                 (reference-var (cdr pair) env context))
-                (t
-                 (assemble context +fdefinition+ (literal-index fnameoid context))))))
+        (multiple-value-bind (kind data) (fun-info fnameoid env)
+          (ecase kind
+            ((:global-function nil)
+             (when (null kind) (warn "Unknown function ~a" fnameoid))
+             (assemble context +fdefinition+ (literal-index fnameoid context)))
+            ((:local-function)
+             (reference-var data env context)))))
     (when (eql (context-receiving context) t)
       (assemble context +pop+))))
 
