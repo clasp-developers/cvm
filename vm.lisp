@@ -1,3 +1,6 @@
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (ql:quickload '#:closer-mop))
+
 (defpackage #:vm
   (:use #:cl)
   (:shadow #:disassemble))
@@ -38,15 +41,68 @@
   bytecode
   literals)
 
-(defstruct bytecode-closure
-  template
-  env)
+(defclass bytecode-closure ()
+  ((template :initarg :template :accessor bytecode-closure-template)
+   (env :initarg :env :accessor bytecode-closure-env))
+  (:metaclass closer-mop:funcallable-standard-class))
 
-(defstruct bytecode-function
-  module
-  locals-frame-size
-  environment-size
-  entry-pc)
+(defun make-bytecode-closure (template env)
+  (make-instance 'bytecode-closure :template template :env env))
+
+(defmethod initialize-instance :after ((c bytecode-closure) &key)
+  (with-slots (template env) c
+    (closer-mop:set-funcallable-instance-function
+      c
+      (lambda (&rest args)
+        (bytecode-call template env args)))))
+
+(defclass bytecode-function ()
+  ((module :initarg :module :accessor bytecode-function-module)
+   (locals-frame-size :initarg :locals-frame-size :accessor bytecode-function-locals-frame-size)
+   (environment-size :initarg :environment-size :accessor bytecode-function-environment-size)
+   (entry-pc :initarg :entry-pc :accessor bytecode-function-entry-pc))
+  (:metaclass closer-mop:funcallable-standard-class))
+
+(defun make-bytecode-function (module locals-frame-size environment-size entry-pc)
+  (make-instance 'bytecode-function
+                 :module module
+                 :locals-frame-size locals-frame-size
+                 :environment-size environment-size
+                 :entry-pc entry-pc))
+
+(defmethod initialize-instance :after ((fun bytecode-function) &key)
+  (closer-mop:set-funcallable-instance-function
+   fun
+   (lambda (&rest args)
+     (bytecode-call fun #() args))))
+
+(defun bytecode-call (template env args)
+  (let* ((entry-pc (bytecode-function-entry-pc template))
+         (frame-size (bytecode-function-locals-frame-size template))
+         (module (bytecode-function-module template))
+         (bytecode (bytecode-module-bytecode module))
+         (literals (bytecode-module-literals module)))
+    ;; Set up the stack, then call VM.
+    (let* ((vm *vm*)
+           (stack (vm-stack vm))
+           (original-sp (vm-stack-top vm)))
+      (setf (vm-args vm) (vm-stack-top vm))
+      ;; Pass the argments on the stack.
+      (dolist (arg args)
+        (setf (aref stack (vm-stack-top vm)) arg)
+        (incf (vm-stack-top vm)))
+      (setf (vm-arg-count vm) (length args))
+      (incf (vm-stack-top vm) 2)
+      ;; Save the previous frame pointer and pc
+      (setf (aref stack (- (vm-stack-top vm) 2)) (vm-pc vm))
+      (setf (aref stack (- (vm-stack-top vm) 1)) (vm-frame-pointer vm))
+      (setf (vm-frame-pointer vm) (vm-stack-top vm))
+      (setf (vm-pc vm) entry-pc)
+      (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
+      ;; set up the stack, then call vm
+      (vm bytecode env literals frame-size)
+      (setf (vm-stack-top vm) original-sp)
+      (values-list (vm-values vm)))))
 
 (defstruct vm
   values
@@ -120,43 +176,6 @@
 (defstruct (cell (:constructor make-cell (value))) value)
 (defstruct (unbound-marker (:constructor make-unbound-marker)))
 
-(defun apply* (fun args)
-  (etypecase fun
-    (function (apply fun args))
-    ((or bytecode-closure bytecode-function)
-     (let* ((template (if (typep fun 'bytecode-function)
-                          fun
-                          (bytecode-closure-template fun)))
-            (entry-pc (bytecode-function-entry-pc template))
-            (frame-size (bytecode-function-locals-frame-size template))
-            (module (bytecode-function-module template))
-            (bytecode (bytecode-module-bytecode module))
-            (literals (bytecode-module-literals module))
-            (closure (if (typep fun 'bytecode-function)
-                         #()
-                         (bytecode-closure-env fun))))
-       ;; Set up the stack, then call VM.
-       (let* ((vm *vm*)
-              (stack (vm-stack vm))
-              (original-sp (vm-stack-top vm)))
-         (setf (vm-args vm) (vm-stack-top vm))
-         ;; Pass the argments on the stack.
-         (dolist (arg args)
-           (setf (aref stack (vm-stack-top vm)) arg)
-           (incf (vm-stack-top vm)))
-         (setf (vm-arg-count vm) (length args))
-         (incf (vm-stack-top vm) 2)
-         ;; Save the previous frame pointer and pc
-         (setf (aref stack (- (vm-stack-top vm) 2)) (vm-pc vm))
-         (setf (aref stack (- (vm-stack-top vm) 1)) (vm-frame-pointer vm))
-         (setf (vm-frame-pointer vm) (vm-stack-top vm))
-         (setf (vm-pc vm) entry-pc)
-         (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
-         ;; set up the stack, then call vm
-         (vm bytecode closure literals frame-size)
-         (setf (vm-stack-top vm) original-sp)
-         (values-list (vm-values vm)))))))
-
 (defvar *trace* nil)
 
 (defstruct dynenv)
@@ -225,17 +244,17 @@
                     (setf (vm-values vm)
                           (multiple-value-list
                            (let ((args (gather (next-code))))
-                             (apply* (spop) args))))
+                             (apply (spop) args))))
                     (incf ip))
                    ((#.+call-receive-one+)
                     (spush (let ((args (gather (next-code))))
-                             (apply* (spop) args)))
+                             (apply (spop) args)))
                     (incf ip))
                    ((#.+call-receive-fixed+)
                     (let ((args (gather (next-code))) (mvals (next-code))
                           (fun (spop)))
                       (case mvals
-                        ((0) (apply* fun args))
+                        ((0) (apply fun args))
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))
@@ -255,17 +274,17 @@
                    ((#.+make-closure+)
                     (spush (let ((template (constant (next-code))))
                              (make-bytecode-closure
-                              :template template
-                              :env (coerce (gather
-                                            (bytecode-function-environment-size template))
-                                           'simple-vector))))
+                              template
+                              (coerce (gather
+                                       (bytecode-function-environment-size template))
+                                      'simple-vector))))
                     (incf ip))
                    ((#.+make-uninitialized-closure+)
                     (spush (let ((template (constant (next-code))))
                              (make-bytecode-closure
-                              :template template
-                              :env (make-array
-                                    (bytecode-function-environment-size template)))))
+                              template
+                              (make-array
+                               (bytecode-function-environment-size template)))))
                     (incf ip))
                    ((#.+initialize-closure+)
                     (let ((env (bytecode-closure-env (stack (+ bp (next-code))))))
@@ -454,17 +473,17 @@
                    ((#.+mv-call+)
                     (setf (vm-values vm)
                           (multiple-value-list
-                           (apply* (spop) (vm-values vm))))
+                           (apply (spop) (vm-values vm))))
                     (incf ip))
                    ((#.+mv-call-receive-one+)
-                    (spush (apply* (spop) (vm-values vm)))
+                    (spush (apply (spop) (vm-values vm)))
                     (incf ip))
                    ((#.+mv-call-receive-fixed+)
                     (let ((args (vm-values vm))
                           (mvals (next-code))
                           (fun (spop)))
                       (case mvals
-                        ((0) (apply* fun args))
+                        ((0) (apply fun args))
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))

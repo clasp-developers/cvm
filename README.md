@@ -43,7 +43,7 @@ First, compile and load vm.lisp and compile.lisp.
  (VM::+MAKE-CLOSURE+ 3) (VM::+RETURN+))
 |#
 
-(let ((vm::*trace* t)) (vm::apply* *bytecode-function* '(7)))
+(let ((vm::*trace* t)) (funcall *bytecode-function* 7))
 #|
 ((VM::+REF+ 0) #(7 0) #())
 ((VM::+MAKE-CELL+) #(7 0) #(7))
@@ -66,7 +66,7 @@ First, compile and load vm.lisp and compile.lisp.
 #<FUNCTION (LAMBDA (&REST VM::ARGS) :IN VM::MAKE-CLOSURE) {10066812BB}>
 |#
 
-(let ((vm::*trace* t)) (vm::apply* * '()))
+(let ((vm::*trace* t)) (funcall *))
 #|
 ((VM::+CLOSURE+ 0) #(0 0) #())
 ((VM::+CELL-REF+) #(0 0) #(#S(VM::CELL :VALUE 5)))

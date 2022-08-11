@@ -1,4 +1,5 @@
-(ql:quickload '#:alexandria)
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (ql:quickload '#:alexandria))
 
 (defpackage #:compile-to-vm
   (:use #:cl)
@@ -779,9 +780,10 @@
     (dolist (cfunction (cmodule-cfunctions cmodule))
       (let ((bytecode-function
               (vm::make-bytecode-function
-               :module bytecode-module
-               :locals-frame-size (cfunction-nlocals cfunction)
-               :environment-size (length (cfunction-closed cfunction)))))
+               bytecode-module
+               (cfunction-nlocals cfunction)
+               (length (cfunction-closed cfunction))
+               nil)))
         (setf (cfunction-module-offset cfunction) bytecode-size)
         (setf (cfunction-info cfunction) bytecode-function)
         (incf bytecode-size (length (cfunction-bytecode cfunction)))))
