@@ -174,10 +174,10 @@
                        (fixed 1))
                       ((+jump-16+ +jump-if-16+ +exit-16+) (fixed 2))
                       ((+jump-24+ +jump-if-24+ +jump-if-24+) (fixed 3))
-                      ((+call-receive-fixed+ +bind+ +jump-if-supplied+)
-                       (fixed 2))
-                      ((+bind-optional-args+) (fixed 3))
-                      ((+parse-key-args+) (fixed 4)))))))
+                      ((+call-receive-fixed+ +bind+) (fixed 2))
+                      ((+bind-optional-args+) (fixed 2))
+                      ((+parse-key-args+) (fixed 4))
+                      ((+jump-if-supplied+) (fixed 4)))))))
 
 (defgeneric disassemble (thing))
 
