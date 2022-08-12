@@ -63,8 +63,32 @@
       (if (label-p value)
           (let ((fixup (list value (context-function context) (length assembly))))
             (push fixup (cmodule-fixups (context-module context)))
+            ;; ASSUMPTION: Labels are 3 bytes
+            (vector-push-extend 0 assembly)
+            (vector-push-extend 0 assembly)
             (vector-push-extend 0 assembly))
           (vector-push-extend value assembly)))))
+
+;;; TODO: Just emit a 24-bit offset always until the assembler gets
+;;; smarter...
+(defun emit-common-control (context opcode8 opcode16 opcode24 label)
+  (assemble context opcode24 label))
+
+(defun emit-jump (context label)
+  (emit-common-control context +jump-8+ +jump-16+ +jump-24+ label))
+(defun emit-jump-if (context label)
+  (emit-common-control context +jump-if-8+ +jump-if-16+ +jump-if-24+ label))
+(defun emit-exit (context label)
+  (emit-common-control context +exit-8+ +exit-16+ +exit-24+ label))
+;;; FIXME: CATCH probably does not need 8 and 16 variants. The
+;;; assembler is stupid and assumes all labels are 3 bytes.
+(defun emit-catch (context label)
+  (assemble context +catch+ 0 0 0))
+;;; FIXME: JUMP-IF-SUPPLIED should have 8 and 16 variants. Probably
+;;; does not need the 24 variant even, but we do that here because we
+;;; can only do 3 byte labels at the moment.
+(defun emit-jump-if-supplied (context index label)
+  (assemble context +jump-if-supplied+ index 0 0 0))
 
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
@@ -507,9 +531,9 @@
   (compile-form condition env (new-context context :receiving 1))
   (let ((then-label (make-label))
         (done-label (make-label)))
-    (assemble context +jump-if-8+ then-label)
+    (emit-jump-if context then-label)
     (compile-form else env context)
-    (assemble context +jump-8+ done-label)
+    (emit-jump context done-label)
     (emit-label context then-label)
     (compile-form then env context)
     (emit-label context done-label)))
@@ -622,11 +646,11 @@
               (let ((supplied-label (make-label))
                     (var-where (nth-value 1 (var-info optional-var env context)))
                     (supplied-var-where (frame-end env)))
-                (assemble context +jump-if-supplied+ var-where supplied-label)
+                (emit-jump-if-supplied context var-where supplied-label)
                 (default nil var-where)
                 (when supplied-var
                   (supply nil supplied-var-where))
-                (assemble context +jump-8+ next-optional-label)
+                (emit-jump context next-optional-label)
                 (emit-label context supplied-label)
                 (default t var-where)
                 (when supplied-var
@@ -659,11 +683,11 @@
               (let ((supplied-label (make-label))
                     (var-where (nth-value 1 (var-info key-var env context)))
                     (supplied-var-where (frame-end env)))
-                (assemble context +jump-if-supplied+ var-where supplied-label)
+                (emit-jump-if-supplied context var-where supplied-label)
                 (default nil var-where)
                 (when supplied-var
                   (supply nil supplied-var-where))
-                (assemble context +jump-8+ next-key-label)
+                (emit-jump context next-key-label)
                 (emit-label context supplied-label)
                 (default t var-where)
                 (when supplied-var
@@ -728,7 +752,7 @@
     (if pair
         (destructuring-bind (tag-dynenv . tag-label) (cdr pair)
           (reference-var tag-dynenv env context)
-          (assemble context +exit-8+ tag-label))
+          (emit-exit context tag-label))
         (error "The GO tag ~a does not exist." tag))))
 
 (defun compile-block (name body env context)
@@ -754,13 +778,13 @@
     (if pair
         (destructuring-bind (block-dynenv . block-label) (cdr pair)
           (reference-var block-dynenv env context)
-          (assemble context +exit-8+ block-label))
+          (emit-exit context block-label))
         (error "The block ~a does not exist." name))))
 
 (defun compile-catch (tag body env context)
   (compile-form tag env (new-context context :receiving 1))
   (let ((target (make-label)))
-    (assemble context +catch+ target)
+    (emit-catch context target)
     (compile-progn body env context)
     (assemble context +catch-close+)
     (emit-label context target)))
@@ -812,6 +836,9 @@
 
 ;;;; linkage
 
+(defun unsigned (x size)
+  (logand x (1- (ash 1 size))))
+
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects. Return the
 ;;; bytecode function corresponding to CFUNCTION.
@@ -835,7 +862,7 @@
         (incf bytecode-size (length (cfunction-bytecode cfunction)))))
     (let* ((cmodule-literals (cmodule-literals cmodule))
            (literal-length (length cmodule-literals))
-           (bytecode (make-array bytecode-size :element-type '(signed-byte 9)))
+           (bytecode (make-array bytecode-size :element-type '(unsigned-byte 8)))
            (literals (make-array literal-length)))
       ;; Next, fill in the module bytecode vector.
       (let ((index 0))
@@ -851,10 +878,17 @@
         (dolist (fixup (cmodule-fixups cmodule))
           (destructuring-bind (label function offset) fixup
             (let ((position (compute-position function offset)))
-              (setf (aref bytecode position)
-                    (- (compute-position (label-function label)
-                                         (label-position label))
-                       position)))))
+              ;; ASSUMPTION: Labels are 3 bytes.
+              (let ((offset (unsigned (- (compute-position (label-function label)
+                                                           (label-position label))
+                                         position)
+                                      24)))
+                (setf (aref bytecode position)
+                      (logand offset #xff))
+             r   (setf (aref bytecode (1+ position))
+                      (logand (ash offset -8) #xff))
+                (setf (aref bytecode (+ position 2))
+                      (logand (ash offset -16) #xff))))))
         ;; Compute entry points.
         (dolist (cfunction (cmodule-cfunctions cmodule))
           (setf (vm::bytecode-function-entry-pc (cfunction-info cfunction))
