@@ -28,14 +28,15 @@
     +listify-rest-args+ +parse-key-args+
     +jump-8+ +jump-16+ +jump-24+
     +jump-if-8+ +jump-if-16+ +jump-if-24+
-    +jump-if-supplied+
+    +jump-if-supplied-8+ +jump-if-supplied-16+
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+
     +exit-8+ +exit-16+ +exit-24+
     +entry-close+
-    +catch+ +throw+ +catch-close+
+    +catch-8+ +catch-16+
+    +throw+ +catch-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +progv+
     +fdefinition+
@@ -51,44 +52,128 @@
 
 ;;;
 
-(defstruct label function position)
+;; An annotation in the function.
+(defstruct annotation
+  ;; The function containing this annotation.
+  function
+  ;; The index of this annotation in its function's annotations.
+  index
+  ;; The (optimistic) position of this annotation in this function.
+  position)
+
+(defstruct (label (:include annotation)))
+
+(defstruct (fixup (:include annotation))
+  ;; The label this fixup references.
+  label
+  ;; The current (optimistic) size of this fixup in bytes.
+  size
+  ;; The initial size of this fixup in bytes.
+  initial-size
+  ;; How to emit this fixup once sizes are resolved.
+  emitter
+  ;; How to resize this fixup. Returns the difference between the new
+  ;; size and old size.
+  resizer)
+
+(defmethod print-object ((label label) stream)
+  (print-unreadable-object (label stream :identity t)
+    (format stream "LABEL :POSITION ~d" (annotation-position label))))
+
+(defmethod print-object ((fixup fixup) stream)
+  (print-unreadable-object (fixup stream :identity t)
+    (format stream "FIXUP :POSITION ~d :SIZE ~d"
+            (annotation-position fixup)
+            (fixup-size fixup))))
+
+;;; Optimistic positioning of ANNOTATION in its module.
+(defun annotation-module-position (annotation)
+  (+ (cfunction-position (annotation-function annotation))
+     (annotation-position annotation)))
+
+;;; The (module) displacement from this fixup to its label.
+(defun fixup-delta (fixup)
+  (- (annotation-module-position (fixup-label fixup))
+     (annotation-module-position fixup)))
 
 (defun emit-label (context label)
   (setf (label-position label) (length (context-assembly context)))
-  (setf (label-function label) (context-function context)))
+  (let ((function (context-function context)))
+    (setf (label-function label) function)
+    (setf (label-index label)
+          (vector-push-extend label (cfunction-annotations function)))))
 
 (defun assemble (context &rest values)
   (let ((assembly (context-assembly context)))
     (dolist (value values)
-      (if (label-p value)
-          (let ((fixup (list value (context-function context) (length assembly))))
-            (push fixup (cmodule-fixups (context-module context)))
-            ;; ASSUMPTION: Labels are 3 bytes
-            (vector-push-extend 0 assembly)
-            (vector-push-extend 0 assembly)
-            (vector-push-extend 0 assembly))
-          (vector-push-extend value assembly)))))
+      (assert (typep value '(unsigned-byte 8)))
+      (vector-push-extend value assembly))))
 
-;;; TODO: Just emit a 24-bit offset always until the assembler gets
-;;; smarter...
-(defun emit-common-control (context opcode8 opcode16 opcode24 label)
-  (assemble context opcode24 label))
+;;; Resize the fixup. Only after function positions have been
+;;; initialized.
+(defun control-resizer (fixup)
+  (let* ((old-size (fixup-size fixup))
+         (new-size
+           (typecase (fixup-delta fixup)
+             ((signed-byte 8) 2)
+             ((signed-byte 16) 3)
+             ((signed-byte 24) 4)
+             (t (error "???? PC offset too big ????")))))
+    (setf (fixup-size fixup) new-size)
+    (assert (<= old-size new-size))
+    (- new-size old-size)))
+
+(defun control-emitter (opcode8 opcode16 opcode24)
+  (lambda (fixup position code)
+    (let* ((delta (fixup-delta fixup))
+           (size (fixup-size fixup))
+           (offset (unsigned delta (* 8 (1- size)))))
+      (case size
+        (2
+         (setf (aref code position) opcode8)
+         (setf (aref code (+ position 1)) offset))
+        (3
+         (setf (aref code position) opcode16)
+         (setf (aref code (+ position 1)) (logand offset #xff))
+         (setf (aref code (+ position 2)) (logand (ash offset -8) #xff)))
+        (4
+         (setf (aref code position) opcode24)
+         (setf (aref code (+ position 1)) (logand offset #xff))
+         (setf (aref code (+ position 2)) (logand (ash offset -8) #xff))
+         (setf (aref code (+ position 3)) (logand (ash offset -16) #xff)))
+        (t (error "???? PC offset too big ????"))))))
+
+;;; Optimistically emit the 1-byte opcode variant but install enough
+;;; information to update the assembly if we find out the offset
+;;; doesn't fit.
+(defun emit-control (context opcode8 opcode16 opcode24 label)
+  (let* ((assembly (context-assembly context))
+         (cfunction (context-function context))
+         (fixup
+           (make-fixup
+            :label label
+            :function cfunction
+            :position (length assembly)
+            ;; We know we will have at least one byte of operand.
+            :initial-size 2
+            :size 2
+            :emitter (control-emitter opcode8 opcode16 opcode24)
+            :resizer #'control-resizer)))
+    (setf (fixup-index fixup)
+          (vector-push-extend fixup (cfunction-annotations cfunction)))
+    (vector-push-extend fixup assembly)
+    (vector-push-extend 0 assembly)))
 
 (defun emit-jump (context label)
-  (emit-common-control context +jump-8+ +jump-16+ +jump-24+ label))
+  (emit-control context +jump-8+ +jump-16+ +jump-24+ label))
 (defun emit-jump-if (context label)
-  (emit-common-control context +jump-if-8+ +jump-if-16+ +jump-if-24+ label))
+  (emit-control context +jump-if-8+ +jump-if-16+ +jump-if-24+ label))
 (defun emit-exit (context label)
-  (emit-common-control context +exit-8+ +exit-16+ +exit-24+ label))
-;;; FIXME: CATCH probably does not need 8 and 16 variants. The
-;;; assembler is stupid and assumes all labels are 3 bytes.
+  (emit-control context +exit-8+ +exit-16+ +exit-24+ label))
 (defun emit-catch (context label)
-  (assemble context +catch+ 0 0 0))
-;;; FIXME: JUMP-IF-SUPPLIED should have 8 and 16 variants. Probably
-;;; does not need the 24 variant even, but we do that here because we
-;;; can only do 3 byte labels at the moment.
+  (emit-control context +catch+ +catch-8+ +catch-16+ nil label))
 (defun emit-jump-if-supplied (context index label)
-  (assemble context +jump-if-supplied+ index label))
+  (emit-control context +jump-if-supplied-8+ +jump-if-supplied-16+ nil label))
 
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
@@ -219,19 +304,27 @@
 
 (defstruct (cfunction (:constructor make-cfunction (cmodule)))
   cmodule
-  (bytecode (make-array 0
-                        :element-type '(signed-byte 8)
-                        :fill-pointer 0 :adjustable t))
+  ;; Bytecode vector for this function. Can hold fixups.
+  (bytecode (make-array 0 :fill-pointer 0 :adjustable t))
+  ;; An ordered vector of annotations emitted in this function.
+  (annotations (make-array 0 :fill-pointer 0 :adjustable t))
   (nlocals 0)
   (closed (make-array 0 :fill-pointer 0 :adjustable t))
   (entry-point (make-label))
-  module-offset
+  ;; The position of the start of this function in this module
+  ;; (optimistic).
+  position
+  ;; How much to add to the bytecode vector length for increased fixup
+  ;; sizes for the true length.
+  (extra 0)
+  ;; The index of this function in the containing module's function
+  ;; vector.
+  index
   info)
 
 (defstruct (cmodule (:constructor make-cmodule (literals)))
-  (cfunctions nil)
-  literals
-  (fixups nil))
+  (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
+  literals)
 
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
@@ -702,7 +795,8 @@
   (let* ((function (make-cfunction module))
          (context (make-context :receiving t :function function))
          (env (enclose env)))
-    (push function (cmodule-cfunctions module))
+    (setf (cfunction-index function)
+          (vector-push-extend function (cmodule-cfunctions module)))
     (multiple-value-bind (aux-bindings env)
         (compile-lambda-list lambda-list env context)
       (compile-let* aux-bindings body env context))
@@ -839,128 +933,138 @@
 (defun unsigned (x size)
   (logand x (1- (ash 1 size))))
 
+;;; Use the optimistic bytecode vector sizes to initialize the optimistic cfunction position. 
+(defun initialize-cfunction-positions (cmodule)
+  (let ((position 0))
+    (loop for function across (cmodule-cfunctions cmodule) do
+      (setf (cfunction-position function) position)
+      (incf position (length (cfunction-bytecode function))))))
+
+;;; Update the positions of all affected functions and annotations
+;;; from the effect of increasing the size of FIXUP by INCREASE. The
+;;; resizer has already updated the size of the the fixup.
+(defun update-positions (fixup increase)
+  (let ((function (fixup-function fixup)))
+    ;; Update affected annotation positions in this function.
+    (let ((annotations (cfunction-annotations function)))
+      (loop for index from (1+ (fixup-index fixup)) below (length annotations) do
+        (let ((annotation (aref annotations index)))
+          (incf (annotation-position annotation) increase))))
+    ;; Increase the size of this function to account for fixup growth.
+    (incf (cfunction-extra function) increase)
+    ;; Update module offsets for affected functions.
+    (let ((functions (cmodule-cfunctions (cfunction-cmodule function))))
+      (loop for index from (1+ (cfunction-index function)) below (length functions) do
+        (let ((function (aref functions index)))
+          (incf (cfunction-position function) increase))))))
+
+;;; With all functions and annotations initialized with optimistic
+;;; sizes, resize fixups until all resizers return 0 (i.e no more
+;;; expansion is needed).
+(defun resolve-fixup-sizes (cmodule)
+  (loop
+    (let ((changed-p nil)
+          (functions (cmodule-cfunctions cmodule)))
+      (loop for function across functions do
+        (loop for annotation across (cfunction-annotations function) do
+          (when (fixup-p annotation)
+            (let ((increase (funcall (fixup-resizer annotation) annotation)))
+              (unless (zerop increase)
+                (setq changed-p t)
+                (update-positions annotation increase))))))
+      (unless changed-p
+        (return)))))
+
+;;; The size of the module bytecode vector.
+(defun module-bytecode-size (cmodule)
+  (let* ((cfunctions (cmodule-cfunctions cmodule))
+         (last-cfunction (aref cfunctions (1- (length cfunctions)))))
+    (+ (cfunction-position last-cfunction)
+       (length (cfunction-bytecode last-cfunction))
+       (cfunction-extra last-cfunction))))
+
+;;; Create the bytecode module vector, emitting any fixups as they are
+;;; encountered.
+(defun create-module-bytecode (cmodule)
+  (let ((bytecode (make-array (module-bytecode-size cmodule)
+                              :element-type '(unsigned-byte 8)))
+        (index 0))
+    (loop for function across (cmodule-cfunctions cmodule) do
+      (let* ((cfunction-bytecode (cfunction-bytecode function))
+             (end (length cfunction-bytecode))
+             (position 0))
+        (loop
+          (when (>= position end)
+            (return))
+          (let ((thing (aref cfunction-bytecode position)))
+            (cond ((fixup-p thing)
+                   (assert (= index (annotation-module-position thing)))
+                   (assert (zerop (funcall (fixup-resizer thing) thing)))
+                   (funcall (fixup-emitter thing)
+                            thing
+                            index
+                            bytecode)
+                   ;; Use the initial size to skip the size reserved
+                   ;; for the fixup.
+                   (incf position (fixup-initial-size thing))
+                   (incf index (fixup-size thing)))
+                  (t
+                   (setf (aref bytecode index)
+                         (aref cfunction-bytecode position))
+                   (incf position)
+                   (incf index)))))))
+    bytecode))
+
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects. Return the
 ;;; bytecode function corresponding to CFUNCTION.
-#-clasp
 (defun link-function (cfunction)
   (declare (optimize debug))
-  (let ((cmodule (cfunction-cmodule cfunction))
-        (bytecode-size 0)
-        (bytecode-module (vm::make-bytecode-module)))
-    ;; First, create the real function objects. determining the length
-    ;; of the bytecode-module bytecode vector.
-    (dolist (cfunction (cmodule-cfunctions cmodule))
-      (let ((bytecode-function
+  (let ((cmodule (cfunction-cmodule cfunction)))
+    (initialize-cfunction-positions cmodule)
+    (resolve-fixup-sizes cmodule)
+    (let* ((cmodule-literals (cmodule-literals cmodule))
+           (literal-length (length cmodule-literals))
+           (literals (make-array literal-length))
+           (bytecode-module
+             #-clasp
+             (vm::make-bytecode-module
+              :bytecode (create-module-bytecode cmodule)
+              :literals literals)
+             #+clasp
+             (core:bytecode-module/make)))
+      ;; Create the real function objects.
+      (loop for cfunction across (cmodule-cfunctions cmodule) do
+        (setf (cfunction-info cfunction)
+              #-clasp
               (vm::make-bytecode-function
                bytecode-module
                (cfunction-nlocals cfunction)
                (length (cfunction-closed cfunction))
-               nil)))
-        (setf (cfunction-module-offset cfunction) bytecode-size)
-        (setf (cfunction-info cfunction) bytecode-function)
-        (incf bytecode-size (length (cfunction-bytecode cfunction)))))
-    (let* ((cmodule-literals (cmodule-literals cmodule))
-           (literal-length (length cmodule-literals))
-           (bytecode (make-array bytecode-size :element-type '(unsigned-byte 8)))
-           (literals (make-array literal-length)))
-      ;; Next, fill in the module bytecode vector.
-      (let ((index 0))
-        (dolist (cfunction (cmodule-cfunctions cmodule))
-          (let ((function-bytecode (cfunction-bytecode cfunction)))
-            (dotimes (local-index (length function-bytecode))
-              (setf (aref bytecode index)
-                    (aref function-bytecode local-index))
-              (incf index)))))
-      (flet ((compute-position (function offset)
-               (+ (cfunction-module-offset function) offset)))
-        ;; Do label fixups in the module.
-        (dolist (fixup (cmodule-fixups cmodule))
-          (destructuring-bind (label function offset) fixup
-            (let ((position (compute-position function offset)))
-              ;; ASSUMPTION: Labels are 3 bytes.
-              (let ((offset (unsigned (- (compute-position (label-function label)
-                                                           (label-position label))
-                                         position)
-                                      24)))
-                (setf (aref bytecode position)
-                      (logand offset #xff))
-                (setf (aref bytecode (1+ position))
-                      (logand (ash offset -8) #xff))
-                (setf (aref bytecode (+ position 2))
-                      (logand (ash offset -16) #xff))))))
-        ;; Compute entry points.
-        (dolist (cfunction (cmodule-cfunctions cmodule))
-          (setf (vm::bytecode-function-entry-pc (cfunction-info cfunction))
-                (compute-position cfunction
-                                  (label-position (cfunction-entry-point cfunction))))))
+               (annotation-module-position (cfunction-entry-point cfunction)))
+              #+clasp
+              (core:global-bytecode-entry-point/make
+               (core:function-description/make :function-name 'test)
+               bytecode-module
+               (cfunction-nlocals cfunction)
+               0 0 0 0 nil 0 ; unused at the moment
+               (length (cfunction-closed cfunction))
+               (make-list 7 :initial-element
+                          (annotation-module-position (cfunction-entry-point cfunction))))))
       ;; Now replace the cfunctions in the cmodule literal vector with
       ;; real bytecode functions.
-      (dotimes (index (length (cmodule-literals cmodule)))
+      (dotimes (index literal-length)
         (setf (aref literals index)
               (let ((literal (aref cmodule-literals index)))
                 (if (cfunction-p literal)
                     (cfunction-info literal)
-                    literal))))
-      (setf (vm::bytecode-module-bytecode bytecode-module) bytecode)
-      (setf (vm::bytecode-module-literals bytecode-module) literals)
-      (cfunction-info cfunction))))
-
-#+clasp
-(defun link-function (cfunction)
-  (declare (optimize debug))
-  (let ((cmodule (cfunction-cmodule cfunction))
-        (bytecode-size 0)
-        (bytecode-module (core:bytecode-module/make)))
-    ;; Determine the length of the runtime module's bytecode vector, and assign
-    ;; each function's offset into that vector.
-    (dolist (cfunction (cmodule-cfunctions cmodule))
-      (setf (cfunction-module-offset cfunction) bytecode-size)
-      (incf bytecode-size (length (cfunction-bytecode cfunction))))
-    (let ((bytecode (make-array bytecode-size :element-type '(signed-byte 8))))
-      ;; Next, fill in the module bytecode vector.
-      (dolist (cfunction (cmodule-cfunctions cmodule))
-        (let ((cfunction-bytecode (cfunction-bytecode cfunction)))
-          (replace bytecode cfunction-bytecode
-                   :start1 (cfunction-module-offset cfunction))))
-      (flet ((compute-position (function offset)
-               (+ (cfunction-module-offset function) offset)))
-        ;; Do label fixups in the module.
-        (dolist (fixup (cmodule-fixups cmodule))
-          (destructuring-bind (label function offset) fixup
-            (let* ((position (compute-position function offset))
-                   ;; ASSUMPTION: Labels are 3 bytes.
-                   (offset (unsigned (- (compute-position (label-function label)
-                                                          (label-position label))
-                                        position)
-                                     24)))
-              (setf (aref bytecode (+ position 0)) (ldb (byte 8  0) offset)
-                    (aref bytecode (+ position 1)) (ldb (byte 8  8) offset)
-                    (aref bytecode (+ position 2)) (ldb (byte 8 16) offset)))))
-        ;; Compute entry points and create the actual bytecode functions (GBEPs).
-        (dolist (cfunction (cmodule-cfunctions cmodule))
-          (setf (cfunction-info cfunction)
-                (core:global-bytecode-entry-point/make
-                 (core:function-description/make :function-name 'test)
-                 bytecode-module
-                 (cfunction-nlocals cfunction)
-                 0 0 0 0 nil 0 ; unused at the moment
-                 (length (cfunction-closed cfunction))
-                 (make-list 7 :initial-element
-                            (compute-position cfunction
-                                              (label-position
-                                               (cfunction-entry-point cfunction))))))))
-      ;; Now install the runtime literals vector, which is that of the cmodule
-      ;; but with all cfunctions replaced by the GBEPs we just made.
-      ;; FIXME: Name this as a setf function
-      (core:bytecode-module/setf-literals
-       bytecode-module
-       (map 'vector
-            (lambda (literal) (if (cfunction-p literal) (cfunction-info literal) literal))
-            (cmodule-literals cmodule)))
+                    literal)))))
+    #+clasp
+    (progn
+      (core:bytecode-module/setf-literals bytecode-module literals)
       ;; Now just install the bytecode and Bob's your uncle.
-      (core:bytecode-module/setf-bytecode bytecode-module bytecode)
-      (cfunction-info cfunction))))
+      (core:bytecode-module/setf-bytecode bytecode-module bytecode))
+    (cfunction-info cfunction)))
 
 #+clasp
 (defun bcompile (lambda-expression)

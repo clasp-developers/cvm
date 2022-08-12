@@ -24,14 +24,15 @@
     +listify-rest-args+ +parse-key-args+
     +jump-8+ +jump-16+ +jump-24+
     +jump-if-8+ +jump-if-16+ +jump-if-24+
-    +jump-if-supplied+
+    +jump-if-supplied-8+ +jump-if-supplied-16+
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
     +entry+
     +exit-8+ +exit-16+ +exit-24+
     +entry-close+
-    +catch+ +throw+ +catch-close+
+    +catch-8+ +catch-16+
+    +throw+ +catch-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +progv+
     +fdefinition+
@@ -170,14 +171,16 @@
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
-                      ((+jump-8+ +jump-if-8+ +exit-8+)
+                      ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
                        (fixed 1))
-                      ((+jump-16+ +jump-if-16+ +exit-16+) (fixed 2))
+                      ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+) (fixed 2))
                       ((+jump-24+ +jump-if-24+ +exit-24+) (fixed 3))
-                      ((+call-receive-fixed+ +bind+) (fixed 2))
-                      ((+bind-optional-args+) (fixed 2))
-                      ((+parse-key-args+) (fixed 4))
-                      ((+jump-if-supplied+) (fixed 4)))))))
+                      ((+jump-if-supplied-8+) (fixed 2))
+                      ((+jump-if-supplied-16+) (fixed 3))
+                      ((+call-receive-fixed+ +bind+)
+                       (fixed 2))
+                      ((+bind-optional-args+) (fixed 3))
+                      ((+parse-key-args+) (fixed 4)))))))
 
 (defgeneric disassemble (thing))
 
@@ -233,15 +236,15 @@
                  ;;(declare (optimize safety 0))
                  (aref bytecode (incf ip)))
                (next-code-signed ()
-                 (signed (next-code) 8))
+                 (signed (aref bytecode (+ ip 1)) 8))
                (next-code-signed-16 ()
-                 (signed (+ (next-code)
-                            (ash (aref bytecode (1+ ip)) 8))
+                 (signed (+ (aref bytecode (+ ip 1))
+                            (ash (aref bytecode (+ ip 2)) 8))
                          16))
                (next-code-signed-24 ()
-                 (signed (+ (next-code)
-                            (ash (aref bytecode (+ ip 1)) 8)
-                            (ash (aref bytecode (+ ip 2)) 16))
+                 (signed (+ (aref bytecode (+ ip 1))
+                            (ash (aref bytecode (+ ip 2)) 8)
+                            (ash (aref bytecode (+ ip 3)) 16))
                          24))
                (constant (index)
                  ;;(declare (optimize (safety 0)))
@@ -357,10 +360,14 @@
                         (error "Invalid number of arguments: Got ~d, need exactly ~d."
                                (vm-arg-count vm) n)))
                     (incf ip))
-                   ((#.+jump-if-supplied+)
+                   ((#.+jump-if-supplied-8+)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  2
-                                 (next-code-signed-24))))
+                                 (next-code-signed))))
+                   ((#.+jump-if-supplied-16+)
+                    (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
+                                 3
+                                 (next-code-signed-16))))
                    ((#.+bind-required-args+)
                     ;; Use memcpy for this.
                     (let* ((args (vm-args vm))
@@ -451,8 +458,19 @@
                          (spush *dynenv*)
                        loop
                          (vm bytecode closure constants frame-size))))
-                   ((#.+catch+)
-                    (let ((target (+ ip (next-code-signed-24) 1))
+                   ((#.+catch-8+)
+                    (let ((target (+ ip (next-code-signed) 1))
+                          (tag (spop))
+                          (old-sp sp)
+                          (old-bp bp))
+                      (incf ip)
+                      (catch tag
+                        (vm bytecode closure constants frame-size))
+                      (setf ip target)
+                      (setf sp old-sp)
+                      (setf bp old-bp)))
+                   ((#.+catch-16+)
+                    (let ((target (+ ip (next-code-signed-16) 1))
                           (tag (spop))
                           (old-sp sp)
                           (old-bp bp))
