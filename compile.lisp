@@ -88,7 +88,7 @@
 ;;; does not need the 24 variant even, but we do that here because we
 ;;; can only do 3 byte labels at the moment.
 (defun emit-jump-if-supplied (context index label)
-  (assemble context +jump-if-supplied+ index 0 0 0))
+  (assemble context +jump-if-supplied+ index label))
 
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
