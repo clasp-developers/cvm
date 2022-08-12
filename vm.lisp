@@ -173,7 +173,7 @@
                       ((+jump-8+ +jump-if-8+ +exit-8+)
                        (fixed 1))
                       ((+jump-16+ +jump-if-16+ +exit-16+) (fixed 2))
-                      ((+jump-24+ +jump-if-24+ +jump-if-24+) (fixed 3))
+                      ((+jump-24+ +jump-if-24+ +exit-24+) (fixed 3))
                       ((+call-receive-fixed+ +bind+) (fixed 2))
                       ((+bind-optional-args+) (fixed 2))
                       ((+parse-key-args+) (fixed 4))
