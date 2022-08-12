@@ -37,7 +37,9 @@
     +fdefinition+
     +nil+
     +eq+
-    +pop+))
+    +pop+
+    ;; Keep this as the last instruction...
+    +long+))
 
 ;;; The VM objects we need.
 
@@ -507,4 +509,5 @@
                    ((#.+fdefinition+) (spush (fdefinition (constant (next-code)))) (incf ip))
                    ((#.+nil+) (spush nil) (incf ip))
                    ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))
-                   ((#.+pop+) (setf (vm-values vm) (list (spop))) (incf ip))))))))
+                   ((#.+pop+) (setf (vm-values vm) (list (spop))) (incf ip))
+                   ((#.+long+) (error "Unimplemented!"))))))))

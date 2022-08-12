@@ -41,7 +41,8 @@
     +fdefinition+
     +nil+
     +eq+
-    +pop+))
+    +pop+
+    +long+))
 
 ;;;
 
