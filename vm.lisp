@@ -22,11 +22,15 @@
     +return+
     +bind-required-args+ +bind-optional-args+
     +listify-rest-args+ +parse-key-args+
-    +jump+ +jump-if+ +jump-if-supplied+
+    +jump-8+ +jump-16+ +jump-24+
+    +jump-if-8+ +jump-if-16+ +jump-if-24+
+    +jump-if-supplied+
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
-    +entry+ +exit+ +entry-close+
+    +entry+
+    +exit-8+ +exit-16+ +exit-24+
+    +entry-close+
     +catch+ +throw+ +catch-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +progv+
@@ -124,7 +128,7 @@
                  :stack-top 0)))
 
 (defmacro assemble (&rest codes)
-  `(make-array ,(length codes) :element-type '(signed-byte 8)
+  `(make-array ,(length codes) :element-type '(signed-byte 9)
                                :initial-contents (list ,@codes)))
 
 (defun disassemble-bytecode (bytecode &key (ip 0) (ninstructions t))
@@ -158,13 +162,16 @@
                               +set+ +make-closure+ +make-uninitialized-closure+ +initialize-closure+
                               +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
                               +bind-required-args+
-                              +exit+ +special-bind+ +symbol-value+ +symbol-value-set+
+                              +special-bind+ +symbol-value+ +symbol-value-set+
                               +catch+
                               +fdefinition+ +mv-call-receive-fixed+)
                        (fixed 1))
                       ;; These have labels, not integers, as arguments.
                       ;; TODO: Impose labels on the disassembly.
-                      ((+jump+ +jump-if+) (fixed 1))
+                      ((+jump-8+ +jump-16+ +jump-24+
+                        +jump-if-8+ +jump-if-16+ +jump-if-24+
+                        +exit-8+ +exit-16+ +exit-24+)
+                       (fixed 1))
                       ((+call-receive-fixed+ +bind+ +jump-if-supplied+)
                        (fixed 2))
                       ((+bind-optional-args+) (fixed 3))
@@ -196,7 +203,7 @@
 (defvar *dynenv* nil)
 
 (defun vm (bytecode closure constants frame-size)
-  (declare (type (simple-array (signed-byte 8) (*)) bytecode)
+  (declare (type (simple-array (signed-byte 9) (*)) bytecode)
            (type (simple-array t (*)) closure constants)
            (optimize debug))
   (let* ((vm *vm*)
@@ -310,8 +317,8 @@
                       (setf sp (- bp 2))
                       (setf bp old-bp))
                     (return))
-                   ((#.+jump+) (incf ip (next-code)))
-                   ((#.+jump-if+)
+                   ((#.+jump-8+) (incf ip (next-code)))
+                   ((#.+jump-if-8+)
                     (incf ip (if (spop) (next-code) 2)))
                    ((#.+check-arg-count<=+)
                     (let ((n (next-code)))
@@ -440,7 +447,7 @@
                    ((#.+catch-close+)
                     (incf ip)
                     (return))
-                   ((#.+exit+)
+                   ((#.+exit-8+)
                     (incf ip (next-code))
                     (funcall (entry-dynenv-fun (spop))))
                    ((#.+entry-close+)

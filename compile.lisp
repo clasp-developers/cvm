@@ -26,11 +26,15 @@
     +return+
     +bind-required-args+ +bind-optional-args+
     +listify-rest-args+ +parse-key-args+
-    +jump+ +jump-if+ +jump-if-supplied+
+    +jump-8+ +jump-16+ +jump-24+
+    +jump-if-8+ +jump-if-16+ +jump-if-24+
+    +jump-if-supplied+
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
-    +entry+ +exit+ +entry-close+
+    +entry+
+    +exit-8+ +exit-16+ +exit-24+
+    +entry-close+
     +catch+ +throw+ +catch-close+
     +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
     +progv+
@@ -502,9 +506,9 @@
   (compile-form condition env (new-context context :receiving 1))
   (let ((then-label (make-label))
         (done-label (make-label)))
-    (assemble context +jump-if+ then-label)
+    (assemble context +jump-if-8+ then-label)
     (compile-form else env context)
-    (assemble context +jump+ done-label)
+    (assemble context +jump-8+ done-label)
     (emit-label context then-label)
     (compile-form then env context)
     (emit-label context done-label)))
@@ -621,7 +625,7 @@
                 (default nil var-where)
                 (when supplied-var
                   (supply nil supplied-var-where))
-                (assemble context +jump+ next-optional-label)
+                (assemble context +jump-8+ next-optional-label)
                 (emit-label context supplied-label)
                 (default t var-where)
                 (when supplied-var
@@ -658,7 +662,7 @@
                 (default nil var-where)
                 (when supplied-var
                   (supply nil supplied-var-where))
-                (assemble context +jump+ next-key-label)
+                (assemble context +jump-8+ next-key-label)
                 (emit-label context supplied-label)
                 (default t var-where)
                 (when supplied-var
@@ -723,7 +727,7 @@
     (if pair
         (destructuring-bind (tag-dynenv . tag-label) (cdr pair)
           (reference-var tag-dynenv env context)
-          (assemble context +exit+ tag-label))
+          (assemble context +exit-8+ tag-label))
         (error "The GO tag ~a does not exist." tag))))
 
 (defun compile-block (name body env context)
@@ -749,7 +753,7 @@
     (if pair
         (destructuring-bind (block-dynenv . block-label) (cdr pair)
           (reference-var block-dynenv env context)
-          (assemble context +exit+ block-label))
+          (assemble context +exit-8+ block-label))
         (error "The block ~a does not exist." name))))
 
 (defun compile-catch (tag body env context)
@@ -830,7 +834,7 @@
         (incf bytecode-size (length (cfunction-bytecode cfunction)))))
     (let* ((cmodule-literals (cmodule-literals cmodule))
            (literal-length (length cmodule-literals))
-           (bytecode (make-array bytecode-size :element-type '(signed-byte 8)))
+           (bytecode (make-array bytecode-size :element-type '(signed-byte 9)))
            (literals (make-array literal-length)))
       ;; Next, fill in the module bytecode vector.
       (let ((index 0))
