@@ -885,7 +885,7 @@
                                       24)))
                 (setf (aref bytecode position)
                       (logand offset #xff))
-             r   (setf (aref bytecode (1+ position))
+                (setf (aref bytecode (1+ position))
                       (logand (ash offset -8) #xff))
                 (setf (aref bytecode (+ position 2))
                       (logand (ash offset -16) #xff))))))
@@ -928,11 +928,15 @@
         ;; Do label fixups in the module.
         (dolist (fixup (cmodule-fixups cmodule))
           (destructuring-bind (label function offset) fixup
-            (let ((position (compute-position function offset)))
-              (setf (aref bytecode position)
-                    (- (compute-position (label-function label)
-                                         (label-position label))
-                       position)))))
+            (let* ((position (compute-position function offset))
+                   ;; ASSUMPTION: Labels are 3 bytes.
+                   (offset (unsigned (- (compute-position (label-function label)
+                                                          (label-position label))
+                                        position)
+                                     24)))
+              (setf (aref bytecode (+ position 0)) (ldb (byte 8  0) offset)
+                    (aref bytecode (+ position 1)) (ldb (byte 8  8) offset)
+                    (aref bytecode (+ position 2)) (ldb (byte 8 16) offset)))))
         ;; Compute entry points and create the actual bytecode functions (GBEPs).
         (dolist (cfunction (cmodule-cfunctions cmodule))
           (setf (cfunction-info cfunction)
@@ -997,9 +1001,13 @@
 
 (defun generate-header (&optional (file-name "virtualMachine.h"))
   (with-open-file (fout file-name :direction :output :if-exists :supersede)
+    (write-string "#ifndef virtualMachine_H" fout) (terpri fout)
+    (write-string "#define virtualMachine_H" fout) (terpri fout) (terpri fout)
     (let ((enums (loop for sym in *codes*
                        for index from 0
                        for trimmed-sym-name = (string-downcase (string-trim "+" (symbol-name sym)))
                        for sym-name = (format nil "vm_~a" (c++ify trimmed-sym-name))
                        collect (format nil "~a=~a" sym-name index))))
-      (format fout "enum vm_codes {~%~{   ~a~^,~^~%~} };~%" enums))))
+      (format fout "enum vm_codes {~%~{   ~a~^,~^~%~} };~%" enums))
+    (terpri fout)
+    (write-string "#endif /*guard */" fout) (terpri fout)))
