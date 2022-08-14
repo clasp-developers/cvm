@@ -161,7 +161,7 @@
             :resizer #'control-resizer)))
     (setf (fixup-index fixup)
           (vector-push-extend fixup (cfunction-annotations cfunction)))
-    (vector-push-extend fixup assembly)
+    (vector-push-extend 0 assembly)
     (vector-push-extend 0 assembly)))
 
 (defun emit-jump (context label)
@@ -304,8 +304,9 @@
 
 (defstruct (cfunction (:constructor make-cfunction (cmodule)))
   cmodule
-  ;; Bytecode vector for this function. Can hold fixups.
-  (bytecode (make-array 0 :fill-pointer 0 :adjustable t))
+  ;; Bytecode vector for this function.
+  (bytecode (make-array 0 :element-type '(unsigned-byte 8)
+                          :fill-pointer 0 :adjustable t))
   ;; An ordered vector of annotations emitted in this function.
   (annotations (make-array 0 :fill-pointer 0 :adjustable t))
   (nlocals 0)
@@ -983,36 +984,36 @@
        (length (cfunction-bytecode last-cfunction))
        (cfunction-extra last-cfunction))))
 
-;;; Create the bytecode module vector, emitting any fixups as they are
-;;; encountered.
+;;; Create the bytecode module vector. We scan over the fixups in the
+;;; module and copy segments of bytecode between fixup positions.
 (defun create-module-bytecode (cmodule)
   (let ((bytecode (make-array (module-bytecode-size cmodule)
                               :element-type '(unsigned-byte 8)))
         (index 0))
     (loop for function across (cmodule-cfunctions cmodule) do
-      (let* ((cfunction-bytecode (cfunction-bytecode function))
-             (end (length cfunction-bytecode))
-             (position 0))
-        (loop
-          (when (>= position end)
-            (return))
-          (let ((thing (aref cfunction-bytecode position)))
-            (cond ((fixup-p thing)
-                   (assert (= index (annotation-module-position thing)))
-                   (assert (zerop (funcall (fixup-resizer thing) thing)))
-                   (funcall (fixup-emitter thing)
-                            thing
-                            index
-                            bytecode)
-                   ;; Use the initial size to skip the size reserved
-                   ;; for the fixup.
-                   (incf position (fixup-initial-size thing))
-                   (incf index (fixup-size thing)))
-                  (t
-                   (setf (aref bytecode index)
-                         (aref cfunction-bytecode position))
-                   (incf position)
-                   (incf index)))))))
+      (let ((cfunction-bytecode (cfunction-bytecode function))
+            (position 0))
+        (loop for annotation across (cfunction-annotations function) do
+          (when (fixup-p annotation)
+            (unless (zerop (fixup-size annotation))
+              (assert (zerop (funcall (fixup-resizer annotation) annotation)))
+              ;; Copy bytes in this segment.
+              (let ((end (fixup-position annotation)))
+                (replace bytecode cfunction-bytecode :start1 index :start2 position :end2 end)
+                (incf index (- end position))
+                (setf position end))
+              (assert (= index (annotation-module-position annotation)))
+              ;; Emit fixup.
+              (funcall (fixup-emitter annotation)
+                       annotation
+                       index
+                       bytecode)
+              (incf position (fixup-initial-size annotation))
+              (incf index (fixup-size annotation)))))
+        ;; Copy any remaining bytes from this function to the module.
+        (let ((end (length cfunction-bytecode)))
+          (replace bytecode cfunction-bytecode :start1 index :start2 position :end2 end)
+          (incf index (- end position)))))
     bytecode))
 
 ;;; Run down the hierarchy and link the compile time representations
