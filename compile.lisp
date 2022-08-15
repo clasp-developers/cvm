@@ -171,8 +171,9 @@
 (defun emit-exit (context label)
   (emit-control context +exit-8+ +exit-16+ +exit-24+ label))
 (defun emit-catch (context label)
-  (emit-control context +catch+ +catch-8+ +catch-16+ nil label))
+  (emit-control context +catch-8+ +catch-16+ nil label))
 (defun emit-jump-if-supplied (context index label)
+  (declare (ignore index))
   (emit-control context +jump-if-supplied-8+ +jump-if-supplied-16+ nil label))
 
 ;;; Different kinds of things can go in the variable namespace and they can
@@ -1027,10 +1028,11 @@
     (let* ((cmodule-literals (cmodule-literals cmodule))
            (literal-length (length cmodule-literals))
            (literals (make-array literal-length))
+           (bytecode (create-module-bytecode cmodule))
            (bytecode-module
              #-clasp
              (vm::make-bytecode-module
-              :bytecode (create-module-bytecode cmodule)
+              :bytecode bytecode
               :literals literals)
              #+clasp
              (core:bytecode-module/make)))
@@ -1059,13 +1061,13 @@
               (let ((literal (aref cmodule-literals index)))
                 (if (cfunction-p literal)
                     (cfunction-info literal)
-                    literal)))))
-    #+clasp
-    (progn
-      (core:bytecode-module/setf-literals bytecode-module literals)
-      ;; Now just install the bytecode and Bob's your uncle.
-      (core:bytecode-module/setf-bytecode bytecode-module bytecode))
-    (cfunction-info cfunction)))
+                    literal))))
+      #+clasp
+      (progn
+        (core:bytecode-module/setf-literals bytecode-module literals)
+        ;; Now just install the bytecode and Bob's your uncle.
+        (core:bytecode-module/setf-bytecode bytecode-module bytecode))))
+  (cfunction-info cfunction))
 
 #+clasp
 (defun bcompile (lambda-expression)
