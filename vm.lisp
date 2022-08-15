@@ -177,9 +177,8 @@
                       ((+jump-24+ +jump-if-24+ +exit-24+) (fixed 3))
                       ((+jump-if-supplied-8+) (fixed 2))
                       ((+jump-if-supplied-16+) (fixed 3))
-                      ((+call-receive-fixed+ +bind+)
+                      ((+call-receive-fixed+ +bind+ +bind-optional-args+)
                        (fixed 2))
-                      ((+bind-optional-args+) (fixed 3))
                       ((+parse-key-args+) (fixed 4)))))))
 
 (defgeneric disassemble (thing))
@@ -363,11 +362,11 @@
                    ((#.+jump-if-supplied-8+)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  2
-                                 (next-code-signed))))
+                                 (1- (next-code-signed)))))
                    ((#.+jump-if-supplied-16+)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  3
-                                 (next-code-signed-16))))
+                                 (1- (next-code-signed-16)))))
                    ((#.+bind-required-args+)
                     ;; Use memcpy for this.
                     (let* ((args (vm-args vm))

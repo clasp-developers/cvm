@@ -72,8 +72,7 @@
   initial-size
   ;; How to emit this fixup once sizes are resolved.
   emitter
-  ;; How to resize this fixup. Returns the difference between the new
-  ;; size and old size.
+  ;; How to resize this fixup. Returns the new size.
   resizer)
 
 (defmethod print-object ((label label) stream)
@@ -91,7 +90,7 @@
   (+ (cfunction-position (annotation-function annotation))
      (annotation-position annotation)))
 
-;;; The (module) displacement from this fixup to its label.
+;;; The (module) displacement from this fixup to its label,
 (defun fixup-delta (fixup)
   (- (annotation-module-position (fixup-label fixup))
      (annotation-module-position fixup)))
@@ -109,72 +108,78 @@
       (assert (typep value '(unsigned-byte 8)))
       (vector-push-extend value assembly))))
 
-;;; Resize the fixup. Only after function positions have been
-;;; initialized.
-(defun control-resizer (fixup)
-  (let* ((old-size (fixup-size fixup))
-         (new-size
-           (typecase (fixup-delta fixup)
-             ((signed-byte 8) 2)
-             ((signed-byte 16) 3)
-             ((signed-byte 24) 4)
-             (t (error "???? PC offset too big ????")))))
-    (setf (fixup-size fixup) new-size)
-    (assert (<= old-size new-size))
-    (- new-size old-size)))
+;;; Write WORD of bytesize SIZE to VECTOR at POSITION.
+(defun write-le-unsigned (vector word size position)
+  (let ((end (+ position size)))
+    (do ((position position (1+ position))
+         (word word (ash word -8)))
+        ((>= position end))
+      (setf (aref vector position) (logand word #xff)))))
 
-(defun control-emitter (opcode8 opcode16 opcode24)
-  (lambda (fixup position code)
-    (let* ((delta (fixup-delta fixup))
-           (size (fixup-size fixup))
-           (offset (unsigned delta (* 8 (1- size)))))
-      (case size
-        (2
-         (setf (aref code position) opcode8)
-         (setf (aref code (+ position 1)) offset))
-        (3
-         (setf (aref code position) opcode16)
-         (setf (aref code (+ position 1)) (logand offset #xff))
-         (setf (aref code (+ position 2)) (logand (ash offset -8) #xff)))
-        (4
-         (setf (aref code position) opcode24)
-         (setf (aref code (+ position 1)) (logand offset #xff))
-         (setf (aref code (+ position 2)) (logand (ash offset -8) #xff))
-         (setf (aref code (+ position 3)) (logand (ash offset -16) #xff)))
-        (t (error "???? PC offset too big ????"))))))
-
-;;; Optimistically emit the 1-byte opcode variant but install enough
-;;; information to update the assembly if we find out the offset
-;;; doesn't fit.
-(defun emit-control (context opcode8 opcode16 opcode24 label)
-  (let* ((assembly (context-assembly context))
-         (cfunction (context-function context))
-         (fixup
-           (make-fixup
-            :label label
-            :function cfunction
-            :position (length assembly)
-            ;; We know we will have at least one byte of operand.
-            :initial-size 2
-            :size 2
-            :emitter (control-emitter opcode8 opcode16 opcode24)
-            :resizer #'control-resizer)))
+;;; Emit FIXUP into CONTEXT.
+(defun emit-fixup (context fixup)
+  (let ((assembly (context-assembly context))
+        (cfunction (context-function context)))
+    (setf (fixup-function fixup) cfunction)
+    (setf (fixup-position fixup) (length assembly))
     (setf (fixup-index fixup)
           (vector-push-extend fixup (cfunction-annotations cfunction)))
-    (vector-push-extend 0 assembly)
-    (vector-push-extend 0 assembly)))
+    (dotimes (i (fixup-initial-size fixup))
+      (vector-push-extend 0 assembly))))
+
+;;; Emit OPCODE and then a label reference.
+(defun emit-control+label (context opcode8 opcode16 opcode24 label)
+  (emit-fixup context
+              (make-fixup
+               :label label
+               :initial-size 2
+               :size 2
+               :emitter
+               (lambda (fixup position code)
+                 (let* ((size (fixup-size fixup))
+                        (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
+                   (setf (aref code position)
+                         (ecase size (2 opcode8) (3 opcode16) (4 opcode24)))
+                   (write-le-unsigned code offset (1- size) (1+ position))))
+               :resizer
+               (lambda (fixup)
+                 (typecase (fixup-delta fixup)
+                   ((signed-byte 8) 2)
+                   ((signed-byte 16) 3)
+                   ((signed-byte 24) 4)
+                   (t (error "???? PC offset too big ????")))))))
 
 (defun emit-jump (context label)
-  (emit-control context +jump-8+ +jump-16+ +jump-24+ label))
+  (emit-control+label context +jump-8+ +jump-16+ +jump-24+ label))
 (defun emit-jump-if (context label)
-  (emit-control context +jump-if-8+ +jump-if-16+ +jump-if-24+ label))
+  (emit-control+label context +jump-if-8+ +jump-if-16+ +jump-if-24+ label))
 (defun emit-exit (context label)
-  (emit-control context +exit-8+ +exit-16+ +exit-24+ label))
+  (emit-control+label context +exit-8+ +exit-16+ +exit-24+ label))
 (defun emit-catch (context label)
-  (emit-control context +catch-8+ +catch-16+ nil label))
+  (emit-control+label context +catch-8+ +catch-16+ nil label))
+
 (defun emit-jump-if-supplied (context index label)
-  (declare (ignore index))
-  (emit-control context +jump-if-supplied-8+ +jump-if-supplied-16+ nil label))
+  (emit-fixup context
+              (make-fixup
+               :label label
+               :initial-size 3
+               :size 3
+               :emitter
+               (lambda (fixup position code)
+                 (let* ((size (fixup-size fixup))
+                        (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
+                   (setf (aref code position)
+                         (ecase size
+                           (3 +jump-if-supplied-8+)
+                           (4 +jump-if-supplied-16+)))
+                   (setf (aref code (1+ position)) index)
+                   (write-le-unsigned code offset (- size 2) (+ position 2))))
+               :resizer
+               (lambda (fixup)
+                 (typecase (fixup-delta fixup)
+                   ((signed-byte 8) 3)
+                   ((signed-byte 16) 4)
+                   (t (error "???? PC offset too big ????")))))))
 
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
@@ -532,7 +537,7 @@
       ((:symbol-macro)
        (compile-form `(setf ,data ,valf) env context))
       ((:special nil)
-       (when (null kind) 
+       (when (null kind)
          (warn "Unknown variable ~a: treating as special" var))
        (compile-form valf env (new-context context :receiving 1))
        ;; If we need to return the new value, stick it into a new local
@@ -935,7 +940,7 @@
 (defun unsigned (x size)
   (logand x (1- (ash 1 size))))
 
-;;; Use the optimistic bytecode vector sizes to initialize the optimistic cfunction position. 
+;;; Use the optimistic bytecode vector sizes to initialize the optimistic cfunction position.
 (defun initialize-cfunction-positions (cmodule)
   (let ((position 0))
     (loop for function across (cmodule-cfunctions cmodule) do
@@ -961,8 +966,7 @@
           (incf (cfunction-position function) increase))))))
 
 ;;; With all functions and annotations initialized with optimistic
-;;; sizes, resize fixups until all resizers return 0 (i.e no more
-;;; expansion is needed).
+;;; sizes, resize fixups until no more expansion is needed.
 (defun resolve-fixup-sizes (cmodule)
   (loop
     (let ((changed-p nil)
@@ -970,10 +974,13 @@
       (loop for function across functions do
         (loop for annotation across (cfunction-annotations function) do
           (when (fixup-p annotation)
-            (let ((increase (funcall (fixup-resizer annotation) annotation)))
-              (unless (zerop increase)
+            (let ((old-size (fixup-size annotation))
+                  (new-size (funcall (fixup-resizer annotation) annotation)))
+              (unless (= old-size new-size)
+                (assert (>= new-size old-size))
+                (setf (fixup-size annotation) new-size)
                 (setq changed-p t)
-                (update-positions annotation increase))))))
+                (update-positions annotation (- new-size old-size)))))))
       (unless changed-p
         (return)))))
 
@@ -997,7 +1004,8 @@
         (loop for annotation across (cfunction-annotations function) do
           (when (fixup-p annotation)
             (unless (zerop (fixup-size annotation))
-              (assert (zerop (funcall (fixup-resizer annotation) annotation)))
+              (assert (= (fixup-size annotation)
+                         (funcall (fixup-resizer annotation) annotation)))
               ;; Copy bytes in this segment.
               (let ((end (fixup-position annotation)))
                 (replace bytecode cfunction-bytecode :start1 index :start2 position :end2 end)
