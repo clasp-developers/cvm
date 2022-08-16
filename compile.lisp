@@ -582,25 +582,25 @@
            (when (eql (context-receiving context) t)
              (assemble context +pop+)))))
       ((:lexical)
-       (let ((closurep (eq (lexical-info-function data) (context-function context)))
-             (index (frame-end env))) ; only used for closures
-         (when closurep
+       (let ((localp (eq (lexical-info-function data)
+                         (context-function context)))
+             (index (frame-end env)))
+         (unless localp
            (setf (lexical-info-closed-over-p data) t))
          (setf (lexical-info-set-p data) t)
-         (if closurep
-             (assemble context +ref+ (lexical-info-frame-offset data))
-             (assemble context +closure+ (closure-index data context)))
          (compile-form valf env (new-context context :receiving 1))
          ;; similar concerns to specials above.
-         (when closurep
-           (unless (eql (context-receiving context) 0)
-             (assemble context +set+ index +ref+ index)
-             (bind-vars (list var) env context)))
-         (assemble context +cell-set+)
          (unless (eql (context-receiving context) 0)
-           (if closurep
-               (assemble +ref+ index)
-               (assemble +ref+ (lexical-info-frame-offset data)))
+           (assemble context +set+ index +ref+ index)
+           (bind-vars (list var) env context))
+         (cond (localp
+                (emit-lexical-set data context))
+               ;; Don't emit a fixup if we already know we need a cell.
+               (t
+                (assemble context +closure+ (closure-index data context))
+                (assemble context +cell-set+)))
+         (unless (eql (context-receiving context) 0)
+           (assemble context +ref+ index)
            (when (eql (context-receiving context) t)
              (assemble context +pop+))))))))
 
