@@ -598,7 +598,8 @@
         (incf fun-count)))
     (assemble context +bind+ fun-count frame-start)
     (dolist (closure closures)
-      (enclose (car closure) context)
+      (loop for info across (cfunction-closed (car closure)) do
+        (reference-lexical-info info context))
       (assemble context +initialize-closure+ (cdr closure)))
     (compile-progn body env context)))
 
@@ -613,19 +614,21 @@
     (compile-form then env context)
     (emit-label context done-label)))
 
-(defun enclose (cfunction context)
-  (loop for info across (cfunction-closed cfunction) do
-    (if (eq (lexical-info-function info) (context-function context))
-        (assemble context +ref+ (lexical-info-frame-offset info))
-        (assemble context +closure+ (closure-index info context)))))
+;;; Push the immutable value or cell of lexical in CONTEXT.
+(defun reference-lexical-info (info context)
+  (if (eq (lexical-info-function info) (context-function context))
+      (assemble context +ref+ (lexical-info-frame-offset info))
+      (assemble context +closure+ (closure-index info context))))
 
 (defun compile-function (fnameoid env context)
   (unless (eql (context-receiving context) 0)
     (if (typep fnameoid 'lambda-expression)
-        (let ((cfunction (compile-lambda (cadr fnameoid) (cddr fnameoid)
-                                          env (context-module context))))
-          (enclose cfunction context)
-          (if (zerop (length (cfunction-closed cfunction)))
+        (let* ((cfunction (compile-lambda (cadr fnameoid) (cddr fnameoid)
+                                         env (context-module context)))
+               (closed (cfunction-closed cfunction)))
+          (loop for info across closed do
+            (reference-lexical-info info context))
+          (if (zerop (length closed))
               (assemble context +const+ (literal-index cfunction context))
               (assemble context +make-closure+ (literal-index cfunction context))))
         (multiple-value-bind (kind data) (fun-info fnameoid env)
@@ -765,33 +768,22 @@
     (assemble context +return+)
     function))
 
-;;; Push the value of an immutable lexical VAR to the stack.
-(defun reference-var (var env context)
-  (multiple-value-bind (kind data) (var-info var env)
-    (assert (eq kind :lexical))
-    (if (eq (lexical-info-function data) (context-function context))
-        (assemble context +ref+ (lexical-info-frame-offset data))
-        (assemble context +closure+ (closure-index data context)))))
-
 (defun go-tag-p (object) (typep object '(or symbol integer)))
 
 (defun compile-tagbody (statements env context)
-  (let ((new-tags (tags env))
-        (tagbody-dynenv (gensym "TAG-DYNENV")))
+  (let* ((new-tags (tags env))
+         (tagbody-dynenv (gensym "TAG-DYNENV"))
+         (env (bind-vars (list tagbody-dynenv) env context))
+         (dynenv-info (nth-value 1 (var-info tagbody-dynenv env))))
     (dolist (statement statements)
       (when (go-tag-p statement)
-        (push (list* statement tagbody-dynenv (make-label))
+        (push (list* statement dynenv-info (make-label))
               new-tags)))
     (assemble context +entry+)
-    (let ((env (make-lexical-environment
-                (bind-vars (list tagbody-dynenv) env context)
-                :tags new-tags)))
+    (let ((env (make-lexical-environment env :tags new-tags)))
       ;; Bind the dynamic environment. We don't need a cell as it is
       ;; not mutable.
-      (multiple-value-bind (kind index)
-          (var-info tagbody-dynenv env)
-        (assert (eq kind :local))
-        (assemble context +set+ index))
+      (assemble context +set+ (lexical-info-frame-offset dynenv-info))
       ;; Compile the body, emitting the tag destination labels.
       (dolist (statement statements)
         (if (go-tag-p statement)
@@ -807,34 +799,33 @@
 (defun compile-go (tag env context)
   (let ((pair (assoc tag (tags env))))
     (if pair
-        (destructuring-bind (tag-dynenv . tag-label) (cdr pair)
-          (reference-var tag-dynenv env context)
+        (destructuring-bind (dynenv-info . tag-label) (cdr pair)
+          (reference-lexical-info dynenv-info context)
           (emit-exit context tag-label))
         (error "The GO tag ~a does not exist." tag))))
 
 (defun compile-block (name body env context)
   (let* ((block-dynenv (gensym "BLOCK-DYNENV"))
-         (env (make-lexical-environment
-               (bind-vars (list block-dynenv) env context)
-               :blocks (acons name (cons block-dynenv (make-label))
-                              (blocks env)))))
+         (env (bind-vars (list block-dynenv) env context))
+         (dynenv-info (nth-value 1 (var-info block-dynenv env)))
+         (label (make-label)))
     (assemble context +entry+)
     ;; Bind the dynamic environment. We don't need a cell as it is
     ;; not mutable.
-    (multiple-value-bind (kind index)
-        (var-info block-dynenv env)
-      (assert (eq kind :local))
-      (assemble context +set+ index))
-    (compile-progn body env context)
-    (emit-label context (cddr (assoc name (blocks env))))
+    (assemble context +set+ (lexical-info-frame-offset dynenv-info))
+    (let ((env (make-lexical-environment
+                env
+                :blocks (acons name (cons dynenv-info label) (blocks env)))))
+      (compile-progn body env context))
+    (emit-label context label)
     (assemble context +entry-close+)))
 
 (defun compile-return-from (name value env context)
   (compile-form value env (new-context context :receiving t))
   (let ((pair (assoc name (blocks env))))
     (if pair
-        (destructuring-bind (block-dynenv . block-label) (cdr pair)
-          (reference-var block-dynenv env context)
+        (destructuring-bind (dynenv-info . block-label) (cdr pair)
+          (reference-lexical-info dynenv-info context)
           (emit-exit context block-label))
         (error "The block ~a does not exist." name))))
 
