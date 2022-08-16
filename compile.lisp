@@ -693,13 +693,6 @@
           (dolist (key-name (rest key-name))
             (literal-index key-name context)))
         (setq env (bind-vars (mapcar #'cadar keys) env context)))
-      ;; Now emit code to default unsupplied values after the args
-      ;; area and arg count are no longer needed, so it is safe to
-      ;; destroy those with arbitrary code. Duplicate variables are
-      ;; not allowed so we don't need to worry much about shadowing in
-      ;; the environment. Supplied variables must be sequentially
-      ;; bound however. KLUDGE: There has to be some way to share the
-      ;; code below???
       (when optionals
         (do ((optionals optionals (rest optionals))
              (optional-label (make-label) next-optional-label)
@@ -709,33 +702,9 @@
           (emit-label context optional-label)
           (destructuring-bind (optional-var defaulting-form supplied-var)
               (first optionals)
-            (flet ((default (suppliedp where)
-                     (if suppliedp
-                         (assemble context +ref+ where)
-                         (compile-form defaulting-form env
-                                       (new-context context :receiving 1)))
-                     (assemble context +make-cell+)
-                     (assemble context +set+ where))
-                   (supply (suppliedp where)
-                     (if suppliedp
-                         (compile-literal t env (new-context context :receiving 1))
-                         (assemble context +nil+))
-                     (assemble context +make-cell+)
-                     (assemble context +set+ where)))
-              (let ((supplied-label (make-label))
-                    (var-where (nth-value 1 (var-info optional-var env)))
-                    (supplied-var-where (frame-end env)))
-                (emit-jump-if-supplied context var-where supplied-label)
-                (default nil var-where)
-                (when supplied-var
-                  (supply nil supplied-var-where))
-                (emit-jump context next-optional-label)
-                (emit-label context supplied-label)
-                (default t var-where)
-                (when supplied-var
-                  (supply t supplied-var-where)))
-              (when supplied-var
-                (setq env (bind-vars (list supplied-var) env context)))))))
+            (setq env
+                  (compile-optional/key-item optional-var defaulting-form supplied-var
+                                             next-optional-label context env)))))
       (when keys
         (do ((keys keys (rest keys))
              (key-label (make-label) next-key-label)
@@ -746,34 +715,42 @@
           (destructuring-bind ((key-name key-var) defaulting-form supplied-var)
               (first keys)
             (declare (ignore key-name))
-            (flet ((default (suppliedp where)
-                     (if suppliedp
-                         (assemble context +ref+ where)
-                         (compile-form defaulting-form env
-                                       (new-context context :receiving 1)))
-                     (assemble context +make-cell+)
-                     (assemble context +set+ where))
-                   (supply (suppliedp where)
-                     (if suppliedp
-                         (compile-literal t env (new-context context :receiving 1))
-                         (assemble context +nil+))
-                     (assemble context +make-cell+)
-                     (assemble context +set+ where)))
-              (let ((supplied-label (make-label))
-                    (var-where (nth-value 1 (var-info key-var env)))
-                    (supplied-var-where (frame-end env)))
-                (emit-jump-if-supplied context var-where supplied-label)
-                (default nil var-where)
-                (when supplied-var
-                  (supply nil supplied-var-where))
-                (emit-jump context next-key-label)
-                (emit-label context supplied-label)
-                (default t var-where)
-                (when supplied-var
-                  (supply t supplied-var-where)))
-              (when supplied-var
-                (setq env (bind-vars (list supplied-var) env context)))))))
+            (setq env
+                  (compile-optional/key-item key-var defaulting-form supplied-var
+                                             next-key-label context env)))))
       (values aux env))))
+
+;;; Compile an optional/key item and return the resulting environment.
+(defun compile-optional/key-item (var defaulting-form supplied-var next-label
+                                  context env)
+  (flet ((default (suppliedp where)
+           (if suppliedp
+               (assemble context +ref+ where)
+               (compile-form defaulting-form env
+                             (new-context context :receiving 1)))
+           (assemble context +make-cell+)
+           (assemble context +set+ where))
+         (supply (suppliedp where)
+           (if suppliedp
+               (compile-literal t env (new-context context :receiving 1))
+               (assemble context +nil+))
+           (assemble context +make-cell+)
+           (assemble context +set+ where)))
+    (let ((supplied-label (make-label))
+          (var-where (nth-value 1 (var-info var env)))
+          (supplied-var-where (frame-end env)))
+      (emit-jump-if-supplied context var-where supplied-label)
+      (default nil var-where)
+      (when supplied-var
+        (supply nil supplied-var-where))
+      (emit-jump context next-label)
+      (emit-label context supplied-label)
+      (default t var-where)
+      (when supplied-var
+        (supply t supplied-var-where)))
+    (if supplied-var
+        (bind-vars (list supplied-var) env context)
+        env)))
 
 ;;; Compile the lambda in MODULE, returning the resulting
 ;;; CFUNCTION.
