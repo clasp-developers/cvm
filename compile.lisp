@@ -58,8 +58,10 @@
   function
   ;; The index of this annotation in its function's annotations.
   index
-  ;; The (optimistic) position of this annotation in this function.
-  position)
+  ;; The current (optimistic) position of this annotation in this function.
+  position
+  ;; The initial position of this annotaiton in this function.
+  initial-position)
 
 (defstruct (label (:include annotation)))
 
@@ -107,7 +109,6 @@
 (defun assemble (context &rest values)
   (let ((assembly (context-assembly context)))
     (dolist (value values)
-      (assert (typep value '(unsigned-byte 8)))
       (vector-push-extend value assembly))))
 
 ;;; Write WORD of bytesize SIZE to VECTOR at POSITION.
@@ -120,10 +121,12 @@
 
 ;;; Emit FIXUP into CONTEXT.
 (defun emit-fixup (context fixup)
-  (let ((assembly (context-assembly context))
-        (cfunction (context-function context)))
+  (let* ((assembly (context-assembly context))
+         (cfunction (context-function context))
+         (position (length assembly)))
     (setf (fixup-function fixup) cfunction)
-    (setf (fixup-position fixup) (length assembly))
+    (setf (fixup-initial-position fixup) position)
+    (setf (fixup-position fixup) position)
     (setf (fixup-index fixup)
           (vector-push-extend fixup (cfunction-annotations cfunction)))
     (dotimes (i (fixup-initial-size fixup))
@@ -983,7 +986,7 @@
               (assert (= (fixup-size annotation)
                          (funcall (fixup-resizer annotation) annotation)))
               ;; Copy bytes in this segment.
-              (let ((end (fixup-position annotation)))
+              (let ((end (fixup-initial-position annotation)))
                 (replace bytecode cfunction-bytecode :start1 index :start2 position :end2 end)
                 (incf index (- end position))
                 (setf position end))
