@@ -63,7 +63,9 @@
 
 (defstruct (label (:include annotation)))
 
-(defstruct (fixup (:include annotation))
+(defstruct (fixup (:include annotation)
+                  (:constructor make-fixup (label initial-size emitter resizer
+                                            &aux (size initial-size))))
   ;; The label this fixup references.
   label
   ;; The current (optimistic) size of this fixup in bytes.
@@ -129,25 +131,19 @@
 
 ;;; Emit OPCODE and then a label reference.
 (defun emit-control+label (context opcode8 opcode16 opcode24 label)
-  (emit-fixup context
-              (make-fixup
-               :label label
-               :initial-size 2
-               :size 2
-               :emitter
-               (lambda (fixup position code)
-                 (let* ((size (fixup-size fixup))
-                        (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
-                   (setf (aref code position)
-                         (ecase size (2 opcode8) (3 opcode16) (4 opcode24)))
-                   (write-le-unsigned code offset (1- size) (1+ position))))
-               :resizer
-               (lambda (fixup)
-                 (typecase (fixup-delta fixup)
-                   ((signed-byte 8) 2)
-                   ((signed-byte 16) 3)
-                   ((signed-byte 24) 4)
-                   (t (error "???? PC offset too big ????")))))))
+  (flet ((emitter (fixup position code)
+           (let* ((size (fixup-size fixup))
+                  (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
+             (setf (aref code position)
+                   (ecase size (2 opcode8) (3 opcode16) (4 opcode24)))
+             (write-le-unsigned code offset (1- size) (1+ position))))
+         (resizer (fixup)
+           (typecase (fixup-delta fixup)
+             ((signed-byte 8) 2)
+             ((signed-byte 16) 3)
+             ((signed-byte 24) 4)
+             (t (error "???? PC offset too big ????")))))
+    (emit-fixup context (make-fixup label 2 #'emitter #'resizer))))
 
 (defun emit-jump (context label)
   (emit-control+label context +jump-8+ +jump-16+ +jump-24+ label))
@@ -159,27 +155,21 @@
   (emit-control+label context +catch-8+ +catch-16+ nil label))
 
 (defun emit-jump-if-supplied (context index label)
-  (emit-fixup context
-              (make-fixup
-               :label label
-               :initial-size 3
-               :size 3
-               :emitter
-               (lambda (fixup position code)
-                 (let* ((size (fixup-size fixup))
-                        (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
-                   (setf (aref code position)
-                         (ecase size
-                           (3 +jump-if-supplied-8+)
-                           (4 +jump-if-supplied-16+)))
-                   (setf (aref code (1+ position)) index)
-                   (write-le-unsigned code offset (- size 2) (+ position 2))))
-               :resizer
-               (lambda (fixup)
-                 (typecase (fixup-delta fixup)
-                   ((signed-byte 8) 3)
-                   ((signed-byte 16) 4)
-                   (t (error "???? PC offset too big ????")))))))
+  (flet ((emitter (fixup position code)
+           (let* ((size (fixup-size fixup))
+                  (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
+             (setf (aref code position)
+                   (ecase size
+                     (3 +jump-if-supplied-8+)
+                     (4 +jump-if-supplied-16+)))
+             (setf (aref code (1+ position)) index)
+             (write-le-unsigned code offset (- size 2) (+ position 2))))
+         (resizer (fixup)
+           (typecase (fixup-delta fixup)
+             ((signed-byte 8) 3)
+             ((signed-byte 16) 4)
+             (t (error "???? PC offset too big ????")))))
+    (emit-fixup context (make-fixup label 3 #'emitter #'resizer))))
 
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
