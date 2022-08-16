@@ -185,11 +185,16 @@
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
   (kind (error "kind required")
-   :type (member :local :special :symbol-macro :constant))
+   :type (member :lexical :special :symbol-macro :constant))
   data)
 
-(defun make-lexical-var-info (frame-offset)
-  (make-var-info :local frame-offset))
+(defstruct (lexical-info (:constructor make-lexical-info (frame-offset function)))
+  frame-offset
+  function
+  (set-p nil))
+
+(defun make-lexical-var-info (frame-offset function)
+  (make-var-info :lexical (make-lexical-info frame-offset function)))
 (defun make-special-var-info () (make-var-info :special nil))
 (defun make-symbol-macro-var-info (expansion)
   (make-var-info :symbol-macro expansion))
@@ -221,19 +226,15 @@
   ;; An alist of (fun . fun-var) in the current environment.
   (funs nil :type list)
   ;; The current end of the frame.
-  (frame-end 0 :type integer)
-  ;; A list of the non-local vars in scope.
-  (closure-vars nil :type list))
+  (frame-end 0 :type integer))
 
 (defun make-lexical-environment (parent &key (vars (vars parent))
                                              (tags (tags parent))
                                              (blocks (blocks parent))
                                              (frame-end (frame-end parent))
-                                             (closure-vars (closure-vars parent))
                                              (funs (funs parent)))
   (%make-lexical-environment
-   :vars vars :tags tags :blocks blocks :frame-end frame-end :closure-vars closure-vars
-   :funs funs))
+   :vars vars :tags tags :blocks blocks :frame-end frame-end :funs funs))
 
 ;;; Bind each variable to a stack location, returning a new lexical
 ;;; environment. The max local count in the current function is also
@@ -248,33 +249,11 @@
     (do ((index frame-start (1+ index))
          (vars vars (rest vars))
          (new-vars (vars env)
-                   (acons (first vars) (make-lexical-var-info index) new-vars)))
+                   (acons (first vars) (make-lexical-var-info index function) new-vars)))
         ((>= index frame-end)
          (make-lexical-environment env :vars new-vars :frame-end frame-end))
       (when (constantp (first vars))
         (error "Cannot bind constant value ~a!" (first vars))))))
-
-;;; Create a new lexical environment where the old environment's
-;;; lexicals get closed over.
-(defun enclose (env)
-  (multiple-value-bind (lexical nonlexical)
-      (loop for pair in (vars env)
-            for (var . info) = pair
-            ;; this is necessary because we throw things on alist style
-            ;; but need to not record shadowed variables here.
-            when (member var seen)
-              do (progn)
-            else if (eq (var-info-kind info) :local)
-                   collect var into lexical
-            else
-              collect pair into nonlexical
-            collect var into seen
-            finally (return (values lexical nonlexical)))
-    (make-lexical-environment
-     env
-     :vars nonlexical
-     :frame-end 0
-     :closure-vars (append lexical (closure-vars env)))))
 
 ;;; Get information about a variable.
 ;;; Returns two values.
@@ -289,9 +268,14 @@
 ;;; value is NIL.
 (defun var-info (symbol env context)
   (let ((info (cdr (assoc symbol (vars env)))))
-    (cond (info (values (var-info-kind info) (var-info-data info)))
-          ((member symbol (closure-vars env))
-           (values :closure (closure-index symbol context)))
+    (cond (info
+           (let ((kind (var-info-kind info))
+                 (data (var-info-data info)))
+             (if (eq kind :lexical)
+                 (if (eq (lexical-info-function data) (context-function context))
+                     (values :local (lexical-info-frame-offset data))
+                     (values :closure (closure-index symbol context)))
+                 (values kind data))))
           ((constantp symbol nil) (values :constant (eval symbol)))
           (t (values nil nil)))))
 
@@ -800,8 +784,7 @@
 ;;; CFUNCTION.
 (defun compile-lambda (lambda-list body env module)
   (let* ((function (make-cfunction module))
-         (context (make-context :receiving t :function function))
-         (env (enclose env)))
+         (context (make-context :receiving t :function function)))
     (setf (cfunction-index function)
           (vector-push-extend function (cmodule-cfunctions module)))
     (multiple-value-bind (aux-bindings env)
