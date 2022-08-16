@@ -555,7 +555,9 @@
 (defun compile-flet (definitions body env context)
   (let ((fun-vars '())
         (funs '())
-        (fun-count 0))
+        (fun-count 0)
+        ;; HACK FIXME
+        (frame-slot (frame-end env)))
     (dolist (definition definitions)
       (let ((name (first definition))
             (fun-var (gensym "FLET-FUN")))
@@ -563,7 +565,11 @@
                              ,@(cddr definition))
                           env (new-context context :receiving 1))
         (push fun-var fun-vars)
-        (push (cons name (make-local-function-fun-info fun-var)) funs)
+        (push (cons name (make-local-function-fun-info
+                          (make-lexical-info frame-slot
+                                             (context-function context))))
+              funs)
+        (incf frame-slot)
         (incf fun-count)))
     (assemble context +bind+ fun-count (frame-end env))
     (let ((env (make-lexical-environment
@@ -577,13 +583,16 @@
         (env env)
         (frame-start (frame-end env)))
     (dolist (definition definitions)
-      (let ((name (first definition))
-            (fun-var (gensym "LABELS-FUN"))
-            (frame-slot (frame-end env)))
+      (let* ((name (first definition))
+             (fun-var (gensym "LABELS-FUN"))
+             (frame-slot (frame-end env))
+             ;; KLUDGE
+             (temp-env (bind-vars (list fun-var) env context))
+             (fun-info (nth-value 1 (var-info fun-var temp-env))))
         (setq env (make-lexical-environment
-                   (bind-vars (list fun-var) env context)
-                   :funs (acons name (make-local-function-fun-info fun-var)
-                                (funs env))))
+                   temp-env
+                   :funs (acons name (make-local-function-fun-info fun-info)
+                                (funs temp-env))))
         (let* ((fun (compile-lambda (second definition)
                                     (rest (rest definition))
                                     env
@@ -637,7 +646,7 @@
              (when (null kind) (warn "Unknown function ~a" fnameoid))
              (assemble context +fdefinition+ (literal-index fnameoid context)))
             ((:local-function)
-             (reference-var data env context)))))
+             (reference-lexical-info data context)))))
     (when (eql (context-receiving context) t)
       (assemble context +pop+))))
 
