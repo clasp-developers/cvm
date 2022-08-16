@@ -181,6 +181,7 @@
 (defstruct (lexical-info (:constructor make-lexical-info (frame-offset function)))
   frame-offset
   function
+  (closed-over-p nil)
   (set-p nil))
 
 (defun make-lexical-var-info (frame-offset function)
@@ -247,25 +248,17 @@
 
 ;;; Get information about a variable.
 ;;; Returns two values.
-;;; The first is :CLOSURE, :LOCAL, :SPECIAL, :CONSTANT, :SYMBOL-MACRO, or NIL.
-;;; If the variable is lexical, the first is :CLOSURE or :LOCAL,
-;;; and the second is an index into the associated data.
+;;; The first is :LEXICAL, :SPECIAL, :CONSTANT, :SYMBOL-MACRO, or NIL.
+;;; If the variable is lexical, the first is :LEXICAL and the second is more info.
 ;;; If the variable is special, the first is :SPECIAL and the second is NIL.
 ;;; If the variable is a macro, the first is :SYMBOL-MACRO and the second is
 ;;; the expansion.
 ;;; If the variable is a constant, :CONSTANT and the value.
 ;;; If the first value is NIL, the variable is unknown, and the second
 ;;; value is NIL.
-(defun var-info (symbol env context)
+(defun var-info (symbol env)
   (let ((info (cdr (assoc symbol (vars env)))))
-    (cond (info
-           (let ((kind (var-info-kind info))
-                 (data (var-info-data info)))
-             (if (eq kind :lexical)
-                 (if (eq (lexical-info-function data) (context-function context))
-                     (values :local (lexical-info-frame-offset data))
-                     (values :closure (closure-index symbol context)))
-                 (values kind data))))
+    (cond (info (values (var-info-kind info) (var-info-data info)))
           ((constantp symbol nil) (values :constant (eval symbol)))
           (t (values nil nil)))))
 
@@ -322,10 +315,10 @@
     (or (position literal literals)
         (vector-push-extend literal literals))))
 
-(defun closure-index (symbol context)
+(defun closure-index (info context)
   (let ((closed (cfunction-closed (context-function context))))
-    (or (position symbol closed)
-        (vector-push-extend symbol closed))))
+    (or (position info closed)
+        (vector-push-extend info closed))))
 
 (defun new-context (parent &key (receiving (context-receiving parent))
                                 (function (context-function parent)))
@@ -355,7 +348,7 @@
       (assemble context +pop+))))
 
 (defun compile-symbol (form env context)
-  (multiple-value-bind (kind data) (var-info form env context)
+  (multiple-value-bind (kind data) (var-info form env)
     (cond ((eq kind :symbol-macro) (compile-form data env context))
           ;; A symbol macro could expand into something with arbitrary side
           ;; effects so we always have to compile that, but otherwise, if no
@@ -363,10 +356,15 @@
           ((eql (context-receiving context) 0))
           (t
            (ecase kind
-             ((:local) (assemble context +ref+ data +cell-ref+))
+             ((:lexical)
+              (cond ((eq (lexical-info-function data) (context-function context))
+                     (assemble context +ref+ (lexical-info-frame-offset data)))
+                    (t
+                     (setf (lexical-info-closed-over-p data) t)
+                     (assemble context +closure+ (closure-index data context))))
+              (assemble context +cell-ref+))
              ((:special) (assemble context +symbol-value+
                            (literal-index form context)))
-             ((:closure) (assemble context +closure+ data +cell-ref+))
              ((:constant) (return-from compile-symbol ; don't pop again.
                             (compile-literal data env context)))
              ((nil)
@@ -441,15 +439,15 @@
               (setq env (make-lexical-environment env :vars new-vars))))))))
   env)
 
-(defun parse-let (bindings env context)
+(defun parse-let (bindings env)
   (let ((lexical-bindings '())
         (special-bindings '()))
     (dolist (binding bindings)
       (if (symbolp binding)
-          (if (eq (var-info binding env context) :special)
+          (if (eq (var-info binding env) :special)
               (push (cons binding nil) special-bindings)
               (push (cons binding nil) lexical-bindings))
-          (if (eq (var-info (first binding) env context) :special)
+          (if (eq (var-info (first binding) env) :special)
               (push binding special-bindings)
               (push binding lexical-bindings))))
     (values (nreverse lexical-bindings) (nreverse special-bindings))))
@@ -459,7 +457,7 @@
     (let ((env (process-declarations decls env))
           (lexical-count 0))
       (multiple-value-bind (lexical-bindings special-bindings)
-          (parse-let bindings env context)
+          (parse-let bindings env)
         (dolist (binding lexical-bindings)
           (compile-form (second binding) env (new-context context :receiving 1))
           (assemble context +make-cell+)
@@ -480,7 +478,7 @@
   (multiple-value-bind (body decls) (alexandria:parse-body body)
     (let ((env (process-declarations decls env)))
       (multiple-value-bind (lexical-bindings special-bindings)
-          (parse-let bindings env context)
+          (parse-let bindings env)
         (dolist (binding lexical-bindings)
           (compile-form (second binding) env (new-context context :receiving 1))
           (assemble context +make-cell+)
@@ -506,7 +504,7 @@
                                    context)))))
 
 (defun compile-setq-1 (var valf env context)
-  (multiple-value-bind (kind data) (var-info var env context)
+  (multiple-value-bind (kind data) (var-info var env)
     (ecase kind
       ((:symbol-macro)
        (compile-form `(setf ,data ,valf) env context))
@@ -528,25 +526,26 @@
            (assemble context +ref+ index)
            (when (eql (context-receiving context) t)
              (assemble context +pop+)))))
-      ((:local)
-       (assemble context +ref+ data)
-       (compile-form valf env (new-context context :receiving 1))
-       (assemble context +cell-set+)
-       (unless (eql (context-receiving context) 0)
-         (assemble context +ref+ data +cell-ref+)
-         (when (eql (context-receiving context) t)
-           (assemble context +pop+))))
-      ((:closure)
-       (assemble context +closure+ data)
-       (compile-form valf env (new-context context :receiving 1))
-       ;; similar concerns to specials above.
-       (let ((index (frame-end env)))
-         (unless (eql (context-receiving context) 0)
-           (assemble context +set+ index +ref+ index)
-           (bind-vars (list var) env context))
+      ((:lexical)
+       (let ((closurep (eq (lexical-info-function data) (context-function context)))
+             (index (frame-end env))) ; only used for closures
+         (when closurep
+           (setf (lexical-info-closed-over-p data) t))
+         (setf (lexical-info-set-p data) t)
+         (if closurep
+             (assemble context +ref+ (lexical-info-frame-offset data))
+             (assemble context +closure+ (closure-index data context)))
+         (compile-form valf env (new-context context :receiving 1))
+         ;; similar concerns to specials above.
+         (when closurep
+           (unless (eql (context-receiving context) 0)
+             (assemble context +set+ index +ref+ index)
+             (bind-vars (list var) env context)))
          (assemble context +cell-set+)
          (unless (eql (context-receiving context) 0)
-           (assemble context +ref+ index)
+           (if closurep
+               (assemble +ref+ index)
+               (assemble +ref+ (lexical-info-frame-offset data)))
            (when (eql (context-receiving context) t)
              (assemble context +pop+))))))))
 
@@ -596,8 +595,7 @@
         (incf fun-count)))
     (assemble context +bind+ fun-count frame-start)
     (dolist (closure closures)
-      (loop for var across (cfunction-closed (car closure))
-            do (reference-var var env context))
+      (enclose (car closure) context)
       (assemble context +initialize-closure+ (cdr closure)))
     (compile-progn body env context)))
 
@@ -612,15 +610,19 @@
     (compile-form then env context)
     (emit-label context done-label)))
 
+(defun enclose (cfunction context)
+  (loop for info across (cfunction-closed cfunction) do
+    (if (eq (lexical-info-function info) (context-function context))
+        (assemble context +ref+ (lexical-info-frame-offset info))
+        (assemble context +closure+ (closure-index info context)))))
+
 (defun compile-function (fnameoid env context)
   (unless (eql (context-receiving context) 0)
     (if (typep fnameoid 'lambda-expression)
-        (let* ((cfunction (compile-lambda (cadr fnameoid) (cddr fnameoid)
-                                         env (context-module context)))
-               (closed (cfunction-closed cfunction)))
-          (loop for var across closed
-                do (reference-var var env context))
-          (if (zerop (length closed))
+        (let ((cfunction (compile-lambda (cadr fnameoid) (cddr fnameoid)
+                                          env (context-module context))))
+          (enclose cfunction context)
+          (if (zerop (length (cfunction-closed cfunction)))
               (assemble context +const+ (literal-index cfunction context))
               (assemble context +make-closure+ (literal-index cfunction context))))
         (multiple-value-bind (kind data) (fun-info fnameoid env)
@@ -718,7 +720,7 @@
                      (assemble context +make-cell+)
                      (assemble context +set+ where)))
               (let ((supplied-label (make-label))
-                    (var-where (nth-value 1 (var-info optional-var env context)))
+                    (var-where (nth-value 1 (var-info optional-var env)))
                     (supplied-var-where (frame-end env)))
                 (emit-jump-if-supplied context var-where supplied-label)
                 (default nil var-where)
@@ -755,7 +757,7 @@
                      (assemble context +make-cell+)
                      (assemble context +set+ where)))
               (let ((supplied-label (make-label))
-                    (var-where (nth-value 1 (var-info key-var env context)))
+                    (var-where (nth-value 1 (var-info key-var env)))
                     (supplied-var-where (frame-end env)))
                 (emit-jump-if-supplied context var-where supplied-label)
                 (default nil var-where)
@@ -783,12 +785,13 @@
     (assemble context +return+)
     function))
 
-;;; Push VAR's value to the stack. VAR is known to be lexical.
+;;; Push the value of an immutable lexical VAR to the stack.
 (defun reference-var (var env context)
-  (multiple-value-bind (kind index) (var-info var env context)
-    (ecase kind
-      ((:local) (assemble context +ref+ index))
-      ((:closure) (assemble context +closure+ index)))))
+  (multiple-value-bind (kind data) (var-info var env)
+    (assert (eq kind :lexical))
+    (if (eq (lexical-info-function data) (context-function context))
+        (assemble context +ref+ (lexical-info-frame-offset data))
+        (assemble context +closure+ (closure-index data context)))))
 
 (defun go-tag-p (object) (typep object '(or symbol integer)))
 
@@ -806,7 +809,7 @@
       ;; Bind the dynamic environment. We don't need a cell as it is
       ;; not mutable.
       (multiple-value-bind (kind index)
-          (var-info tagbody-dynenv env context)
+          (var-info tagbody-dynenv env)
         (assert (eq kind :local))
         (assemble context +set+ index))
       ;; Compile the body, emitting the tag destination labels.
@@ -839,7 +842,7 @@
     ;; Bind the dynamic environment. We don't need a cell as it is
     ;; not mutable.
     (multiple-value-bind (kind index)
-        (var-info block-dynenv env context)
+        (var-info block-dynenv env)
       (assert (eq kind :local))
       (assemble context +set+ index))
     (compile-progn body env context)
