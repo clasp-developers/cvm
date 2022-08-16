@@ -111,6 +111,11 @@
     (dolist (value values)
       (vector-push-extend value assembly))))
 
+(defun assemble-into (code position &rest values)
+  (loop for value in values
+        for position from position
+        do (setf (aref code position) value)))
+
 ;;; Write WORD of bytesize SIZE to VECTOR at POSITION.
 (defun write-le-unsigned (vector word size position)
   (let ((end (+ position size)))
@@ -186,6 +191,11 @@
   function
   (closed-over-p nil)
   (set-p nil))
+
+;;; Does the variable with LEXICAL-INFO need a cell?
+(defun indirect-lexical-p (lexical-info)
+  (and (lexical-info-closed-over-p lexical-info)
+       (lexical-info-set-p lexical-info)))
 
 (defun make-lexical-var-info (frame-offset function)
   (make-var-info :lexical (make-lexical-info frame-offset function)))
@@ -350,6 +360,44 @@
     (when (eql (context-receiving context) t)
       (assemble context +pop+))))
 
+(flet ((maybe-emit (lexical-info opcode context)
+         (flet ((emitter (fixup position code)
+                  (assert (= (fixup-size fixup) 1))
+                  (setf (aref code position) opcode))
+                (resizer (fixup)
+                  (declare (ignore fixup))
+                  (if (indirect-lexical-p lexical-info) 1 0)))
+           (emit-fixup context
+                       (make-fixup lexical-info 0 #'emitter #'resizer)))))
+  (defun maybe-emit-make-cell (lexical-info context)
+    (maybe-emit lexical-info +make-cell+ context))
+  (defun maybe-emit-cell-ref (lexical-info context)
+    (maybe-emit lexical-info +cell-ref+ context)))
+
+;;; FIXME: This is probably a good candidate for a specialized
+;;; instruction.
+(defun maybe-emit-encage (lexical-info context)
+  (let ((index (lexical-info-frame-offset lexical-info)))
+    (flet ((emitter (fixup position code)
+             (assert (= (fixup-size fixup) 5))
+             (assemble-into code position
+                            +ref+ index +make-cell+ +set+ index))
+           (resizer (fixup)
+             (declare (ignore fixup))
+             (if (indirect-lexical-p lexical-info) 5 0)))
+      (emit-fixup context (make-fixup lexical-info 0 #'emitter #'resizer)))))
+
+(defun emit-lexical-set (lexical-info context)
+  (let ((index (lexical-info-frame-offset lexical-info)))
+    (flet ((emitter (fixup position code)
+             (if (= (fixup-size fixup) 3)
+                 (assemble-into code position +ref+ index +cell-set+)
+                 (assemble-into code position +set+ index)))
+           (resizer (fixup)
+             (declare (ignore fixup))
+             (if (indirect-lexical-p lexical-info) 3 2)))
+      (emit-fixup context (make-fixup lexical-info 2 #'emitter #'resizer)))))
+
 (defun compile-symbol (form env context)
   (multiple-value-bind (kind data) (var-info form env)
     (cond ((eq kind :symbol-macro) (compile-form data env context))
@@ -365,7 +413,7 @@
                     (t
                      (setf (lexical-info-closed-over-p data) t)
                      (assemble context +closure+ (closure-index data context))))
-              (assemble context +cell-ref+))
+              (maybe-emit-cell-ref data context))
              ((:special) (assemble context +symbol-value+
                            (literal-index form context)))
              ((:constant) (return-from compile-symbol ; don't pop again.
@@ -461,19 +509,21 @@
           (lexical-count 0))
       (multiple-value-bind (lexical-bindings special-bindings)
           (parse-let bindings env)
-        (dolist (binding lexical-bindings)
-          (compile-form (second binding) env (new-context context :receiving 1))
-          (assemble context +make-cell+)
-          (incf lexical-count))
-        (when lexical-bindings
-          (assemble context +bind+ lexical-count (frame-end env)))
-        (let ((env (bind-vars (mapcar #'first lexical-bindings) env context))
+        (let ((new-env (bind-vars (mapcar #'first lexical-bindings) env context))
               (special-count 0))
-          (dolist (binding special-bindings)
+          (dolist (binding lexical-bindings)
+            ;; Make sure we compile the forms in the old env.
             (compile-form (second binding) env (new-context context :receiving 1))
+            (maybe-emit-make-cell (nth-value 1 (var-info (first binding) new-env)) context)
+            (incf lexical-count))
+          (when lexical-bindings
+            ;; ... And use the end of the old env's frame.
+            (assemble context +bind+ lexical-count (frame-end env)))
+          (dolist (binding special-bindings)
+            (compile-form (second binding) new-env (new-context context :receiving 1))
             (assemble context +special-bind+ (literal-index (first binding) context))
             (incf special-count))
-          (compile-progn body env context)
+          (compile-progn body new-env context)
           (dotimes (_ special-count)
             (assemble context +unbind+)))))))
 
@@ -484,9 +534,11 @@
           (parse-let bindings env)
         (dolist (binding lexical-bindings)
           (compile-form (second binding) env (new-context context :receiving 1))
-          (assemble context +make-cell+)
-          (assemble context +set+ (frame-end env))
-          (setq env (bind-vars (list (first binding)) env context)))
+          (let ((frame-start (frame-end env))
+                (var (first binding)))
+            (setq env (bind-vars (list var) env context))
+            (maybe-emit-make-cell (nth-value 1 var) context)
+            (assemble context +set+ frame-start)))
         (let ((special-count 0))
           (dolist (binding special-bindings)
             (compile-form (second binding) env (new-context context :receiving 1))
@@ -681,10 +733,8 @@
                (assemble context +check-arg-count<=+ max-count))))
       (when required
         (assemble context +bind-required-args+ min-count)
-        ;; Make mutable cells.
-        (dotimes (i min-count) (assemble context +ref+ i +make-cell+))
-        (when required
-          (assemble context +bind+ min-count 0)))
+        (dolist (var required)
+          (maybe-emit-encage (nth-value 1 (var-info var env)) context)))
       (when optionals
         (assemble context +bind-optional-args+
           min-count
@@ -735,34 +785,37 @@
 ;;; Compile an optional/key item and return the resulting environment.
 (defun compile-optional/key-item (var defaulting-form supplied-var next-label
                                   context env)
-  (flet ((default (suppliedp where)
-           (if suppliedp
-               (assemble context +ref+ where)
-               (compile-form defaulting-form env
-                             (new-context context :receiving 1)))
-           (assemble context +make-cell+)
-           (assemble context +set+ where))
-         (supply (suppliedp where)
+  (flet ((default (suppliedp info)
+           (cond (suppliedp
+                  (maybe-emit-encage info context))
+                 (t
+                  (compile-form defaulting-form env
+                                (new-context context :receiving 1))
+                  (maybe-emit-make-cell info context)
+                  (assemble context +set+ (lexical-info-frame-offset info)))))
+         (supply (suppliedp info)
            (if suppliedp
                (compile-literal t env (new-context context :receiving 1))
                (assemble context +nil+))
-           (assemble context +make-cell+)
-           (assemble context +set+ where)))
+           (maybe-emit-make-cell info context)
+           (assemble context +set+ (lexical-info-frame-offset info))))
     (let ((supplied-label (make-label))
-          (var-where (nth-value 1 (var-info var env)))
-          (supplied-var-where (frame-end env)))
-      (emit-jump-if-supplied context var-where supplied-label)
-      (default nil var-where)
-      (when supplied-var
-        (supply nil supplied-var-where))
-      (emit-jump context next-label)
-      (emit-label context supplied-label)
-      (default t var-where)
-      (when supplied-var
-        (supply t supplied-var-where)))
-    (if supplied-var
-        (bind-vars (list supplied-var) env context)
-        env)))
+          (var-info (nth-value 1 (var-info var env))))
+      (multiple-value-bind (env supplied-var-info)
+          (if supplied-var
+              (let ((env (bind-vars (list supplied-var) env context)))
+                (values env (nth-value 1 (var-info supplied-var env))))
+              (values env nil))
+        (emit-jump-if-supplied context (lexical-info-frame-offset var-info) supplied-label)
+        (default nil var-info)
+        (when supplied-var
+          (supply nil supplied-var-info))
+        (emit-jump context next-label)
+        (emit-label context supplied-label)
+        (default t var-info)
+        (when supplied-var
+          (supply t supplied-var-info))
+        env))))
 
 ;;; Compile the lambda in MODULE, returning the resulting
 ;;; CFUNCTION.

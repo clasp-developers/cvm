@@ -304,7 +304,7 @@
                    ((#.+make-cell+) (spush (make-cell (spop))) (incf ip))
                    ((#.+cell-ref+) (spush (cell-value (spop))) (incf ip))
                    ((#.+cell-set+)
-                    (let ((val (spop))) (setf (cell-value (spop)) val))
+                    (setf (cell-value (spop)) (spop))
                     (incf ip))
                    ((#.+make-closure+)
                     (spush (let ((template (constant (next-code))))
