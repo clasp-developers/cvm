@@ -83,6 +83,8 @@
    (lambda (&rest args)
      (bytecode-call fun #() args))))
 
+(defvar *vm*)
+
 (defun bytecode-call (template env args)
   (let* ((entry-pc (bytecode-function-entry-pc template))
          (frame-size (bytecode-function-locals-frame-size template))
@@ -122,7 +124,7 @@
   arg-count
   pc)
 
-(defvar *vm* nil)
+(declaim (type vm *vm*))
 
 (defun initialize-vm (stack-size)
   (setf *vm*
@@ -130,57 +132,178 @@
                  :frame-pointer 0
                  :stack-top 0)))
 
-(defmacro assemble (&rest codes)
-  `(make-array ,(length codes) :element-type '(unsigned-byte 8)
-                               :initial-contents (list ,@codes)))
+(defun signed (x size)
+  (logior x (- (mask-field (byte 1 (1- size)) x))))
 
-(defun disassemble-bytecode (bytecode &key (ip 0) (ninstructions t))
-  (loop with blen = (length bytecode)
-        for ndis from 0
-        until (or (= ip blen) (and (integerp ninstructions) (eql ndis ninstructions)))
-        collect (macrolet ((fixed (n)
-                             `(prog1
-                                  (list op ,@(loop repeat n
-                                                   collect `(aref bytecode (incf ip))))
-                                (incf ip))))
-                  (let ((op (decode (aref bytecode ip))))
-                    (ecase op
-                      ((+make-cell+ +cell-ref+ +cell-set+
-                                    +return+
-                                    +entry+
-                                    +entry-close+ +unbind+
-                                    +catch-close+
-                                    +throw+
-                                    +progv+
-                                    +nil+ +eq+
-                                    +push-values+ +pop-values+
-                                    +append-values+
-                                    +mv-call+
-                                    +mv-call-receive-one+
-                                    +pop+)
-                       (fixed 0))
-                      ((+ref+ +const+ +closure+
-                              +listify-rest-args+
-                              +call+ +call-receive-one+
-                              +set+ +make-closure+ +make-uninitialized-closure+ +initialize-closure+
-                              +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
-                              +bind-required-args+
-                              +special-bind+ +symbol-value+ +symbol-value-set+
-                              +catch+
-                              +fdefinition+ +mv-call-receive-fixed+)
-                       (fixed 1))
-                      ;; These have labels, not integers, as arguments.
-                      ;; TODO: Impose labels on the disassembly.
-                      ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
-                       (fixed 1))
-                      ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+) (fixed 2))
-                      ((+jump-24+ +jump-if-24+ +exit-24+) (fixed 3))
-                      ((+jump-if-supplied-8+) (fixed 2))
-                      ((+jump-if-supplied-16+) (fixed 3))
-                      ((+call-receive-fixed+ +bind+ +bind-optional-args+)
-                       (fixed 2))
-                      ((+parse-key-args+) (fixed 4)))))))
+(defun disassemble-instruction (bytecode &key (ip 0))
+  (flet ((fixed (n) (loop repeat n collect (aref bytecode (incf ip))))
+         (signed (n)
+           (signed (loop repeat n for s from 0 by 8
+                         sum (ash (aref bytecode (incf ip)) s))
+                   (* n 8))))
+    (macrolet ((dfixed (n)
+                 `(prog1 (list* op (fixed ,n)) (incf ip)))
+               (dsigned (n)
+                 `(prog1 (list op (signed ,n)) (incf ip))))
+      (let ((op (decode (aref bytecode ip))))
+        (ecase op
+          ((+make-cell+ +cell-ref+ +cell-set+
+                        +return+
+                        +entry+
+                        +entry-close+ +unbind+
+                        +catch-close+
+                        +throw+
+                        +progv+
+                        +nil+ +eq+
+                        +push-values+ +pop-values+
+                        +append-values+
+                        +mv-call+
+                        +mv-call-receive-one+
+                        +pop+)
+           (dfixed 0))
+          ((+ref+ +const+ +closure+
+                  +listify-rest-args+
+                  +call+ +call-receive-one+
+                  +set+ +make-closure+ +make-uninitialized-closure+ +initialize-closure+
+                  +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
+                  +bind-required-args+
+                  +special-bind+ +symbol-value+ +symbol-value-set+
+                  +catch+
+                  +fdefinition+ +mv-call-receive-fixed+)
+           (dfixed 1))
+          ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
+           (dsigned 1))
+          ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+) (dsigned 2))
+          ((+jump-24+ +jump-if-24+ +exit-24+) (dsigned 3))
+          ((+jump-if-supplied-8+)
+           (prog1 (list op (aref bytecode (incf ip)) (signed 1)) (incf ip)))
+          ((+jump-if-supplied-16+)
+           (prog1 (list op (aref bytecode (incf ip)) (signed 2)) (incf ip)))
+          ((+call-receive-fixed+ +bind+ +bind-optional-args+)
+           (dfixed 2))
+          ((+parse-key-args+) (dfixed 4)))))))
 
+(defun instruction-length (name)
+  (ecase name
+    ((+make-cell+ +cell-ref+ +cell-set+
+                  +return+ +entry+
+                  +entry-close+ +unbind+
+                  +catch-close+ +throw+ +progv+
+                  +nil+ +eq+ +push-values+ +pop-values+
+                  +append-values+
+                  +mv-call+ +mv-call-receive-one+ +pop+)
+     1)
+    ((+ref+ +const+ +closure+
+            +listify-rest-args+
+            +call+ +call-receive-one+
+            +set+ +make-closure+ +make-uninitialized-closure+ +initialize-closure+
+            +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
+            +bind-required-args+
+            +special-bind+ +symbol-value+ +symbol-value-set+
+            +catch+
+            +fdefinition+ +mv-call-receive-fixed+)
+     2)
+    ((+call-receive-fixed+ +bind+ +bind-optional-args+) 3)
+    ((+parse-key-args+) 5)
+    ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+) 2)
+    ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+) 3)
+    ((+jump-24+ +jump-if-24+ +exit-24+) 4)
+    ((+jump-if-supplied-8+) 3)
+    ((+jump-if-supplied-16+) 4)))
+
+(defun %disassemble-bytecode (bytecode)
+  ;; First pass: Go through the bytecode storing all labels
+  ;; (i.e. positions that are jumped to)
+  (let* ((length (length bytecode))
+         (labels
+           (flet ((signed (ip n)
+                    (signed (loop for i from 0 below n
+                                  for s from 0 by 8
+                                  sum (ash (aref bytecode (+ ip i)) s))
+                            (* 8 n))))
+             (loop with ip = 0
+                   for op = (decode (aref bytecode ip))
+                   when (member op '(+jump-8+ +jump-if-8+ +exit-8+ +catch-8+))
+                     collect (+ ip (signed (+ ip 1) 1))
+                   when (member op '(+jump-16+ +jump-if-16+
+                                     +exit-16+ +catch-16+))
+                     collect (+ ip (signed (+ ip 1) 2))
+                   when (member op '(+jump-24+ +jump-if-24+
+                                     +exit-24+ +catch-24+))
+                     collect (+ ip (signed (+ ip 1) 3))
+                   when (member op '(+jump-if-supplied-8+))
+                     collect (+ ip (signed (+ ip 2) 1))
+                   when (member op '(+jump-if-supplied-16+))
+                     collect (+ ip (signed (+ ip 2) 2))
+                   do (incf ip (instruction-length op))
+                   until (>= ip length)))))
+      ;; Now actually output, putting in the labels appropriately
+      (loop with ip = 0
+            for op = (decode (aref bytecode ip))
+            when (position ip labels)
+              collect (write-to-string (position ip labels))
+            collect (labels ((fixed (n &optional (offset 1))
+                               (loop for i from 0 below n
+                                     collect (aref bytecode (+ ip i offset))))
+                             (label-aux (n offset)
+                               (signed
+                                (loop for i from 0 below n
+                                      for s from 0 by 8
+                                      for byte = (aref bytecode (+ ip i offset))
+                                      sum (ash byte s))
+                                (* 8 n)))
+                             (label (n &optional (offset 1))
+                               (let ((pos (+ ip (label-aux n offset))))
+                                 (or (write-to-string (position pos labels))
+                                     (error "BUG: No label for ~d" pos)))))
+                      (ecase op
+                        ((+make-cell+ +cell-ref+ +cell-set+ +return+ +entry+
+                                      +entry-close+ +unbind+ +catch-close+
+                                      +throw+ +progv+ +nil+ +eq+ +push-values+
+                                      +pop-values+ +append-values+ +mv-call+
+                                      +mv-call-receive-one+ +pop+)
+                         (list op))
+                        ((+ref+ +const+ +closure+ +listify-rest-args+ +call+
+                                +call-receive-one+ +set+ +make-closure+
+                                +make-uninitialized-closure+ +initialize-closure+
+                                +check-arg-count=+ +check-arg-count<=+
+                                +check-arg-count>=+ +bind-required-args+
+                                +special-bind+ +symbol-value+ +symbol-value-set+
+                                +catch+ +fdefinition+ +mv-call-receive-fixed+)
+                         (list* op (fixed 1)))
+                        ((+call-receive-fixed+ +bind+ +bind-optional-args+)
+                         (list* op (fixed 2)))
+                        ((+parse-key-args+) (list* op (fixed 4)))
+                        ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
+                         (list op (label 1)))
+                        ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+)
+                         (list op (label 2)))
+                        ((+jump-24+ +jump-if-24+ +exit-24+ +catch-24+)
+                         (list op (label 3)))
+                        ((+jump-if-supplied-8+)
+                         (list op (fixed 1) (label 1 2)))
+                        ((+jump-if-supplied-16+)
+                         (list op (fixed 1) (label 2 2)))))
+            do (incf ip (instruction-length op))
+            until (>= ip length))))
+
+(defun disassemble-bytecode (bytecode)
+  (let ((dis (%disassemble-bytecode bytecode)))
+    (flet ((textify-operand-or-label (thing)
+             (if (integerp thing)
+                 (write-to-string thing)
+                 (concatenate 'string "%" (string thing)))))
+      (format t "~&---module---~%")
+      (loop for item in dis
+            do (etypecase item
+                 (cons ; instruction
+                  (format t "~&  ~a~{ ~a~}~%"
+                          (string-trim "+" (symbol-name (car item)))
+                          (mapcar #'textify-operand-or-label (cdr item))))
+                 ((or string symbol) ; label
+                  (format t "~&~a:~%" (textify-operand-or-label item)))))))
+  (values))
+    
 (defgeneric disassemble (thing))
 
 (defmethod disassemble ((module bytecode-module))
@@ -213,9 +336,6 @@
                          (:constructor make-sbind-dynenv ())))
 
 (defvar *dynenv* nil)
-
-(defun signed (x size)
-  (logior x (- (mask-field (byte 1 (1- size)) x))))
 
 (defun vm (bytecode closure constants frame-size)
   (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
@@ -271,7 +391,7 @@
               when *trace*
                 do (fresh-line)
                    (let ((frame-end (+ bp frame-size)))
-                     (prin1 (list (first (disassemble-bytecode bytecode :ip ip :ninstructions 1))
+                     (prin1 (list (disassemble-instruction bytecode :ip ip)
                                   bp
                                   sp
                                   (subseq stack bp frame-end)
