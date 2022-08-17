@@ -731,11 +731,11 @@
                (assemble context +check-arg-count>=+ min-count))
              (when (not more-p)
                (assemble context +check-arg-count<=+ max-count))))
-      (when required
+      (unless (zerop min-count)
         (assemble context +bind-required-args+ min-count)
         (dolist (var required)
           (maybe-emit-encage (nth-value 1 (var-info var env)) context)))
-      (when optionals
+      (unless (zerop optional-count)
         (assemble context +bind-optional-args+
           min-count
           optional-count)
@@ -755,7 +755,7 @@
           (dolist (key-name (rest key-name))
             (literal-index key-name context)))
         (setq env (bind-vars (mapcar #'cadar keys) env context)))
-      (when optionals
+      (unless (zerop optional-count)
         (do ((optionals optionals (rest optionals))
              (optional-label (make-label) next-optional-label)
              (next-optional-label (make-label) (make-label)))
@@ -821,7 +821,8 @@
 ;;; CFUNCTION.
 (defun compile-lambda (lambda-list body env module)
   (let* ((function (make-cfunction module))
-         (context (make-context :receiving t :function function)))
+         (context (make-context :receiving t :function function))
+         (env (make-lexical-environment env :frame-end 0)))
     (setf (cfunction-index function)
           (vector-push-extend function (cmodule-cfunctions module)))
     (multiple-value-bind (aux-bindings env)
