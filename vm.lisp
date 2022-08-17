@@ -186,8 +186,16 @@
 (defmethod disassemble ((module bytecode-module))
   (disassemble-bytecode (bytecode-module-bytecode module)))
 
+#+clasp
+(defmethod disassemble ((module core:bytecode-module))
+  (disassemble-bytecode (core:bytecode-module/bytecode module)))
+
 (defmethod disassemble ((function bytecode-function))
   (disassemble (bytecode-function-module function)))
+
+#+clasp
+(defmethod disassemble ((function core:global-bytecode-entry-point))
+  (disassemble (core:global-entry-point-code function)))
 
 (defmethod disassemble ((function bytecode-closure))
   (disassemble (bytecode-closure-template function)))
