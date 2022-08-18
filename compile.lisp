@@ -361,6 +361,7 @@
       (assemble context +pop+))))
 
 (flet ((maybe-emit (lexical-info opcode context)
+         (assert lexical-info)
          (flet ((emitter (fixup position code)
                   (assert (= (fixup-size fixup) 1))
                   (setf (aref code position) opcode))
@@ -537,7 +538,7 @@
           (let ((frame-start (frame-end env))
                 (var (first binding)))
             (setq env (bind-vars (list var) env context))
-            (maybe-emit-make-cell (nth-value 1 var) context)
+            (maybe-emit-make-cell (nth-value 1 (var-info var env)) context)
             (assemble context +set+ frame-start)))
         (let ((special-count 0))
           (dolist (binding special-bindings)
