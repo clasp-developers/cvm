@@ -744,9 +744,9 @@
         (setq env (bind-vars (mapcar #'first optionals) env context)))
       (when rest
         (assemble context +listify-rest-args+ max-count)
-        (assemble context +make-cell+)
         (assemble context +set+ (frame-end env))
-        (setq env (bind-vars (list rest) env context)))
+        (setq env (bind-vars (list rest) env context))
+        (maybe-emit-encage (nth-value 1 (var-info rest env)) context))
       (when keys
         (let ((key-name (mapcar #'caar keys)))
           (assemble context +parse-key-args+
