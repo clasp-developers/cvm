@@ -13,6 +13,7 @@
                         for name in names
                         collect `(defconstant ,name ,i))
                 (defun decode (code)
+                  (assert (< code ,(length names)))
                   (nth code '(,@names))))))
   (defcodes +ref+ +const+ +closure+
     +call+ +call-receive-one+ +call-receive-fixed+
@@ -258,34 +259,36 @@
                                (let ((pos (+ ip (label-aux n offset))))
                                  (or (write-to-string (position pos labels))
                                      (error "BUG: No label for ~d" pos)))))
-                      (ecase op
-                        ((+make-cell+ +cell-ref+ +cell-set+ +return+ +entry+
-                                      +entry-close+ +unbind+ +catch-close+
-                                      +throw+ +progv+ +nil+ +eq+ +push-values+
-                                      +pop-values+ +append-values+ +mv-call+
-                                      +mv-call-receive-one+ +pop+ +push+)
-                         (list op))
-                        ((+ref+ +const+ +closure+ +listify-rest-args+ +call+
-                                +call-receive-one+ +set+ +make-closure+
-                                +make-uninitialized-closure+ +initialize-closure+
-                                +check-arg-count=+ +check-arg-count<=+
-                                +check-arg-count>=+ +bind-required-args+
-                                +special-bind+ +symbol-value+ +symbol-value-set+
-                                +catch+ +fdefinition+ +mv-call-receive-fixed+)
-                         (list* op (fixed 1)))
-                        ((+call-receive-fixed+ +bind+ +bind-optional-args+)
-                         (list* op (fixed 2)))
-                        ((+parse-key-args+) (list* op (fixed 4)))
-                        ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
-                         (list op (label 1)))
-                        ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+)
-                         (list op (label 2)))
-                        ((+jump-24+ +jump-if-24+ +exit-24+ +catch-24+)
-                         (list op (label 3)))
-                        ((+jump-if-supplied-8+)
-                         (list op (fixed 1) (label 1 2)))
-                        ((+jump-if-supplied-16+)
-                         (list op (fixed 1) (label 2 2)))))
+                      (cons
+                       ip
+                       (ecase op
+                         ((+make-cell+ +cell-ref+ +cell-set+ +return+ +entry+
+                                       +entry-close+ +unbind+ +catch-close+
+                                       +throw+ +progv+ +nil+ +eq+ +push-values+
+                                       +pop-values+ +append-values+ +mv-call+
+                                       +mv-call-receive-one+ +pop+ +push+ +bad+)
+                          (list op))
+                         ((+ref+ +const+ +closure+ +listify-rest-args+ +call+
+                                 +call-receive-one+ +set+ +make-closure+
+                                 +make-uninitialized-closure+ +initialize-closure+
+                                 +check-arg-count=+ +check-arg-count<=+
+                                 +check-arg-count>=+ +bind-required-args+
+                                 +special-bind+ +symbol-value+ +symbol-value-set+
+                                 +catch+ +fdefinition+ +mv-call-receive-fixed+)
+                          (list* op (fixed 1)))
+                         ((+call-receive-fixed+ +bind+ +bind-optional-args+)
+                          (list* op (fixed 2)))
+                         ((+parse-key-args+) (list* op (fixed 4)))
+                         ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
+                          (list op (label 1)))
+                         ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+)
+                          (list op (label 2)))
+                         ((+jump-24+ +jump-if-24+ +exit-24+ +catch-24+)
+                          (list op (label 3)))
+                         ((+jump-if-supplied-8+)
+                          (list op (fixed 1) (label 1 2)))
+                         ((+jump-if-supplied-16+)
+                          (list op (fixed 1) (label 2 2))))))
             do (incf ip (instruction-length op))
             until (>= ip length))))
 
@@ -294,14 +297,15 @@
     (flet ((textify-operand-or-label (thing)
              (if (integerp thing)
                  (write-to-string thing)
-                 (concatenate 'string "%" (string thing)))))
+                 (concatenate 'string "L" (string thing)))))
       (format t "~&---module---~%")
       (loop for item in dis
             do (etypecase item
                  (cons ; instruction
-                  (format t "~&  ~a~{ ~a~}~%"
-                          (string-trim "+" (symbol-name (car item)))
-                          (mapcar #'textify-operand-or-label (cdr item))))
+                  (format t "~&~4,'0d:  ~a~{ ~a~}~%"
+                          (car item)
+                          (string-trim "+" (symbol-name (cadr item)))
+                          (mapcar #'textify-operand-or-label (cddr item))))
                  ((or string symbol) ; label
                   (format t "~&~a:~%" (textify-operand-or-label item)))))))
   (values))
