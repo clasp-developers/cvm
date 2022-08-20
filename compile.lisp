@@ -477,6 +477,7 @@
      (compile-multiple-value-call (first rest) (rest rest) env context))
     ((multiple-value-prog1)
      (compile-multiple-value-prog1 (first rest) (rest rest) env context))
+    ((locally) (compile-locally rest env context))
     ((the) ; don't do anything.
      (compile-form (second rest) env context))
     (otherwise ; function call or macro
@@ -517,6 +518,10 @@
              ((null vars)
               (setq env (make-lexical-environment env :vars new-vars))))))))
   env)
+
+(defun compile-locally (body env context)
+  (multiple-value-bind (body decls) (alexandria:parse-body body)
+    (compile-progn body (process-declarations decls env) context)))
 
 (defun parse-let (bindings env)
   (let ((lexical-bindings '())
