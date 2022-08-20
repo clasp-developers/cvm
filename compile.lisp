@@ -364,12 +364,12 @@
                                 (function (context-function parent)))
   (make-context :receiving receiving :function function))
 
-(defun compile (lambda-expression)
+(defun compile (lambda-expression
+                &optional (env (make-null-lexical-environment)))
   (check-type lambda-expression lambda-expression)
-  (let* ((env (make-null-lexical-environment))
-         (module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t)))
-         (lambda-list (cadr lambda-expression))
-         (body (cddr lambda-expression)))
+  (let ((module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t)))
+        (lambda-list (cadr lambda-expression))
+        (body (cddr lambda-expression)))
     (link-function (compile-lambda lambda-list body env module))))
 
 (defun compile-form (form env context)
