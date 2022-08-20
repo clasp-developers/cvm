@@ -187,6 +187,15 @@
         (logand index #xff) (logand (ash index -8) #xff))
       (assemble context +const+ index)))
 
+(defun emit-parse-key-args (context max-count key-count key-names env aok-p)
+  (if (<= key-count 127)
+      (assemble context +parse-key-args+
+                max-count
+                (if aok-p (boole boole-ior 128 key-count) key-count)
+                (literal-index (first key-names) context)
+                (frame-end env))
+      (error "Handle more than 127 keyword parameters - you need ~s" key-count)))
+
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
@@ -738,7 +747,7 @@
 ;;; 2. Default any unsupplied optional/key values and set the
 ;;; corresponding suppliedp var for each optional/key.
 (defun compile-lambda-list (lambda-list env context)
-  (multiple-value-bind (required optionals rest keys aok-p aux)
+  (multiple-value-bind (required optionals rest keys aok-p aux key-p)
       (alexandria:parse-ordinary-lambda-list lambda-list)
     (let* ((function (context-function context))
            (entry-point (cfunction-entry-point function))
@@ -746,7 +755,7 @@
            (optional-count (length optionals))
            (max-count (+ min-count optional-count))
            (key-count (length keys))
-           (more-p (or rest keys))
+           (more-p (or rest key-p))
            (env (bind-vars required env context)))
       (emit-label context entry-point)
       ;; Check that a valid number of arguments have been
@@ -772,14 +781,10 @@
         (assemble context +set+ (frame-end env))
         (setq env (bind-vars (list rest) env context))
         (maybe-emit-encage (nth-value 1 (var-info rest env)) context))
-      (when keys
-        (let ((key-name (mapcar #'caar keys)))
-          (assemble context +parse-key-args+
-            max-count
-            (if aok-p (- key-count) key-count)
-            (literal-index (first key-name) context)
-            (frame-end env))
-          (dolist (key-name (rest key-name))
+      (when key-p
+        (let ((key-names (mapcar #'caar keys)))
+          (emit-parse-key-args context max-count key-count key-names env aok-p)
+          (dolist (key-name (rest key-names))
             (literal-index key-name context)))
         (setq env (bind-vars (mapcar #'cadar keys) env context)))
       (unless (zerop optional-count)
@@ -794,7 +799,7 @@
             (setq env
                   (compile-optional/key-item optional-var defaulting-form supplied-var
                                              next-optional-label context env)))))
-      (when keys
+      (when key-p
         (do ((keys keys (rest keys))
              (key-label (make-label) next-key-label)
              (next-key-label (make-label) (make-label)))
