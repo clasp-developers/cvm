@@ -187,6 +187,13 @@
         (logand index #xff) (logand (ash index -8) #xff))
       (assemble context +const+ index)))
 
+(defun emit-fdefinition (context index)
+  (if (> index 255)
+      (assemble context
+        +long+ +fdefinition+
+        (logand index #xff) (logand (ash index -8) #xff))
+      (assemble context +fdefinition+ index)))
+
 (defun emit-parse-key-args (context max-count key-count key-names env aok-p)
   (if (<= key-count 127)
       (assemble context +parse-key-args+
@@ -732,7 +739,7 @@
           (ecase kind
             ((:global-function nil)
              (when (null kind) (warn "Unknown function ~a" fnameoid))
-             (assemble context +fdefinition+ (literal-index fnameoid context)))
+             (emit-fdefinition context (literal-index fnameoid context)))
             ((:local-function)
              (reference-lexical-info data context)))))
     (when (eql (context-receiving context) t)
