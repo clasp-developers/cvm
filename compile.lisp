@@ -180,6 +180,13 @@
              (t (error "???? PC offset too big ????")))))
     (emit-fixup context (make-fixup label 3 #'emitter #'resizer))))
 
+(defun emit-const (context index)
+  (if (> index 255)
+      (assemble context
+        +long+ +const+
+        (logand index #xff) (logand (ash index -8) #xff))
+      (assemble context +const+ index)))
+
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
@@ -357,7 +364,7 @@
   (unless (eql (context-receiving context) 0)
     (case form
       ((nil) (assemble context +nil+))
-      (t (assemble context +const+ (literal-index form context))))
+      (t (emit-const context (literal-index form context))))
     (when (eql (context-receiving context) t)
       (assemble context +pop+))))
 
@@ -671,7 +678,7 @@
                                     (context-module context)))
                (literal-index (literal-index fun context)))
           (cond ((zerop (length (cfunction-closed fun)))
-                 (assemble context +const+ literal-index))
+                 (emit-const context literal-index))
                 (t
                  (push (cons fun frame-slot) closures)
                  (assemble context +make-uninitialized-closure+
@@ -710,7 +717,7 @@
           (loop for info across closed do
             (reference-lexical-info info context))
           (if (zerop (length closed))
-              (assemble context +const+ (literal-index cfunction context))
+              (emit-const context (literal-index cfunction context))
               (assemble context +make-closure+ (literal-index cfunction context))))
         (multiple-value-bind (kind data) (fun-info fnameoid env)
           (ecase kind

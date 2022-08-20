@@ -162,7 +162,8 @@
                         +mv-call+
                         +mv-call-receive-one+
                         +pop+
-                        +push+)
+                        +push+
+                        +long+)
            (dfixed 0))
           ((+ref+ +const+ +closure+
                   +listify-rest-args+
@@ -194,7 +195,8 @@
                   +catch-close+ +throw+ +progv+
                   +nil+ +eq+ +push-values+ +pop-values+
                   +append-values+
-                  +mv-call+ +mv-call-receive-one+ +pop+ +push+)
+                  +mv-call+ +mv-call-receive-one+
+                  +pop+ +push+ +long+)
      1)
     ((+ref+ +const+ +closure+
             +listify-rest-args+
@@ -266,7 +268,7 @@
                                        +entry-close+ +unbind+ +catch-close+
                                        +throw+ +progv+ +nil+ +eq+ +push-values+
                                        +pop-values+ +append-values+ +mv-call+
-                                       +mv-call-receive-one+ +pop+ +push+ +bad+)
+                                       +mv-call-receive-one+ +pop+ +push+ +long+)
                           (list op))
                          ((+ref+ +const+ +closure+ +listify-rest-args+ +call+
                                  +call-receive-one+ +set+ +make-closure+
@@ -685,4 +687,8 @@
                    ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))
                    ((#.+pop+) (setf (vm-values vm) (list (spop))) (incf ip))
                    ((#.+push+) (spush (first (vm-values vm))) (incf ip))
-                   ((#.+long+) (error "Unimplemented!"))))))))
+                   ((#.+long+)
+                    (ecase (next-code)
+                      (#.+const+
+                       (spush (constant (+ (next-code) (ash (next-code) 8))))
+                       (incf ip))))))))))
