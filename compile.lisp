@@ -1,5 +1,6 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (ql:quickload '#:alexandria))
+  (ql:quickload '#:alexandria)
+  (ql:quickload '#:trivial-cltl2))
 
 (defpackage #:compile-to-vm
   (:use #:cl)
@@ -297,6 +298,8 @@
   (let ((info (cdr (assoc symbol (vars env)))))
     (cond (info (values (var-info-kind info) (var-info-data info)))
           ((constantp symbol nil) (values :constant (eval symbol)))
+          ;; globally special
+          ((trivial-cltl2:variable-information symbol) (values :special nil))
           (t (values nil nil)))))
 
 ;;; Like the above. Check the struct for details.
