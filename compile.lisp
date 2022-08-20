@@ -1134,10 +1134,6 @@
         (core:bytecode-module/setf-bytecode bytecode-module bytecode))))
   (cfunction-info cfunction))
 
-#+clasp
-(defun bcompile (lambda-expression)
-  (core:bytecode-closure/make (compile lambda-expression) 0))
-
 ;;; --------------------------------------------------
 ;;;
 ;;; Generate C++ code for the VM bytecodes
