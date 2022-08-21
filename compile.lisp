@@ -204,6 +204,11 @@
                 (frame-end env))
       (error "Handle more than 127 keyword parameters - you need ~s" key-count)))
 
+(defun emit-bind (context count offset)
+  (cond ((= count 1) (assemble context +set+ offset))
+        ((= count 0))
+        (t (assemble context +bind+ count offset))))
+
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
@@ -551,8 +556,7 @@
                  (incf lexical-binding-count)
                  (maybe-emit-make-cell (nth-value 1 (var-info var post-binding-env))
                                        context)))))
-      (unless (zerop lexical-binding-count)
-        (assemble context +bind+ lexical-binding-count (frame-end env)))
+      (emit-bind context lexical-binding-count (frame-end env))
       (compile-progn body post-binding-env context)
       (dotimes (_ special-binding-count)
         (assemble context +unbind+)))))
@@ -660,7 +664,7 @@
               funs)
         (incf frame-slot)
         (incf fun-count)))
-    (assemble context +bind+ fun-count (frame-end env))
+    (emit-bind context fun-count (frame-end env))
     (let ((env (make-lexical-environment
                 (bind-vars fun-vars env context)
                 :funs (append funs (funs env)))))
@@ -704,7 +708,7 @@
                  (assemble context +make-uninitialized-closure+
                    literal-index))))
         (incf frame-slot))
-      (assemble context +bind+ fun-count frame-start)
+      (emit-bind context fun-count frame-start)
       (dolist (closure closures)
         (loop for info across (cfunction-closed (car closure)) do
           (reference-lexical-info info context))
