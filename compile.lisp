@@ -478,6 +478,8 @@
     ((quote) (compile-literal (first rest) env context))
     ((symbol-macrolet)
      (compile-symbol-macrolet (first rest) (rest rest) env context))
+    ((macrolet)
+     (compile-macrolet (first rest) (rest rest) env context))
     ((multiple-value-call)
      (compile-multiple-value-call (first rest) (rest rest) env context))
     ((multiple-value-prog1)
@@ -976,6 +978,43 @@
          (new-env (make-lexical-environment
                    env :vars (append smacros (vars env)))))
     (compile-progn body new-env context)))
+
+
+(defun lexenv-for-macrolet (env)
+  ;; Macrolet expanders need to be compiled in the local compilation environment,
+  ;; so that e.g. their bodies can use macros defined in outer macrolets.
+  ;; At the same time, they obviously do not have access to any runtime
+  ;; environment. Taking out all runtime information is one way to do this but
+  ;; it's slightly not-nice in that if someone writes a macroexpander that does
+  ;; try to use local runtime information may fail silently by using global info
+  ;; instead. So: KLUDGE.
+  (make-lexical-environment
+   env
+   :vars (let ((cpairs nil))
+           (dolist (pair (vars env) (nreverse cpairs))
+             (let ((info (cdr pair)))
+               (when (member (var-info-kind info) '(:constant :symbol-macro))
+                 (push pair cpairs)))))
+   :funs (let ((cpairs nil))
+           (dolist (pair (funs env) (nreverse cpairs))
+             (let ((info (cdr pair)))
+               (when (member (fun-info-kind info) '(:global-macro :local-macro))
+                 (push pair cpairs)))))
+   :tags nil :blocks nil :frame-end 0))
+
+(defun compile-macrolet (bindings body env context)
+  (let ((macros nil))
+    (dolist (binding bindings)
+      (let* ((name (car binding))
+             (lambda-list (cadr binding))
+             (body (cddr binding))
+             (info (make-local-macro-fun-info
+                    (compile (trivial-cltl2:parse-macro name lambda-list body)
+                             (lexenv-for-macrolet env)))))
+        (push (cons name info) macros)))
+    (compile-locally body (make-lexical-environment
+                           env :funs (append macros (funs env)))
+                     context)))
 
 (defun compile-multiple-value-call (function-form forms env context)
   (compile-form function-form env (new-context context :receiving 1))
