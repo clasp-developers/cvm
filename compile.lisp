@@ -488,6 +488,7 @@
     ((multiple-value-prog1)
      (compile-multiple-value-prog1 (first rest) (rest rest) env context))
     ((locally) (compile-locally rest env context))
+    ((eval-when) (compile-eval-when (first rest) (rest rest) env context))
     ((the) ; don't do anything.
      (compile-form (second rest) env context))
     (otherwise ; function call or macro
@@ -532,6 +533,11 @@
 (defun compile-locally (body env context)
   (multiple-value-bind (body decls) (alexandria:parse-body body)
     (compile-progn body (process-declarations decls env) context)))
+
+(defun compile-eval-when (situations body env context)
+  (if (or (member 'cl:eval situations) (member :execute situations))
+      (compile-progn body env context)
+      (compile-literal nil env context)))
 
 ;;; Return the variable and value form for a LET binding.
 (defun canonicalize-binding (binding)
