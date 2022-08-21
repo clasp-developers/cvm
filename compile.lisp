@@ -654,8 +654,7 @@
             (fun-var (gensym "FLET-FUN")))
         (compile-function `(lambda ,(second definition)
                              (block ,(fun-name-block-name name)
-                               ;; FIXME: declarations.
-                               ,@(cddr definition)))
+                               (locally ,@(cddr definition))))
                           env (new-context context :receiving 1))
         (push fun-var fun-vars)
         (push (cons name (make-local-function-fun-info
@@ -696,8 +695,7 @@
         (let* ((name (first definition))
                (fun (compile-lambda (second definition)
                                     `((block ,(fun-name-block-name name)
-                                        ;; FIXME: Declarations.
-                                        ,@(cddr definition)))
+                                        (locally ,@(cddr definition))))
                                     env
                                     (context-module context)))
                (literal-index (literal-index fun context)))
