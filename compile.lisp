@@ -395,6 +395,10 @@
     (when (eql (context-receiving context) t)
       (assemble context +pop+))))
 
+(defun compile-load-time-value (form read-only-p env context)
+  (declare (ignore read-only-p))
+  (compile-literal (eval form) env context))
+
 (flet ((maybe-emit (lexical-info opcode context)
          (assert lexical-info)
          (flet ((emitter (fixup position code)
@@ -479,6 +483,7 @@
     ((throw) (compile-throw (first rest) (second rest) env context))
     ((progv) (compile-progv (first rest) (second rest) (rest (rest rest)) env context))
     ((quote) (compile-literal (first rest) env context))
+    ((load-time-value) (compile-load-time-value (first rest) (second rest) env context))
     ((symbol-macrolet)
      (compile-symbol-macrolet (first rest) (rest rest) env context))
     ((macrolet)
