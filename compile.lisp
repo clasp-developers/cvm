@@ -13,9 +13,11 @@
 ;;; FIXME: New package
 (macrolet ((defcodes (&rest names)
              `(progn
-                ,@(loop for i from 0
-                        for name in names
-                        collect `(defconstant ,name ,i))
+                ,@(let ((forms nil))
+                    (do ((i 0 (1+ i))
+                         (names names (cdr names)))
+                        ((endp names) forms)
+                      (push `(defconstant ,(first names) ,i) forms)))
                 (defparameter *codes* '(,@names))
                 (defun decode (code)
                   (nth code '(,@names))))))
@@ -114,9 +116,10 @@
       (vector-push-extend value assembly))))
 
 (defun assemble-into (code position &rest values)
-  (loop for value in values
-        for position from position
-        do (setf (aref code position) value)))
+  (do ((values values (rest values))
+       (position position (1+ position)))
+      ((null values))
+    (setf (aref code position) (first values))))
 
 ;;; Write WORD of bytesize SIZE to VECTOR at POSITION.
 (defun write-le-unsigned (vector word size position)
@@ -972,13 +975,14 @@
   (assemble context +unbind+))
 
 (defun compile-symbol-macrolet (bindings body env context)
-  (let* ((smacros (loop for (symbol expansion) in bindings
-                        for info = (make-symbol-macro-var-info expansion)
-                        collect (cons symbol info)))
-         (new-env (make-lexical-environment
-                   env :vars (append smacros (vars env)))))
-    (compile-progn body new-env context)))
-
+  (let ((smacros nil))
+    (dolist (binding bindings)
+      (push (cons (car binding) (make-symbol-macro-var-info (cadr binding)))
+            smacros))
+    (compile-progn body (make-lexical-environment
+                         env
+                         :vars (append (nreverse smacros) (vars env)))
+                   context)))
 
 (defun lexenv-for-macrolet (env)
   ;; Macrolet expanders need to be compiled in the local compilation environment,
@@ -1049,9 +1053,10 @@
 ;;; Use the optimistic bytecode vector sizes to initialize the optimistic cfunction position.
 (defun initialize-cfunction-positions (cmodule)
   (let ((position 0))
-    (loop for function across (cmodule-cfunctions cmodule) do
-      (setf (cfunction-position function) position)
-      (incf position (length (cfunction-bytecode function))))))
+    (dotimes (i (length (cmodule-cfunctions cmodule)))
+      (let ((function (aref (cmodule-cfunctions cmodule) i)))
+        (setf (cfunction-position function) position)
+        (incf position (length (cfunction-bytecode function)))))))
 
 ;;; Update the positions of all affected functions and annotations
 ;;; from the effect of increasing the size of FIXUP by INCREASE. The
@@ -1060,14 +1065,16 @@
   (let ((function (fixup-function fixup)))
     ;; Update affected annotation positions in this function.
     (let ((annotations (cfunction-annotations function)))
-      (loop for index from (1+ (fixup-index fixup)) below (length annotations) do
+      (do ((index (1+ (fixup-index fixup)) (1+ index)))
+          ((= index (length annotations)))
         (let ((annotation (aref annotations index)))
           (incf (annotation-position annotation) increase))))
     ;; Increase the size of this function to account for fixup growth.
     (incf (cfunction-extra function) increase)
     ;; Update module offsets for affected functions.
     (let ((functions (cmodule-cfunctions (cfunction-cmodule function))))
-      (loop for index from (1+ (cfunction-index function)) below (length functions) do
+      (do ((index (1+ (cfunction-index function)) (1+ index)))
+          ((= index (length functions)))
         (let ((function (aref functions index)))
           (incf (cfunction-position function) increase))))))
 
@@ -1077,16 +1084,17 @@
   (loop
     (let ((changed-p nil)
           (functions (cmodule-cfunctions cmodule)))
-      (loop for function across functions do
-        (loop for annotation across (cfunction-annotations function) do
-          (when (fixup-p annotation)
-            (let ((old-size (fixup-size annotation))
-                  (new-size (funcall (fixup-resizer annotation) annotation)))
-              (unless (= old-size new-size)
-                (assert (>= new-size old-size))
-                (setf (fixup-size annotation) new-size)
-                (setq changed-p t)
-                (update-positions annotation (- new-size old-size)))))))
+      (dotimes (i (length functions))
+        (dotimes (j (length (cfunction-annotations (aref functions i))))
+          (let ((annotation (aref (cfunction-annotations (aref functions i)) j)))
+            (when (fixup-p annotation)
+              (let ((old-size (fixup-size annotation))
+                    (new-size (funcall (fixup-resizer annotation) annotation)))
+                (unless (= old-size new-size)
+                  (assert (>= new-size old-size))
+                  (setf (fixup-size annotation) new-size)
+                  (setq changed-p t)
+                  (update-positions annotation (- new-size old-size))))))))
       (unless changed-p
         (return)))))
 
@@ -1104,11 +1112,13 @@
   (let ((bytecode (make-array (module-bytecode-size cmodule)
                               :element-type '(unsigned-byte 8)))
         (index 0))
-    (loop for function across (cmodule-cfunctions cmodule) do
-      (let ((cfunction-bytecode (cfunction-bytecode function))
-            (position 0))
-        (loop for annotation across (cfunction-annotations function) do
-          (when (fixup-p annotation)
+    (dotimes (i (length (cmodule-cfunctions cmodule)))
+      (let* ((function (aref (cmodule-cfunctions cmodule) i))
+             (cfunction-bytecode (cfunction-bytecode function))
+             (position 0))
+        (dotimes (i (length (cfunction-annotations function)))
+          (let ((annotation (aref (cfunction-annotations function) i)))
+            (when (fixup-p annotation)
             (unless (zerop (fixup-size annotation))
               (assert (= (fixup-size annotation)
                          (funcall (fixup-resizer annotation) annotation)))
@@ -1124,7 +1134,7 @@
                        index
                        bytecode)
               (incf position (fixup-initial-size annotation))
-              (incf index (fixup-size annotation)))))
+              (incf index (fixup-size annotation))))))
         ;; Copy any remaining bytes from this function to the module.
         (let ((end (length cfunction-bytecode)))
           (replace bytecode cfunction-bytecode :start1 index :start2 position :end2 end)
@@ -1151,23 +1161,24 @@
              #+clasp
              (core:bytecode-module/make)))
       ;; Create the real function objects.
-      (loop for cfunction across (cmodule-cfunctions cmodule) do
-        (setf (cfunction-info cfunction)
-              #-clasp
-              (vm::make-bytecode-function
-               bytecode-module
-               (cfunction-nlocals cfunction)
-               (length (cfunction-closed cfunction))
-               (annotation-module-position (cfunction-entry-point cfunction)))
-              #+clasp
-              (core:global-bytecode-entry-point/make
-               (core:function-description/make :function-name 'test)
-               bytecode-module
-               (cfunction-nlocals cfunction)
-               0 0 0 0 nil 0 ; unused at the moment
-               (length (cfunction-closed cfunction))
-               (make-list 7 :initial-element
-                          (annotation-module-position (cfunction-entry-point cfunction))))))
+      (dotimes (i (length (cmodule-cfunctions cmodule)))
+        (let ((cfunction (aref (cmodule-cfunctions cmodule) i)))
+          (setf (cfunction-info cfunction)
+                #-clasp
+                (vm::make-bytecode-function
+                 bytecode-module
+                 (cfunction-nlocals cfunction)
+                 (length (cfunction-closed cfunction))
+                 (annotation-module-position (cfunction-entry-point cfunction)))
+                #+clasp
+                (core:global-bytecode-entry-point/make
+                 (core:function-description/make :function-name 'test)
+                 bytecode-module
+                 (cfunction-nlocals cfunction)
+                 0 0 0 0 nil 0 ; unused at the moment
+                 (length (cfunction-closed cfunction))
+                 (make-list 7 :initial-element
+                            (annotation-module-position (cfunction-entry-point cfunction)))))))
       ;; Now replace the cfunctions in the cmodule literal vector with
       ;; real bytecode functions.
       (dotimes (index literal-length)
