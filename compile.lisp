@@ -585,11 +585,15 @@
   (if (null pairs)
       (unless (eql (context-receiving context) 0)
         (assemble context +nil+))
-      (loop for (var valf . rest) on pairs by #'cddr
-            do (compile-setq-1 var valf env
-                               (if rest
-                                   (new-context context :receiving 0)
-                                   context)))))
+      (do ((pairs pairs (cddr pairs)))
+          ((endp pairs))
+        (let ((var (car pairs))
+              (valf (cadr pairs))
+              (rest (cddr pairs)))
+          (compile-setq-1 var valf env
+                          (if rest
+                              (new-context context :receiving 0)
+                              context))))))
 
 (defun compile-setq-1 (var valf env context)
   (multiple-value-bind (kind data) (var-info var env)
