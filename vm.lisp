@@ -151,7 +151,6 @@
         (ecase op
           ((+make-cell+ +cell-ref+ +cell-set+
                         +return+
-                        +entry+
                         +entry-close+ +unbind+
                         +catch-close+
                         +throw+
@@ -172,7 +171,7 @@
                   +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
                   +bind-required-args+
                   +special-bind+ +symbol-value+ +symbol-value-set+
-                  +catch+
+                  +entry+ +catch+
                   +fdefinition+ +mv-call-receive-fixed+)
            (dfixed 1))
           ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
@@ -190,7 +189,7 @@
 (defun instruction-length (name)
   (ecase name
     ((+make-cell+ +cell-ref+ +cell-set+
-                  +return+ +entry+
+                  +return+
                   +entry-close+ +unbind+
                   +catch-close+ +throw+ +progv+
                   +nil+ +eq+ +push-values+ +pop-values+
@@ -205,7 +204,7 @@
             +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
             +bind-required-args+
             +special-bind+ +symbol-value+ +symbol-value-set+
-            +catch+
+            +entry+ +catch+
             +fdefinition+ +mv-call-receive-fixed+)
      2)
     ((+call-receive-fixed+ +bind+ +bind-optional-args+) 3)
@@ -264,7 +263,7 @@
                       (cons
                        ip
                        (ecase op
-                         ((+make-cell+ +cell-ref+ +cell-set+ +return+ +entry+
+                         ((+make-cell+ +cell-ref+ +cell-set+ +return+
                                        +entry-close+ +unbind+ +catch-close+
                                        +throw+ +progv+ +nil+ +eq+ +push-values+
                                        +pop-values+ +append-values+ +mv-call+
@@ -276,7 +275,8 @@
                                  +check-arg-count=+ +check-arg-count<=+
                                  +check-arg-count>=+ +bind-required-args+
                                  +special-bind+ +symbol-value+ +symbol-value-set+
-                                 +catch+ +fdefinition+ +mv-call-receive-fixed+)
+                                 +entry+ +catch+
+                                 +fdefinition+ +mv-call-receive-fixed+)
                           (list* op (fixed 1)))
                          ((+call-receive-fixed+ +bind+ +bind-optional-args+)
                           (list* op (fixed 2)))
@@ -590,7 +590,7 @@
                                     (setf sp old-sp
                                           bp old-bp)
                                     (go loop)))))
-                         (spush *dynenv*)
+                         (setf (stack (+ bp (next-code))) *dynenv*)
                        loop
                          (vm bytecode closure constants frame-size))))
                    ((#.+catch-8+)
