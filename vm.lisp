@@ -580,7 +580,6 @@
                     (incf ip))
                    ((#.+entry+)
                     (let ((*dynenv* *dynenv*))
-                      (incf ip)
                       (tagbody
                          (setf *dynenv*
                                (make-entry-dynenv
@@ -591,6 +590,7 @@
                                           bp old-bp)
                                     (go loop)))))
                          (setf (stack (+ bp (next-code))) *dynenv*)
+                         (incf ip)
                        loop
                          (vm bytecode closure constants frame-size))))
                    ((#.+catch-8+)
