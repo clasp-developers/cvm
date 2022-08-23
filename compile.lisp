@@ -212,6 +212,22 @@
         ((= count 0))
         (t (assemble context +bind+ count offset))))
 
+(defun emit-call (context count)
+  (let ((receiving (context-receiving context)))
+    (cond ((or (eql receiving t) (eql receiving 0))
+           (assemble context +call+ count))
+          ((eql receiving 1)
+           (assemble context +call-receive-one+ count))
+          (t (assemble context +call-receive-fixed+ count receiving)))))
+
+(defun emit-mv-call (context)
+  (let ((receiving (context-receiving context)))
+    (cond ((or (eql receiving t) (eql receiving 0))
+           (assemble context +mv-call+))
+          ((eql receiving 1)
+           (assemble context +mv-call-receive-one+))
+          (t (assemble context +mv-call-receive-fixed+ receiving)))))
+
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
@@ -507,14 +523,11 @@
           ;; unknown function warning handled by compile-function
           ;; note we do a double lookup, which is inefficient
           (compile-function head env (new-context context :receiving 1))
-          (dolist (arg rest)
-            (compile-form arg env (new-context context :receiving 1)))
-          (let ((receiving (context-receiving context)))
-            (cond ((eq receiving t) (assemble context +call+ (length rest)))
-                  ((eql receiving 1)
-                   (assemble context +call-receive-one+ (length rest)))
-                  (t (assemble context
-                       +call-receive-fixed+ (length rest) receiving))))))))))
+          (do ((args rest (rest args))
+               (arg-count 0 (1+ arg-count)))
+              ((endp args)
+               (emit-call context arg-count))
+            (compile-form (first args) env (new-context context :receiving 1)))))))))
 
 (defun compile-progn (forms env context)
   (do ((forms forms (rest forms)))
@@ -1040,10 +1053,7 @@
         (compile-form form env (new-context context :receiving t))
         (assemble context +append-values+))
       (assemble context +pop-values+)))
-  (let ((receiving (context-receiving context)))
-    (cond ((eq receiving t) (assemble context +mv-call+))
-          ((eql receiving 1) (assemble context +mv-call-receive-one+))
-          (t (assemble context +mv-call-receive-fixed+ receiving)))))
+  (emit-mv-call context))
 
 (defun compile-multiple-value-prog1 (first-form forms env context)
   (compile-form first-form env context)
