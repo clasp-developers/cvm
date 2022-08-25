@@ -95,24 +95,25 @@
          (literals (bytecode-module-literals module)))
     ;; Set up the stack, then call VM.
     (let* ((vm *vm*)
-           (stack (vm-stack vm))
-           (original-sp (vm-stack-top vm)))
+           (stack (vm-stack vm)))
       (setf (vm-args vm) (vm-stack-top vm))
       ;; Pass the argments on the stack.
       (dolist (arg args)
         (setf (aref stack (vm-stack-top vm)) arg)
         (incf (vm-stack-top vm)))
       (setf (vm-arg-count vm) (length args))
-      (incf (vm-stack-top vm) 2)
       ;; Save the previous frame pointer and pc
-      (setf (aref stack (- (vm-stack-top vm) 2)) (vm-pc vm))
-      (setf (aref stack (- (vm-stack-top vm) 1)) (vm-frame-pointer vm))
-      (setf (vm-frame-pointer vm) (vm-stack-top vm))
-      (setf (vm-pc vm) entry-pc)
-      (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
-      ;; set up the stack, then call vm
-      (vm bytecode env literals frame-size)
-      (setf (vm-stack-top vm) original-sp)
+      (let ((old-fp (vm-frame-pointer vm))
+            (old-pc (vm-pc vm)))
+        (setf (vm-frame-pointer vm) (vm-stack-top vm))
+        (setf (vm-pc vm) entry-pc)
+        (setf (vm-stack-top vm) (+ (vm-frame-pointer vm) frame-size))
+        ;; set up the stack, then call vm
+        (vm bytecode env literals frame-size)
+        ;; tear down the frame.
+        (setf (vm-stack-top vm) (vm-frame-pointer vm))
+        (setf (vm-frame-pointer vm) old-fp)
+        (setf (vm-pc vm) old-pc))
       (values-list (vm-values vm)))))
 
 (defstruct vm
@@ -465,11 +466,6 @@
                    ((#.+return+)
                     ;; Assert that all temporaries are popped off..
                     (assert (eql sp (+ bp frame-size)))
-                    ;; Restore previous sp and bp and tear down the stack frame.
-                    (let ((old-bp (aref stack (- bp 1))))
-                      (setf (vm-pc vm) (aref stack (- bp 2)))
-                      (setf sp (- bp 2))
-                      (setf bp old-bp))
                     (return))
                    ((#.+jump-8+) (incf ip (next-code-signed)))
                    ((#.+jump-16+) (incf ip (next-code-signed-16)))
