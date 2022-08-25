@@ -228,6 +228,13 @@
            (assemble context +mv-call-receive-one+))
           (t (assemble context +mv-call-receive-fixed+ receiving)))))
 
+(defun emit-special-bind (context symbol)
+  (assemble context +special-bind+ (literal-index symbol context)))
+
+(defun emit-unbind (context count)
+  (dotimes (_ count)
+    (assemble context +unbind+)))
+
 ;;; Different kinds of things can go in the variable namespace and they can
 ;;; all shadow each other, so we use this structure to disambiguate.
 (defstruct (var-info (:constructor make-var-info (kind data)))
@@ -535,26 +542,31 @@
        (compile-form (first forms) env context))
     (compile-form (first forms) env (new-context context :receiving 0))))
 
-;;; Perform the effects of DECLARATIONS on ENV, returning the specials
-;;; declared as a secondary value.
-(defun process-declarations (declarations env)
+;;; Add VARS as specials in ENV.
+(defun add-specials (vars env)
+  (if vars
+      (do ((vars vars (rest vars))
+           (new-vars (vars env)
+                     (acons (first vars)
+                            (make-special-var-info)
+                            new-vars)))
+          ((endp vars)
+           (make-lexical-environment env :vars new-vars)))
+      env))
+
+(defun extract-specials (declarations)
   (let ((specials '()))
     (dolist (declaration declarations)
       (dolist (specifier (cdr declaration))
         (case (first specifier)
           (special
-           (do ((vars (rest specifier) (rest vars))
-                (new-vars (vars env) (acons (first vars)
-                                            (make-special-var-info)
-                                            new-vars)))
-               ((null vars)
-                (setq env (make-lexical-environment env :vars new-vars)))
-             (push (first vars) specials))))))
-    (values env specials)))
+           (dolist (var (rest specifier))
+             (push var specials))))))
+    specials))
 
 (defun compile-locally (body env context)
   (multiple-value-bind (body decls) (alexandria:parse-body body)
-    (compile-progn body (process-declarations decls env) context)))
+    (compile-progn body (add-specials (extract-specials decls) env) context)))
 
 (defun compile-eval-when (situations body env context)
   (if (or (member 'cl:eval situations) (member :execute situations))
@@ -568,49 +580,49 @@
       (values binding nil)))
 
 (defun compile-let (bindings body env context)
-  (multiple-value-bind (body decls) (alexandria:parse-body body)
-    (multiple-value-bind (env specials) (process-declarations decls env)
-      (let ((lexical-binding-count 0)
-            (special-binding-count 0)
-            (post-binding-env env))
-        (dolist (binding bindings)
-          (multiple-value-bind (var valf) (canonicalize-binding binding)
-            (compile-form valf env (new-context context :receiving 1))
-            (cond ((or (member var specials)
-                       (eq (trivial-cltl2:variable-information var) :special))
-                   (incf special-binding-count)
-                   (assemble context +special-bind+ (literal-index var context)))
-                  (t
-                   (setq post-binding-env (bind-vars (list var) post-binding-env context))
-                   (incf lexical-binding-count)
-                   (maybe-emit-make-cell (nth-value 1 (var-info var post-binding-env))
-                                         context)))))
-        (emit-bind context lexical-binding-count (frame-end env))
-        (compile-progn body post-binding-env context)
-        (dotimes (_ special-binding-count)
-          (assemble context +unbind+))))))
+  (multiple-value-bind (body decls)
+      (alexandria:parse-body body)
+    (let* ((specials (extract-specials decls))
+           (lexical-binding-count 0)
+           (special-binding-count 0)
+           (post-binding-env (add-specials specials env)))
+      (dolist (binding bindings)
+        (multiple-value-bind (var valf) (canonicalize-binding binding)
+          (compile-form valf env (new-context context :receiving 1))
+          (cond ((or (member var specials)
+                     (eq (trivial-cltl2:variable-information var) :special))
+                 (incf special-binding-count)
+                 (emit-special-bind context var))
+                (t
+                 (setq post-binding-env (bind-vars (list var) post-binding-env context))
+                 (incf lexical-binding-count)
+                 (maybe-emit-make-cell (nth-value 1 (var-info var post-binding-env))
+                                       context)))))
+      (emit-bind context lexical-binding-count (frame-end env))
+      (compile-progn body post-binding-env context)
+      (emit-unbind context special-binding-count))))
 
 (defun compile-let* (bindings body env context)
-  (multiple-value-bind (body decls) (alexandria:parse-body body)
-    (multiple-value-bind (env specials) (process-declarations decls env)
-      (let ((env (process-declarations decls env))
-            (special-binding-count 0))
-        (dolist (binding bindings)
-          (multiple-value-bind (var valf) (canonicalize-binding binding)
-            (compile-form valf env (new-context context :receiving 1))
-            (cond ((or (member var specials)
-                       (eq (trivial-cltl2:variable-information var) :special))
-                   (incf special-binding-count)
-                   (assemble context +special-bind+ (literal-index var context)))
-                  (t
-                   (let ((frame-start (frame-end env)))
-                     (setq env (bind-vars (list var) env context))
-                     (maybe-emit-make-cell (nth-value 1 (var-info var env))
-                                           context)
-                     (assemble context +set+ frame-start))))))
-        (compile-progn body env context)
-        (dotimes (_ special-binding-count)
-          (assemble context +unbind+))))))
+  (multiple-value-bind (body decls)
+      (alexandria:parse-body body)
+    (let ((specials (extract-specials decls))
+          (special-binding-count 0))
+      (dolist (binding bindings)
+        (multiple-value-bind (var valf) (canonicalize-binding binding)
+          (compile-form valf env (new-context context :receiving 1))
+          (cond ((or (member var specials)
+                     (eq (trivial-cltl2:variable-information var) :special))
+                 (setq env (add-specials (list var) env))
+                 (incf special-binding-count)
+                 (emit-special-bind context var))
+                (t
+                 (let ((frame-start (frame-end env)))
+                   (setq env (bind-vars (list var) env context))
+                   (maybe-emit-make-cell (nth-value 1 (var-info var env))
+                                         context)
+                   (assemble context +set+ frame-start))))))
+      (compile-progn body env context)
+      (emit-unbind context special-binding-count))))
 
 (defun compile-setq (pairs env context)
   (if (null pairs)
@@ -794,108 +806,148 @@
 ;;;
 ;;; 2. Default any unsupplied optional/key values and set the
 ;;; corresponding suppliedp var for each optional/key.
-(defun compile-lambda-list (lambda-list env context)
-  (multiple-value-bind (required optionals rest keys aok-p aux key-p)
-      (alexandria:parse-ordinary-lambda-list lambda-list)
-    (let* ((function (context-function context))
-           (entry-point (cfunction-entry-point function))
-           (min-count (length required))
-           (optional-count (length optionals))
-           (max-count (+ min-count optional-count))
-           (key-count (length keys))
-           (more-p (or rest key-p))
-           (env (bind-vars required env context)))
-      (emit-label context entry-point)
-      ;; Check that a valid number of arguments have been
-      ;; supplied to this function.
-      (cond ((and required (= min-count max-count) (not more-p))
-             (assemble context +check-arg-count=+ min-count))
-            (t
-             (when required
-               (assemble context +check-arg-count>=+ min-count))
-             (when (not more-p)
-               (assemble context +check-arg-count<=+ max-count))))
-      (unless (zerop min-count)
-        (assemble context +bind-required-args+ min-count)
-        (dolist (var required)
-          (maybe-emit-encage (nth-value 1 (var-info var env)) context)))
-      (unless (zerop optional-count)
-        (assemble context +bind-optional-args+
-          min-count
-          optional-count)
-        (setq env (bind-vars (mapcar #'first optionals) env context)))
-      (when rest
-        (assemble context +listify-rest-args+ max-count)
-        (assemble context +set+ (frame-end env))
-        (setq env (bind-vars (list rest) env context))
-        (maybe-emit-encage (nth-value 1 (var-info rest env)) context))
-      (when key-p
-        (let ((key-names (mapcar #'caar keys)))
-          (emit-parse-key-args context max-count key-count key-names env aok-p)
-          (dolist (key-name (rest key-names))
-            (literal-index key-name context)))
-        (setq env (bind-vars (mapcar #'cadar keys) env context)))
-      (unless (zerop optional-count)
-        (do ((optionals optionals (rest optionals))
-             (optional-label (make-label) next-optional-label)
-             (next-optional-label (make-label) (make-label)))
-            ((null optionals)
-             (emit-label context optional-label))
-          (emit-label context optional-label)
-          (destructuring-bind (optional-var defaulting-form supplied-var)
-              (first optionals)
-            (setq env
+(defun compile-with-lambda-list (lambda-list body env context)
+  (multiple-value-bind (body decls)
+      (alexandria:parse-body body)
+    (multiple-value-bind (required optionals rest keys aok-p aux key-p)
+        (alexandria:parse-ordinary-lambda-list lambda-list)
+      (let* ((function (context-function context))
+             (entry-point (cfunction-entry-point function))
+             (min-count (length required))
+             (optional-count (length optionals))
+             (max-count (+ min-count optional-count))
+             (key-count (length keys))
+             (more-p (or rest key-p))
+             (env (bind-vars required env context))
+             (specials (extract-specials decls))
+             (special-binding-count 0))
+        (emit-label context entry-point)
+        ;; Check that a valid number of arguments have been
+        ;; supplied to this function.
+        (cond ((and required (= min-count max-count) (not more-p))
+               (assemble context +check-arg-count=+ min-count))
+              (t
+               (when required
+                 (assemble context +check-arg-count>=+ min-count))
+               (when (not more-p)
+                 (assemble context +check-arg-count<=+ max-count))))
+        (unless (zerop min-count)
+          (assemble context +bind-required-args+ min-count)
+          (dolist (var required)
+            (cond ((member var specials)
+                   (let ((info (nth-value 1 (var-info var env))))
+                     (assemble context +ref+ (lexical-info-frame-offset info))
+                     (emit-special-bind context var))
+                   (incf special-binding-count))
+                  (t
+                   (maybe-emit-encage (nth-value 1 (var-info var env)) context))))
+          (setq env (add-specials (intersection specials required) env)))
+        (unless (zerop optional-count)
+          (assemble context +bind-optional-args+
+            min-count
+            optional-count)
+          (setq env (bind-vars (mapcar #'first optionals) env context)))
+        (when rest
+          (assemble context +listify-rest-args+ max-count)
+          (assemble context +set+ (frame-end env))
+          (setq env (bind-vars (list rest) env context))
+          (cond ((member rest specials)
+                 (assemble +ref+ (nth-value 1 (var-info rest env)) context)
+                 (emit-special-bind context rest)
+                 (incf special-binding-count 1)
+                 (setq env (add-specials (list rest) env)))
+                (t
+                 (maybe-emit-encage (nth-value 1 (var-info rest env)) context))))
+        (when key-p
+          (let ((key-names (mapcar #'caar keys)))
+            (emit-parse-key-args context max-count key-count key-names env aok-p)
+            (dolist (key-name (rest key-names))
+              (literal-index key-name context)))
+          (setq env (bind-vars (mapcar #'cadar keys) env context)))
+        (unless (zerop optional-count)
+          (do ((optionals optionals (rest optionals))
+               (optional-label (make-label) next-optional-label)
+               (next-optional-label (make-label) (make-label)))
+              ((null optionals)
+               (emit-label context optional-label))
+            (emit-label context optional-label)
+            (destructuring-bind (optional-var defaulting-form supplied-var)
+                (first optionals)
+              (multiple-value-bind (new-env special-count)
                   (compile-optional/key-item optional-var defaulting-form supplied-var
-                                             next-optional-label context env)))))
-      (when key-p
-        (do ((keys keys (rest keys))
-             (key-label (make-label) next-key-label)
-             (next-key-label (make-label) (make-label)))
-            ((null keys)
-             (emit-label context key-label))
-          (emit-label context key-label)
-          (destructuring-bind ((key-name key-var) defaulting-form supplied-var)
-              (first keys)
-            (declare (ignore key-name))
-            (setq env
+                                             next-optional-label specials context env)
+                (setq env new-env)
+                (incf special-binding-count special-count)))))
+        (when key-p
+          (do ((keys keys (rest keys))
+               (key-label (make-label) next-key-label)
+               (next-key-label (make-label) (make-label)))
+              ((null keys)
+               (emit-label context key-label))
+            (emit-label context key-label)
+            (destructuring-bind ((key-name key-var) defaulting-form supplied-var)
+                (first keys)
+              (declare (ignore key-name))
+              (multiple-value-bind (new-env special-count)
                   (compile-optional/key-item key-var defaulting-form supplied-var
-                                             next-key-label context env)))))
-      (values aux env))))
+                                             next-key-label specials context env)
+                (setq env new-env)
+                (incf special-binding-count special-count)))))
+        (compile-let* aux body env context)
+        (emit-unbind context special-binding-count)))))
 
 ;;; Compile an optional/key item and return the resulting environment.
 (defun compile-optional/key-item (var defaulting-form supplied-var next-label
-                                  context env)
-  (flet ((default (suppliedp info)
-           (cond (suppliedp
-                  (maybe-emit-encage info context))
-                 (t
-                  (compile-form defaulting-form env
-                                (new-context context :receiving 1))
-                  (maybe-emit-make-cell info context)
-                  (assemble context +set+ (lexical-info-frame-offset info)))))
-         (supply (suppliedp info)
-           (if suppliedp
-               (compile-literal t env (new-context context :receiving 1))
-               (assemble context +nil+))
-           (maybe-emit-make-cell info context)
-           (assemble context +set+ (lexical-info-frame-offset info))))
-    (let ((supplied-label (make-label))
-          (var-info (nth-value 1 (var-info var env))))
-      (multiple-value-bind (env supplied-var-info)
-          (if supplied-var
-              (let ((env (bind-vars (list supplied-var) env context)))
-                (values env (nth-value 1 (var-info supplied-var env))))
-              (values env nil))
-        (emit-jump-if-supplied context (lexical-info-frame-offset var-info) supplied-label)
-        (default nil var-info)
+                                  specials context env)
+  (let ((special-count 0))
+    (flet ((default (suppliedp specialp var info)
+             (cond (suppliedp
+                    (cond (specialp
+                           (assemble context +ref+ (lexical-info-frame-offset info))
+                           (emit-special-bind context var)
+                           (incf special-count))
+                          (t
+                           (maybe-emit-encage info context))))
+                   (t
+                    (compile-form defaulting-form env
+                                  (new-context context :receiving 1))
+                    (cond (specialp
+                           (emit-special-bind context var)
+                           (incf special-count))
+                          (t
+                           (maybe-emit-make-cell info context)
+                           (assemble context +set+ (lexical-info-frame-offset info)))))))
+           (supply (suppliedp specialp var)
+             (if suppliedp
+                 (compile-literal t env (new-context context :receiving 1))
+                 (assemble context +nil+))
+             (cond (specialp
+                    (emit-special-bind context var)
+                    (incf special-count))
+                   (t
+                    (let ((info (nth-value 1 (var-info var env))))
+                      (maybe-emit-make-cell info context)
+                      (assemble context +set+ (lexical-info-frame-offset info)))))))
+      (let ((supplied-label (make-label))
+            (info (nth-value 1 (var-info var env)))
+            (specialp (member var specials))
+            (supplied-specialp (member supplied-var specials)))
+        (when specialp
+          (setq env (add-specials (list var) env)))
         (when supplied-var
-          (supply nil supplied-var-info))
+          (setq env (bind-vars (list supplied-var) env context))
+          (when supplied-specialp
+            (setq env (add-specials (list supplied-var) env))))
+        (emit-jump-if-supplied context (lexical-info-frame-offset info) supplied-label)
+        (default nil specialp var info)
+        (when supplied-var
+          (supply nil supplied-specialp supplied-var))
         (emit-jump context next-label)
         (emit-label context supplied-label)
-        (default t var-info)
+        (default t specialp var info)
         (when supplied-var
-          (supply t supplied-var-info))
-        env))))
+          (supply t supplied-specialp supplied-var))
+        (values env special-count)))))
 
 ;;; Compile the lambda in MODULE, returning the resulting
 ;;; CFUNCTION.
@@ -905,9 +957,7 @@
          (env (make-lexical-environment env :frame-end 0)))
     (setf (cfunction-index function)
           (vector-push-extend function (cmodule-cfunctions module)))
-    (multiple-value-bind (aux-bindings env)
-        (compile-lambda-list lambda-list env context)
-      (compile-let* aux-bindings body env context))
+    (compile-with-lambda-list lambda-list body env context)
     (assemble context +return+)
     function))
 
@@ -994,7 +1044,7 @@
   (compile-form values env (new-context context :receiving 1))
   (assemble context +progv+)
   (compile-progn body env context)
-  (assemble context +unbind+))
+  (emit-unbind context 1))
 
 (defun compile-symbol-macrolet (bindings body env context)
   (let ((smacros nil))
