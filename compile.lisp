@@ -329,7 +329,7 @@
 
 ;;; Like the above. Check the struct for details.
 (defun fun-info (symbol env)
-  (let ((info (cdr (assoc symbol (funs env)))))
+  (let ((info (cdr (assoc symbol (funs env) :test #'equal))))
     (cond (info (values (fun-info-kind info) (fun-info-data info)))
           ((macro-function symbol nil)
            (values :global-macro (macro-function symbol nil)))
