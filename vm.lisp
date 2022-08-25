@@ -289,9 +289,9 @@
                          ((+jump-24+ +jump-if-24+ +exit-24+ +catch-24+)
                           (list op (label 3)))
                          ((+jump-if-supplied-8+)
-                          (list op (fixed 1) (label 1 2)))
+                          `(,op ,@(fixed 1) ,(label 1 2)))
                          ((+jump-if-supplied-16+)
-                          (list op (fixed 1) (label 2 2))))))
+                          `(,op ,@(fixed 1) ,(label 2 2))))))
             do (incf ip (instruction-length op))
             until (>= ip length))))
 
