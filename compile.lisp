@@ -35,6 +35,7 @@
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
+    +save-sp+ +restore-sp+
     +entry+
     +exit-8+ +exit-16+ +exit-24+
     +entry-close+
@@ -142,21 +143,26 @@
     (dotimes (i (fixup-initial-size fixup))
       (vector-push-extend 0 assembly))))
 
+(defun control+label-emitter (fixup position code opcode8 opcode16 opcode24)
+  (let* ((size (fixup-size fixup))
+         (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
+    (setf (aref code position)
+          (ecase size (2 opcode8) (3 opcode16) (4 opcode24)))
+    (write-le-unsigned code offset (1- size) (1+ position))))
+
+(defun control+label-resizer (fixup)
+  (typecase (fixup-delta fixup)
+    ((signed-byte 8) 2)
+    ((signed-byte 16) 3)
+    ((signed-byte 24) 4)
+    (t (error "???? PC offset too big ????"))))
+
 ;;; Emit OPCODE and then a label reference.
 (defun emit-control+label (context opcode8 opcode16 opcode24 label)
   (flet ((emitter (fixup position code)
-           (let* ((size (fixup-size fixup))
-                  (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
-             (setf (aref code position)
-                   (ecase size (2 opcode8) (3 opcode16) (4 opcode24)))
-             (write-le-unsigned code offset (1- size) (1+ position))))
-         (resizer (fixup)
-           (typecase (fixup-delta fixup)
-             ((signed-byte 8) 2)
-             ((signed-byte 16) 3)
-             ((signed-byte 24) 4)
-             (t (error "???? PC offset too big ????")))))
-    (emit-fixup context (make-fixup label 2 #'emitter #'resizer))))
+           (control+label-emitter fixup position code
+                                  opcode8 opcode16 opcode24)))
+    (emit-fixup context (make-fixup label 2 #'emitter #'control+label-resizer))))
 
 (defun emit-jump (context label)
   (emit-control+label context +jump-8+ +jump-16+ +jump-24+ label))
@@ -461,6 +467,44 @@
              (declare (ignore fixup))
              (if (indirect-lexical-p lexical-info) 3 2)))
       (emit-fixup context (make-fixup lexical-info 2 #'emitter #'resizer)))))
+
+(defun constant-resizer (n) (lambda (fixup) (declare (ignore fixup)) n))
+
+(defun emit-entry-or-save-sp (context dynenv-info)
+  (let ((index (lexical-info-frame-offset dynenv-info)))
+    (flet ((emitter (fixup position code)
+             (declare (ignore fixup))
+             (if (lexical-info-closed-over-p dynenv-info)
+                 (assemble-into code position +entry+ index)
+                 (assemble-into code position +save-sp+ index))))
+      (emit-fixup context (make-fixup dynenv-info 2 #'emitter (constant-resizer 2))))))
+
+(defun emit-ref-or-restore-sp (context dynenv-info)
+  (let ((index (lexical-info-frame-offset dynenv-info)))
+    (flet ((emitter (fixup position code)
+             (declare (ignore fixup))
+             (if (lexical-info-closed-over-p dynenv-info)
+                 (assemble-into code position +ref+ index)
+                 (assemble-into code position +restore-sp+ index))))
+      (emit-fixup context (make-fixup dynenv-info 2 #'emitter (constant-resizer 2))))))
+
+(defun emit-exit-or-jump (context dynenv-info label)
+  (flet ((emitter (fixup position code)
+           (if (lexical-info-closed-over-p dynenv-info)
+               (control+label-emitter fixup position code
+                                      +exit-8+ +exit-16+ +exit-24+)
+               (control+label-emitter fixup position code
+                                      +jump-8+ +jump-16+ +jump-24+))))
+    (emit-fixup context (make-fixup label 2 #'emitter #'control+label-resizer))))
+
+(defun maybe-emit-entry-close (context dynenv-info)
+  (flet ((emitter (fixup position code)
+           (assert (= (fixup-size fixup) 1))
+           (assemble-into code position +entry-close+))
+         (resizer (fixup)
+           (declare (ignore fixup))
+           (if (lexical-info-closed-over-p dynenv-info) 1 0)))
+    (emit-fixup context (make-fixup dynenv-info 0 #'emitter #'resizer))))
 
 (defun compile-symbol (form env context)
   (multiple-value-bind (kind data) (var-info form env)
@@ -974,25 +1018,34 @@
               new-tags)))
     (let ((env (make-lexical-environment env :tags new-tags)))
       ;; Bind the dynamic environment.
-      (assemble context +entry+ (lexical-info-frame-offset dynenv-info))
+      (emit-entry-or-save-sp context dynenv-info)
       ;; Compile the body, emitting the tag destination labels.
       (dolist (statement statements)
         (if (go-tag-p statement)
             (emit-label context (cddr (assoc statement (tags env))))
-            (compile-form statement env (new-context context :receiving 0))))))
-  (assemble context +entry-close+)
+            (compile-form statement env (new-context context :receiving 0)))))
+    (maybe-emit-entry-close context dynenv-info))
   ;; return nil if we really have to
   (unless (eql (context-receiving context) 0)
     (assemble context +nil+)
     (when (eql (context-receiving context) t)
       (assemble context +pop+))))
 
+(defun compile-exit (exit-info context)
+  (destructuring-bind (dynenv-info . label) exit-info
+    (cond ((eq (lexical-info-function dynenv-info)
+               (context-function context))
+           (emit-ref-or-restore-sp context dynenv-info)
+           (emit-exit-or-jump context dynenv-info label))
+          (t
+           (setf (lexical-info-closed-over-p dynenv-info) t)
+           (assemble context +closure+ (closure-index dynenv-info context))
+           (emit-exit context label)))))
+
 (defun compile-go (tag env context)
   (let ((pair (assoc tag (tags env))))
     (if pair
-        (destructuring-bind (dynenv-info . tag-label) (cdr pair)
-          (reference-lexical-info dynenv-info context)
-          (emit-exit context tag-label))
+        (compile-exit (cdr pair) context)
         (error "The GO tag ~a does not exist." tag))))
 
 (defun compile-block (name body env context)
@@ -1002,7 +1055,7 @@
          (label (make-label))
          (normal-label (make-label)))
     ;; Bind the dynamic environment.
-    (assemble context +entry+ (lexical-info-frame-offset dynenv-info))
+    (emit-entry-or-save-sp context dynenv-info)
     (let ((env (make-lexical-environment
                 env
                 :blocks (acons name (cons dynenv-info label) (blocks env)))))
@@ -1015,15 +1068,13 @@
     (when (eql (context-receiving context) 1)
       (assemble context +push+)
       (emit-label context normal-label))
-    (assemble context +entry-close+)))
+    (maybe-emit-entry-close context dynenv-info)))
 
 (defun compile-return-from (name value env context)
   (compile-form value env (new-context context :receiving t))
   (let ((pair (assoc name (blocks env))))
     (if pair
-        (destructuring-bind (dynenv-info . block-label) (cdr pair)
-          (reference-lexical-info dynenv-info context)
-          (emit-exit context block-label))
+        (compile-exit (cdr pair) context)
         (error "The block ~a does not exist." name))))
 
 (defun compile-catch (tag body env context)
