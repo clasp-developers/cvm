@@ -29,7 +29,6 @@
     +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
     +push-values+ +append-values+ +pop-values+
     +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
-    +save-sp+ +restore-sp+
     +entry+
     +exit-8+ +exit-16+ +exit-24+
     +entry-close+
@@ -173,7 +172,6 @@
                   +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
                   +bind-required-args+
                   +special-bind+ +symbol-value+ +symbol-value-set+
-                  +save-sp+ +restore-sp+
                   +entry+ +catch+
                   +fdefinition+ +mv-call-receive-fixed+)
            (dfixed 1))
@@ -207,7 +205,6 @@
             +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
             +bind-required-args+
             +special-bind+ +symbol-value+ +symbol-value-set+
-            +save-sp+ +restore-sp+
             +entry+ +catch+
             +fdefinition+ +mv-call-receive-fixed+)
      2)
@@ -279,7 +276,6 @@
                                  +check-arg-count=+ +check-arg-count<=+
                                  +check-arg-count>=+ +bind-required-args+
                                  +special-bind+ +symbol-value+ +symbol-value-set+
-                                 +save-sp+ +restore-sp+
                                  +entry+ +catch+
                                  +fdefinition+ +mv-call-receive-fixed+)
                           (list* op (fixed 1)))
@@ -577,12 +573,6 @@
                                           allow-other-keys-p))
                                  unknown-key-p)
                         (error "Unknown key arg ~a!" unknown-key-p)))
-                    (incf ip))
-                   ((#.+save-sp+)
-                    (setf (stack (+ bp (next-code))) sp)
-                    (incf ip))
-                   ((#.+restore-sp+)
-                    (setf sp (stack (+ bp (next-code))))
                     (incf ip))
                    ((#.+entry+)
                     (let ((*dynenv* *dynenv*))
