@@ -2,8 +2,8 @@
   (:use #:cl)
   (:shadow #:return #:throw #:symbol-value #:progv #:fdefinition #:nil #:eq
            #:set #:push #:pop)
+  (:shadow #:disassemble)
   ;; Additional opname exports are done below.
-  (:export #:constant-arg-p #:label-arg-p #:keys-arg-p)
   (:export #:bytecode-module #:make-bytecode-module
            #:bytecode-module-bytecode #:bytecode-module-literals)
   (:export #:bytecode-function #:make-bytecode-function
@@ -11,7 +11,8 @@
            #:bytecode-function-environment-size
            #:bytecode-function-locals-frame-size)
   (:export #:bytecode-closure #:make-bytecode-closure
-           #:bytecode-closure-template #:bytecode-closure-env))
+           #:bytecode-closure-template #:bytecode-closure-env)
+  (:export #:disassemble #:disassemble-instruction))
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.
 
@@ -40,6 +41,12 @@
 
 (defun keys-arg-p (val)
   (= (logand +mask-arg+ val) +keys-arg+))
+
+;;; *full-codes* contains descriptions of the instructions in the following format:
+;;; (name opcode (args...) (long-args...))
+;;; the name is a symbol.
+;;; the args and long args are encoded as a number of bytes from 1 to 3, LOGIOR'd
+;;; with the constant, label, and keys code that is appropriate, if any.
 
 (macrolet ((defops (&rest ops)
              (let (rev-fullcodes

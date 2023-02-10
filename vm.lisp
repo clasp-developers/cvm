@@ -1,7 +1,8 @@
 (defpackage #:cvm/vm
   (:use #:cl)
   (:local-nicknames (#:m #:cvm/machine))
-  (:export #:initialize-vm))
+  (:export #:initialize-vm)
+  (:export #:*trace*))
 
 (in-package #:cvm/vm)
 
@@ -125,14 +126,15 @@
         (loop with end = (length bytecode)
               until (eql ip end)
               when *trace*
-                do (fresh-line)
+                do (fresh-line *trace-output*)
                    (let ((frame-end (+ bp frame-size)))
-                     (prin1 (list (disassemble-instruction bytecode :ip ip)
+                     (prin1 (list (m:disassemble-instruction bytecode ip)
                                   bp
                                   sp
                                   (subseq stack bp frame-end)
                                   ;; We take the max for partial frames.
-                                  (subseq stack frame-end (max sp frame-end)))))
+                                  (subseq stack frame-end (max sp frame-end)))
+                            *trace-output*))
               do (ecase (code)
                    ((#.m:ref) (spush (stack (+ bp (next-code)))) (incf ip))
                    ((#.m:const) (spush (constant (next-code))) (incf ip))

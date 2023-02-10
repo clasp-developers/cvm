@@ -9,5 +9,6 @@
                :alexandria :trucler :trivial-cltl2) ; compiler
   :components ((:file "machine")
                (:file "structures" :depends-on ("machine"))
+               (:file "disassemble" :depends-on ("structures" "machine"))
                (:file "compile" :depends-on ("structures" "machine"))
-               (:file "vm" :depends-on ("structures" "machine"))))
+               (:file "vm" :depends-on ("disassemble" "structures" "machine"))))
