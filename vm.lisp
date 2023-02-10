@@ -1,98 +1,31 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (ql:quickload '#:closer-mop))
-
-(defpackage #:vm
+(defpackage #:cvm/vm
   (:use #:cl)
-  (:shadow #:disassemble))
+  (:local-nicknames (#:m #:cvm/machine))
+  (:export #:initialize-vm))
 
-(in-package #:vm)
+(in-package #:cvm/vm)
 
-(macrolet ((defcodes (&rest names)
-             `(progn
-                ,@(loop for i from 0
-                        for name in names
-                        collect `(defconstant ,name ,i))
-                (defun decode (code)
-                  (assert (< code ,(length names)))
-                  (nth code '(,@names))))))
-  (defcodes +ref+ +const+ +closure+
-    +call+ +call-receive-one+ +call-receive-fixed+
-    +bind+ +set+
-    +make-cell+ +cell-ref+ +cell-set+
-    +make-closure+ +make-uninitialized-closure+ +initialize-closure+
-    +return+
-    +bind-required-args+ +bind-optional-args+
-    +listify-rest-args+ +parse-key-args+
-    +jump-8+ +jump-16+ +jump-24+
-    +jump-if-8+ +jump-if-16+ +jump-if-24+
-    +jump-if-supplied-8+ +jump-if-supplied-16+
-    +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
-    +push-values+ +append-values+ +pop-values+
-    +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
-    +entry+
-    +exit-8+ +exit-16+ +exit-24+
-    +entry-close+
-    +catch-8+ +catch-16+
-    +throw+ +catch-close+
-    +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
-    +progv+
-    +fdefinition+
-    +nil+
-    +eq+
-    +pop+
-    +push+
-    ;; Keep this as the last instruction...
-    +long+))
-
-;;; The VM objects we need.
-
-(defstruct bytecode-module
-  bytecode
-  literals)
-
-(defclass bytecode-closure ()
-  ((template :initarg :template :accessor bytecode-closure-template)
-   (env :initarg :env :accessor bytecode-closure-env))
-  (:metaclass closer-mop:funcallable-standard-class))
-
-(defun make-bytecode-closure (template env)
-  (make-instance 'bytecode-closure :template template :env env))
-
-(defmethod initialize-instance :after ((c bytecode-closure) &key)
-  (with-slots (template env) c
-    (closer-mop:set-funcallable-instance-function
-      c
-      (lambda (&rest args)
-        (bytecode-call template env args)))))
-
-(defclass bytecode-function ()
-  ((module :initarg :module :accessor bytecode-function-module)
-   (locals-frame-size :initarg :locals-frame-size :accessor bytecode-function-locals-frame-size)
-   (environment-size :initarg :environment-size :accessor bytecode-function-environment-size)
-   (entry-pc :initarg :entry-pc :accessor bytecode-function-entry-pc))
-  (:metaclass closer-mop:funcallable-standard-class))
-
-(defun make-bytecode-function (module locals-frame-size environment-size entry-pc)
-  (make-instance 'bytecode-function
-                 :module module
-                 :locals-frame-size locals-frame-size
-                 :environment-size environment-size
-                 :entry-pc entry-pc))
-
-(defmethod initialize-instance :after ((fun bytecode-function) &key)
-  (closer-mop:set-funcallable-instance-function
-   fun
-   (lambda (&rest args)
-     (bytecode-call fun #() args))))
+(defstruct vm
+  values
+  stack
+  stack-top
+  frame-pointer
+  closure
+  literals
+  args
+  arg-count
+  pc)
 
 (defvar *vm*)
 
+(declaim (type vm *vm*))
+
 (defun bytecode-call (template env args)
-  (let* ((entry-pc (bytecode-function-entry-pc template))
-         (frame-size (bytecode-function-locals-frame-size template))
-         (module (bytecode-function-module template))
-         (bytecode (bytecode-module-bytecode module))
-         (literals (bytecode-module-literals module)))
+  (let* ((entry-pc (m:bytecode-function-entry-pc template))
+         (frame-size (m:bytecode-function-locals-frame-size template))
+         (module (m:bytecode-function-module template))
+         (bytecode (m:bytecode-module-bytecode module))
+         (literals (m:bytecode-module-literals module)))
     ;; Set up the stack, then call VM.
     (let* ((vm *vm*)
            (stack (vm-stack vm)))
@@ -116,221 +49,15 @@
         (setf (vm-pc vm) old-pc))
       (values-list (vm-values vm)))))
 
-(defstruct vm
-  values
-  stack
-  stack-top
-  frame-pointer
-  closure
-  literals
-  args
-  arg-count
-  pc)
-
-(declaim (type vm *vm*))
-
 (defun initialize-vm (stack-size)
   (setf *vm*
         (make-vm :stack (make-array stack-size)
                  :frame-pointer 0
-                 :stack-top 0)))
+                 :stack-top 0))
+  (values))
 
 (defun signed (x size)
   (logior x (- (mask-field (byte 1 (1- size)) x))))
-
-(defun disassemble-instruction (bytecode &key (ip 0))
-  (flet ((fixed (n) (loop repeat n collect (aref bytecode (incf ip))))
-         (signed (n)
-           (signed (loop repeat n for s from 0 by 8
-                         sum (ash (aref bytecode (incf ip)) s))
-                   (* n 8))))
-    (macrolet ((dfixed (n)
-                 `(prog1 (list* op (fixed ,n)) (incf ip)))
-               (dsigned (n)
-                 `(prog1 (list op (signed ,n)) (incf ip))))
-      (let ((op (decode (aref bytecode ip))))
-        (ecase op
-          ((+make-cell+ +cell-ref+ +cell-set+
-                        +return+
-                        +entry-close+ +unbind+
-                        +catch-close+
-                        +throw+
-                        +progv+
-                        +nil+ +eq+
-                        +push-values+ +pop-values+
-                        +append-values+
-                        +mv-call+
-                        +mv-call-receive-one+
-                        +pop+
-                        +push+
-                        +long+)
-           (dfixed 0))
-          ((+ref+ +const+ +closure+
-                  +listify-rest-args+
-                  +call+ +call-receive-one+
-                  +set+ +make-closure+ +make-uninitialized-closure+ +initialize-closure+
-                  +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
-                  +bind-required-args+
-                  +special-bind+ +symbol-value+ +symbol-value-set+
-                  +entry+ +catch+
-                  +fdefinition+ +mv-call-receive-fixed+)
-           (dfixed 1))
-          ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
-           (dsigned 1))
-          ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+) (dsigned 2))
-          ((+jump-24+ +jump-if-24+ +exit-24+) (dsigned 3))
-          ((+jump-if-supplied-8+)
-           (prog1 (list op (aref bytecode (incf ip)) (signed 1)) (incf ip)))
-          ((+jump-if-supplied-16+)
-           (prog1 (list op (aref bytecode (incf ip)) (signed 2)) (incf ip)))
-          ((+call-receive-fixed+ +bind+ +bind-optional-args+)
-           (dfixed 2))
-          ((+parse-key-args+) (dfixed 4)))))))
-
-(defun instruction-length (name)
-  (ecase name
-    ((+make-cell+ +cell-ref+ +cell-set+
-                  +return+
-                  +entry-close+ +unbind+
-                  +catch-close+ +throw+ +progv+
-                  +nil+ +eq+ +push-values+ +pop-values+
-                  +append-values+
-                  +mv-call+ +mv-call-receive-one+
-                  +pop+ +push+ +long+)
-     1)
-    ((+ref+ +const+ +closure+
-            +listify-rest-args+
-            +call+ +call-receive-one+
-            +set+ +make-closure+ +make-uninitialized-closure+ +initialize-closure+
-            +check-arg-count=+ +check-arg-count<=+ +check-arg-count>=+
-            +bind-required-args+
-            +special-bind+ +symbol-value+ +symbol-value-set+
-            +entry+ +catch+
-            +fdefinition+ +mv-call-receive-fixed+)
-     2)
-    ((+call-receive-fixed+ +bind+ +bind-optional-args+) 3)
-    ((+parse-key-args+) 5)
-    ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+) 2)
-    ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+) 3)
-    ((+jump-24+ +jump-if-24+ +exit-24+) 4)
-    ((+jump-if-supplied-8+) 3)
-    ((+jump-if-supplied-16+) 4)))
-
-(defun %disassemble-bytecode (bytecode)
-  ;; First pass: Go through the bytecode storing all labels
-  ;; (i.e. positions that are jumped to)
-  (let* ((length (length bytecode))
-         (labels
-           (flet ((signed (ip n)
-                    (signed (loop for i from 0 below n
-                                  for s from 0 by 8
-                                  sum (ash (aref bytecode (+ ip i)) s))
-                            (* 8 n))))
-             (loop with ip = 0
-                   for op = (decode (aref bytecode ip))
-                   when (member op '(+jump-8+ +jump-if-8+ +exit-8+ +catch-8+))
-                     collect (+ ip (signed (+ ip 1) 1))
-                   when (member op '(+jump-16+ +jump-if-16+
-                                     +exit-16+ +catch-16+))
-                     collect (+ ip (signed (+ ip 1) 2))
-                   when (member op '(+jump-24+ +jump-if-24+
-                                     +exit-24+ +catch-24+))
-                     collect (+ ip (signed (+ ip 1) 3))
-                   when (member op '(+jump-if-supplied-8+))
-                     collect (+ ip (signed (+ ip 2) 1))
-                   when (member op '(+jump-if-supplied-16+))
-                     collect (+ ip (signed (+ ip 2) 2))
-                   do (incf ip (instruction-length op))
-                   until (>= ip length)))))
-      ;; Now actually output, putting in the labels appropriately
-      (loop with ip = 0
-            for op = (decode (aref bytecode ip))
-            when (position ip labels)
-              collect (write-to-string (position ip labels))
-            collect (labels ((fixed (n &optional (offset 1))
-                               (loop for i from 0 below n
-                                     collect (aref bytecode (+ ip i offset))))
-                             (label-aux (n offset)
-                               (signed
-                                (loop for i from 0 below n
-                                      for s from 0 by 8
-                                      for byte = (aref bytecode (+ ip i offset))
-                                      sum (ash byte s))
-                                (* 8 n)))
-                             (label (n &optional (offset 1))
-                               (let ((pos (+ ip (label-aux n offset))))
-                                 (or (write-to-string (position pos labels))
-                                     (error "BUG: No label for ~d" pos)))))
-                      (cons
-                       ip
-                       (ecase op
-                         ((+make-cell+ +cell-ref+ +cell-set+ +return+
-                                       +entry-close+ +unbind+ +catch-close+
-                                       +throw+ +progv+ +nil+ +eq+ +push-values+
-                                       +pop-values+ +append-values+ +mv-call+
-                                       +mv-call-receive-one+ +pop+ +push+ +long+)
-                          (list op))
-                         ((+ref+ +const+ +closure+ +listify-rest-args+ +call+
-                                 +call-receive-one+ +set+ +make-closure+
-                                 +make-uninitialized-closure+ +initialize-closure+
-                                 +check-arg-count=+ +check-arg-count<=+
-                                 +check-arg-count>=+ +bind-required-args+
-                                 +special-bind+ +symbol-value+ +symbol-value-set+
-                                 +entry+ +catch+
-                                 +fdefinition+ +mv-call-receive-fixed+)
-                          (list* op (fixed 1)))
-                         ((+call-receive-fixed+ +bind+ +bind-optional-args+)
-                          (list* op (fixed 2)))
-                         ((+parse-key-args+) (list* op (fixed 4)))
-                         ((+jump-8+ +jump-if-8+ +exit-8+ +catch-8+)
-                          (list op (label 1)))
-                         ((+jump-16+ +jump-if-16+ +exit-16+ +catch-16+)
-                          (list op (label 2)))
-                         ((+jump-24+ +jump-if-24+ +exit-24+ +catch-24+)
-                          (list op (label 3)))
-                         ((+jump-if-supplied-8+)
-                          `(,op ,@(fixed 1) ,(label 1 2)))
-                         ((+jump-if-supplied-16+)
-                          `(,op ,@(fixed 1) ,(label 2 2))))))
-            do (incf ip (instruction-length op))
-            until (>= ip length))))
-
-(defun disassemble-bytecode (bytecode)
-  (let ((dis (%disassemble-bytecode bytecode)))
-    (flet ((textify-operand-or-label (thing)
-             (if (integerp thing)
-                 (write-to-string thing)
-                 (concatenate 'string "L" (string thing)))))
-      (format t "~&---module---~%")
-      (loop for item in dis
-            do (etypecase item
-                 (cons ; instruction
-                  (format t "~&~4,'0d:  ~a~{ ~a~}~%"
-                          (car item)
-                          (string-trim "+" (symbol-name (cadr item)))
-                          (mapcar #'textify-operand-or-label (cddr item))))
-                 ((or string symbol) ; label
-                  (format t "~&~a:~%" (textify-operand-or-label item)))))))
-  (values))
-    
-(defgeneric disassemble (thing))
-
-(defmethod disassemble ((module bytecode-module))
-  (disassemble-bytecode (bytecode-module-bytecode module)))
-
-#+clasp
-(defmethod disassemble ((module core:bytecode-module))
-  (disassemble-bytecode (core:bytecode-module/bytecode module)))
-
-(defmethod disassemble ((function bytecode-function))
-  (disassemble (bytecode-function-module function)))
-
-#+clasp
-(defmethod disassemble ((function core:global-bytecode-entry-point))
-  (disassemble (core:global-entry-point-code function)))
-
-(defmethod disassemble ((function bytecode-closure))
-  (disassemble (bytecode-closure-template function)))
 
 (defstruct (cell (:constructor make-cell (value))) value)
 (defstruct (unbound-marker (:constructor make-unbound-marker)))
@@ -407,20 +134,20 @@
                                   ;; We take the max for partial frames.
                                   (subseq stack frame-end (max sp frame-end)))))
               do (ecase (code)
-                   ((#.+ref+) (spush (stack (+ bp (next-code)))) (incf ip))
-                   ((#.+const+) (spush (constant (next-code))) (incf ip))
-                   ((#.+closure+) (spush (closure (next-code))) (incf ip))
-                   ((#.+call+)
+                   ((#.m:ref) (spush (stack (+ bp (next-code)))) (incf ip))
+                   ((#.m:const) (spush (constant (next-code))) (incf ip))
+                   ((#.m:closure) (spush (closure (next-code))) (incf ip))
+                   ((#.m:call)
                     (setf (vm-values vm)
                           (multiple-value-list
                            (let ((args (gather (next-code))))
                              (apply (spop) args))))
                     (incf ip))
-                   ((#.+call-receive-one+)
+                   ((#.m:call-receive-one)
                     (spush (let ((args (gather (next-code))))
                              (apply (spop) args)))
                     (incf ip))
-                   ((#.+call-receive-fixed+)
+                   ((#.m:call-receive-fixed)
                     (let ((args (gather (next-code))) (mvals (next-code))
                           (fun (spop)))
                       (case mvals
@@ -428,78 +155,78 @@
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))
-                   ((#.+bind+)
+                   ((#.m:bind)
                     ;; Most recent push goes to the last local.
                     (let ((nvars (next-code)))
                       (loop repeat nvars
                             for bsp downfrom (+ bp (next-code) nvars -1)
                             do (setf (stack bsp) (spop))))
                     (incf ip))
-                   ((#.+set+)
+                   ((#.m:set)
                     (setf (stack (+ bp (next-code))) (spop))
                     (incf ip))
-                   ((#.+make-cell+) (spush (make-cell (spop))) (incf ip))
-                   ((#.+cell-ref+) (spush (cell-value (spop))) (incf ip))
-                   ((#.+cell-set+)
+                   ((#.m:make-cell) (spush (make-cell (spop))) (incf ip))
+                   ((#.m:cell-ref) (spush (cell-value (spop))) (incf ip))
+                   ((#.m:cell-set)
                     (setf (cell-value (spop)) (spop))
                     (incf ip))
-                   ((#.+make-closure+)
+                   ((#.m:make-closure)
                     (spush (let ((template (constant (next-code))))
-                             (make-bytecode-closure
+                             (m:make-bytecode-closure
                               template
                               (coerce (gather
-                                       (bytecode-function-environment-size template))
+                                       (m:bytecode-function-environment-size template))
                                       'simple-vector))))
                     (incf ip))
-                   ((#.+make-uninitialized-closure+)
+                   ((#.m:make-uninitialized-closure)
                     (spush (let ((template (constant (next-code))))
-                             (make-bytecode-closure
+                             (m:make-bytecode-closure
                               template
                               (make-array
-                               (bytecode-function-environment-size template)))))
+                               (m:bytecode-function-environment-size template)))))
                     (incf ip))
-                   ((#.+initialize-closure+)
-                    (let ((env (bytecode-closure-env (stack (+ bp (next-code))))))
+                   ((#.m:initialize-closure)
+                    (let ((env (m:bytecode-closure-env (stack (+ bp (next-code))))))
                       (loop for i from (1- (length env)) downto 0 do
                         (setf (aref env i) (spop))))
                     (incf ip))
-                   ((#.+return+)
+                   ((#.m:return)
                     ;; Assert that all temporaries are popped off..
                     (assert (eql sp (+ bp frame-size)))
                     (return))
-                   ((#.+jump-8+) (incf ip (next-code-signed)))
-                   ((#.+jump-16+) (incf ip (next-code-signed-16)))
-                   ((#.+jump-24+) (incf ip (next-code-signed-24)))
-                   ((#.+jump-if-8+) (incf ip (if (spop) (next-code-signed) 2)))
-                   ((#.+jump-if-16+) (incf ip (if (spop) (next-code-signed-16) 3)))
-                   ((#.+jump-if-24+) (incf ip (if (spop) (next-code-signed-24) 4)))
-                   ((#.+check-arg-count<=+)
+                   ((#.m:jump-8) (incf ip (next-code-signed)))
+                   ((#.m:jump-16) (incf ip (next-code-signed-16)))
+                   ((#.m:jump-24) (incf ip (next-code-signed-24)))
+                   ((#.m:jump-if-8) (incf ip (if (spop) (next-code-signed) 2)))
+                   ((#.m:jump-if-16) (incf ip (if (spop) (next-code-signed-16) 3)))
+                   ((#.m:jump-if-24) (incf ip (if (spop) (next-code-signed-24) 4)))
+                   ((#.m:check-arg-count-<=)
                     (let ((n (next-code)))
                       (unless (<= (vm-arg-count vm) n)
                         (error "Invalid number of arguments: Got ~d, need at most ~d."
                                (vm-arg-count vm) n)))
                     (incf ip))
-                   ((#.+check-arg-count>=+)
+                   ((#.m:check-arg-count->=)
                     (let ((n (next-code)))
                       (unless (>= (vm-arg-count vm) n)
                         (error "Invalid number of arguments: Got ~d, need at least ~d."
                                (vm-arg-count vm) n)))
                     (incf ip))
-                   ((#.+check-arg-count=+)
+                   ((#.m:check-arg-count-=)
                     (let ((n (next-code)))
                       (unless (= (vm-arg-count vm) n)
                         (error "Invalid number of arguments: Got ~d, need exactly ~d."
                                (vm-arg-count vm) n)))
                     (incf ip))
-                   ((#.+jump-if-supplied-8+)
+                   ((#.m:jump-if-supplied-8)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  2
                                  (1- (next-code-signed)))))
-                   ((#.+jump-if-supplied-16+)
+                   ((#.m:jump-if-supplied-16)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
                                  3
                                  (1- (next-code-signed-16)))))
-                   ((#.+bind-required-args+)
+                   ((#.m:bind-required-args)
                     ;; Use memcpy for this.
                     (let* ((args (vm-args vm))
                            (args-end (+ args (next-code))))
@@ -508,7 +235,7 @@
                           ((>= arg-index args-end))
                         (setf (stack frame-slot) (stack arg-index))))
                     (incf ip))
-                   ((#.+bind-optional-args+)
+                   ((#.m:bind-optional-args)
                     (let* ((args (vm-args vm))
                            (required-count (next-code))
                            (optional-start (+ args required-count))
@@ -534,11 +261,11 @@
                               ((>= arg-index end))
                             (setf (stack frame-slot) (stack arg-index))))
                       (incf ip)))
-                   ((#.+listify-rest-args+)
+                   ((#.m:listify-rest-args)
                     (spush (loop for index from (next-code) below (vm-arg-count vm)
                                  collect (stack (+ (vm-args vm) index))))
                     (incf ip))
-                   ((#.+parse-key-args+)
+                   ((#.m:parse-key-args)
                     (let* ((args (vm-args vm))
                            (end (+ args (vm-arg-count vm)))
                            (more-start (+ args (next-code)))
@@ -574,7 +301,13 @@
                                  unknown-key-p)
                         (error "Unknown key arg ~a!" unknown-key-p)))
                     (incf ip))
-                   ((#.+entry+)
+                   ((#.m:save-sp)
+                    (setf (stack (+ bp (next-code))) sp)
+                    (incf ip))
+                   ((#.m:restore-sp)
+                    (setf sp (stack (+ bp (next-code))))
+                    (incf ip))
+                   ((#.m:entry)
                     (let ((*dynenv* *dynenv*))
                       (tagbody
                          (setf *dynenv*
@@ -589,7 +322,7 @@
                          (incf ip)
                        loop
                          (vm bytecode closure constants frame-size))))
-                   ((#.+catch-8+)
+                   ((#.m:catch-8)
                     (let ((target (+ ip (next-code-signed) 1))
                           (tag (spop))
                           (old-sp sp)
@@ -600,7 +333,7 @@
                       (setf ip target)
                       (setf sp old-sp)
                       (setf bp old-bp)))
-                   ((#.+catch-16+)
+                   ((#.m:catch-16)
                     (let ((target (+ ip (next-code-signed-16) 1))
                           (tag (spop))
                           (old-sp sp)
@@ -611,65 +344,65 @@
                       (setf ip target)
                       (setf sp old-sp)
                       (setf bp old-bp)))
-                   ((#.+throw+) (throw (spop) (values)))
-                   ((#.+catch-close+)
+                   ((#.m:throw) (throw (spop) (values)))
+                   ((#.m:catch-close)
                     (incf ip)
                     (return))
-                   ((#.+exit-8+)
+                   ((#.m:exit-8)
                     (incf ip (next-code-signed))
                     (funcall (entry-dynenv-fun (spop))))
-                   ((#.+exit-16+)
+                   ((#.m:exit-16)
                     (incf ip (next-code-signed-16))
                     (funcall (entry-dynenv-fun (spop))))
-                   ((#.+exit-24+)
+                   ((#.m:exit-24)
                     (incf ip (next-code-signed-24))
                     (funcall (entry-dynenv-fun (spop))))
-                   ((#.+entry-close+)
+                   ((#.m:entry-close)
                     (incf ip)
                     (return))
-                   ((#.+special-bind+)
+                   ((#.m:special-bind)
                     (let ((*dynenv* (make-sbind-dynenv)))
                       (progv (list (constant (next-code))) (list (spop))
                         (incf ip)
                         (vm bytecode closure constants frame-size))))
-                   ((#.+symbol-value+)
+                   ((#.m:symbol-value)
                     (spush (symbol-value (constant (next-code))))
                     (incf ip))
-                   ((#.+symbol-value-set+)
+                   ((#.m:symbol-value-set)
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
-                   ((#.+progv+)
+                   ((#.m:progv)
                     (let ((*dynenv* (make-sbind-dynenv))
                           (values (spop)))
                       (progv (spop) values
                         (incf ip)
                         (vm bytecode closure constants frame-size))))
-                   ((#.+unbind+)
+                   ((#.m:unbind)
                     (incf ip)
                     (return))
-                   ((#.+push-values+)
+                   ((#.m:push-values)
                     (dolist (value (vm-values vm))
                       (spush value))
                     (spush (length (vm-values vm)))
                     (incf ip))
-                   ((#.+append-values+)
+                   ((#.m:append-values)
                     (let ((n (spop)))
                       (dolist (value (vm-values vm))
                         (spush value))
                       (spush (+ n (length (vm-values vm))))
                       (incf ip)))
-                   ((#.+pop-values+)
+                   ((#.m:pop-values)
                     (setf (vm-values vm) (gather (spop)))
                     (incf ip))
-                   ((#.+mv-call+)
+                   ((#.m:mv-call)
                     (setf (vm-values vm)
                           (multiple-value-list
                            (apply (spop) (vm-values vm))))
                     (incf ip))
-                   ((#.+mv-call-receive-one+)
+                   ((#.m:mv-call-receive-one)
                     (spush (apply (spop) (vm-values vm)))
                     (incf ip))
-                   ((#.+mv-call-receive-fixed+)
+                   ((#.m:mv-call-receive-fixed)
                     (let ((args (vm-values vm))
                           (mvals (next-code))
                           (fun (spop)))
@@ -678,13 +411,27 @@
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))
-                   ((#.+fdefinition+) (spush (fdefinition (constant (next-code)))) (incf ip))
-                   ((#.+nil+) (spush nil) (incf ip))
-                   ((#.+eq+) (spush (eq (spop) (spop))) (incf ip))
-                   ((#.+pop+) (setf (vm-values vm) (list (spop))) (incf ip))
-                   ((#.+push+) (spush (first (vm-values vm))) (incf ip))
-                   ((#.+long+)
+                   ((#.m:fdefinition) (spush (fdefinition (constant (next-code)))) (incf ip))
+                   ((#.m:nil) (spush nil) (incf ip))
+                   ((#.m:eq) (spush (eq (spop) (spop))) (incf ip))
+                   ((#.m:pop) (setf (vm-values vm) (list (spop))) (incf ip))
+                   ((#.m:push) (spush (first (vm-values vm))) (incf ip))
+                   ((#.m:long)
                     (ecase (next-code)
-                      (#.+const+
+                      (#.m:const
                        (spush (constant (+ (next-code) (ash (next-code) 8))))
                        (incf ip))))))))))
+
+(defmethod initialize-instance :after ((c m:bytecode-closure) &key)
+  (let ((template (m:bytecode-closure-template c))
+        (env (m:bytecode-closure-env c)))
+    (closer-mop:set-funcallable-instance-function
+      c
+      (lambda (&rest args)
+        (bytecode-call template env args)))))
+
+(defmethod initialize-instance :after ((fun m:bytecode-function) &key)
+  (closer-mop:set-funcallable-instance-function
+   fun
+   (lambda (&rest args)
+     (bytecode-call fun #() args))))

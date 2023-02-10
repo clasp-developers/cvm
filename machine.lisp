@@ -5,8 +5,12 @@
   ;; Additional opname exports are done below.
   (:export #:constant-arg-p #:label-arg-p #:keys-arg-p)
   (:export #:bytecode-module #:make-bytecode-module
-           #:bytecode-function #:make-bytecode-function
-           #:bytecode-closure #:make-bytecode-closure
+           #:bytecode-module-bytecode #:bytecode-module-literals)
+  (:export #:bytecode-function #:make-bytecode-function
+           #:bytecode-function-module #:bytecode-function-entry-pc
+           #:bytecode-function-environment-size
+           #:bytecode-function-locals-frame-size)
+  (:export #:bytecode-closure #:make-bytecode-closure
            #:bytecode-closure-template #:bytecode-closure-env))
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.
