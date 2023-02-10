@@ -943,13 +943,13 @@
         (push (list* statement dynenv-info (make-label)) new-tags)))
     (let ((env (make-lexical-environment env :tags new-tags)))
       ;; Bind the dynamic environment.
-      (assemble context m:entry (frame-offset dynenv-info))
+      (emit-entry-or-save-sp context dynenv-info)
       ;; Compile the body, emitting the tag destination labels.
       (dolist (statement statements)
         (if (go-tag-p statement)
             (emit-label context (cddr (assoc statement (tags env))))
-            (compile-form statement env stmt-context)))))
-  (assemble context m:entry-close)
+            (compile-form statement env stmt-context))))
+    (maybe-emit-entry-close context dynenv-info))
   ;; return nil if we really have to
   (unless (eql (context-receiving context) 0)
     (assemble context m:nil)
