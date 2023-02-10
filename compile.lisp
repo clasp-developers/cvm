@@ -1,59 +1,90 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (ql:quickload '#:alexandria)
-  (ql:quickload '#:trivial-cltl2))
-
-(defpackage #:compile-to-vm
+(defpackage #:cvm/compile
   (:use #:cl)
-  (:shadow #:compile #:macroexpand-1 #:macroexpand))
+  (:local-nicknames (#:m #:cvm/machine))
+  (:shadow #:compile #:eval #:constantp)
+  (:export #:compile #:eval)
+  (:export #:*client*))
 
-(in-package #:compile-to-vm)
+(in-package #:cvm/compile)
 
-(setq *print-circle* t)
-
-;;; FIXME: New package
-(macrolet ((defcodes (&rest names)
-             `(progn
-                ,@(let ((forms nil))
-                    (do ((i 0 (1+ i))
-                         (names names (cdr names)))
-                        ((endp names) forms)
-                      (push `(defconstant ,(first names) ,i) forms)))
-                (defparameter *codes* '(,@names))
-                (defun decode (code)
-                  (nth code '(,@names))))))
-  (defcodes +ref+ +const+ +closure+
-    +call+ +call-receive-one+ +call-receive-fixed+
-    +bind+ +set+
-    +make-cell+ +cell-ref+ +cell-set+
-    +make-closure+ +make-uninitialized-closure+ +initialize-closure+
-    +return+
-    +bind-required-args+ +bind-optional-args+
-    +listify-rest-args+ +parse-key-args+
-    +jump-8+ +jump-16+ +jump-24+
-    +jump-if-8+ +jump-if-16+ +jump-if-24+
-    +jump-if-supplied-8+ +jump-if-supplied-16+
-    +check-arg-count<=+ +check-arg-count>=+ +check-arg-count=+
-    +push-values+ +append-values+ +pop-values+
-    +mv-call+ +mv-call-receive-one+ +mv-call-receive-fixed+
-    +entry+
-    +exit-8+ +exit-16+ +exit-24+
-    +entry-close+
-    +catch-8+ +catch-16+
-    +throw+ +catch-close+
-    +special-bind+ +symbol-value+ +symbol-value-set+ +unbind+
-    +progv+
-    +fdefinition+
-    +nil+
-    +eq+
-    +pop+
-    +push+
-    +long+))
-
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; Functions, modules, LTV, contexts
 ;;;
 
-(defun macroexpand-1 (form env) (declare (ignore env)) (values form nil))
-(defun macroexpand (form env) (declare (ignore env)) (values form nil))
+(defstruct (cfunction (:constructor make-cfunction (cmodule)))
+  cmodule
+  ;; Bytecode vector for this function.
+  (bytecode (make-array 0 :element-type '(unsigned-byte 8)
+                          :fill-pointer 0 :adjustable t))
+  ;; An ordered vector of annotations emitted in this function.
+  (annotations (make-array 0 :fill-pointer 0 :adjustable t))
+  (nlocals 0)
+  (closed (make-array 0 :fill-pointer 0 :adjustable t))
+  (entry-point (make-label))
+  ;; The position of the start of this function in this module
+  ;; (optimistic).
+  position
+  ;; How much to add to the bytecode vector length for increased fixup
+  ;; sizes for the true length.
+  (extra 0)
+  ;; The index of this function in the containing module's function
+  ;; vector.
+  index
+  info)
 
+(defstruct (cmodule (:constructor make-cmodule (literals)))
+  (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
+  literals)
+
+(defstruct (ltv-info (:constructor make-ltv-info (form read-only-p)))
+  form read-only-p)
+
+;;; The context contains information about what the current form needs
+;;; to know about what it is enclosed by.
+(defstruct context
+  receiving ; either an integer, meaning that many values, or T, meaning all
+  ;; A list of lexical variable infos and symbols. A symbol means a special
+  ;; variable binding is in place, while a lexical variable info is the variable
+  ;; for a tagbody or block dynenv.
+  ;; Note that the symbol may not be the special variable in question, since
+  ;; we don't really need that information.
+  ;; Since this is only used for exits, it may not include specials bound by
+  ;; a function's lambda list.
+  (dynenv nil)
+  function)
+
+(defun context-module (context)
+  (cfunction-cmodule (context-function context)))
+
+(defun context-assembly (context)
+  (cfunction-bytecode (context-function context)))
+
+(defun literal-index (literal context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (position literal literals)
+        (vector-push-extend literal literals))))
+
+;;; Force a literal into the end of the literals even if it's already
+;;; there. This is used in keyword argument parsing and load-time-value.
+(defun new-literal-index (literal context)
+  (vector-push-extend literal (cmodule-literals (context-module context))))
+
+(defun closure-index (info context)
+  (let ((closed (cfunction-closed (context-function context))))
+    (or (position info closed)
+        (vector-push-extend info closed))))
+
+(defun new-context (parent &key (receiving (context-receiving parent))
+                             (dynenv nil) ; prepended
+                             (function (context-function parent)))
+  (make-context :receiving receiving
+                :dynenv (append dynenv (context-dynenv parent))
+                :function function))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; Assembly
 ;;;
 
 ;; An annotation in the function.
@@ -110,6 +141,25 @@
     (setf (label-index label)
           (vector-push-extend label (cfunction-annotations function)))))
 
+(defun values-less-than-p (values max)
+  (dolist (value values t)
+    (unless (<= 0 value (1- max)) (return-from values-less-than-p nil))))
+
+(defun assemble-maybe-long (context opcode &rest values)
+  (let ((assembly (context-assembly context)))
+    (cond ((values-less-than-p values #.(ash 1 8))
+           (vector-push-extend opcode assembly)
+           (dolist (value values)
+             (vector-push-extend value assembly)))
+          ((values-less-than-p values #.(ash 1 16))
+           (vector-push-extend m:long assembly)
+           (vector-push-extend opcode assembly)
+           (dolist (value values)
+             (vector-push-extend (ldb (byte 8 0) value) assembly)
+             (vector-push-extend (ldb (byte 8 8) value) assembly)))
+          (t
+           (error "Bytecode compiler limit reached: Indices too large! ~a" values)))))
+
 (defun assemble (context &rest values)
   (let ((assembly (context-assembly context)))
     (dolist (value values)
@@ -142,30 +192,38 @@
     (dotimes (i (fixup-initial-size fixup))
       (vector-push-extend 0 assembly))))
 
+(defun control+label-emitter (fixup position code opcode8 opcode16 opcode24)
+  (let* ((size (fixup-size fixup))
+         (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
+    (setf (aref code position)
+          (cond ((eql size 2) opcode8)
+                ((eql size 3) opcode16)
+                ((eql size 4) opcode24)
+                (t (error "Unknown size ~d" size))))
+    (write-le-unsigned code offset (1- size) (1+ position))))
+
+(defun control+label-resizer (fixup)
+  (let ((delta (fixup-delta fixup)))
+    (cond ((typep delta '(signed-byte 8)) 2)
+          ((typep delta '(signed-byte 16)) 3)
+          ((typep delta '(signed-byte 24)) 4)
+          (t (error "???? PC offset too big ????")))))
+
 ;;; Emit OPCODE and then a label reference.
 (defun emit-control+label (context opcode8 opcode16 opcode24 label)
   (flet ((emitter (fixup position code)
-           (let* ((size (fixup-size fixup))
-                  (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
-             (setf (aref code position)
-                   (ecase size (2 opcode8) (3 opcode16) (4 opcode24)))
-             (write-le-unsigned code offset (1- size) (1+ position))))
-         (resizer (fixup)
-           (typecase (fixup-delta fixup)
-             ((signed-byte 8) 2)
-             ((signed-byte 16) 3)
-             ((signed-byte 24) 4)
-             (t (error "???? PC offset too big ????")))))
-    (emit-fixup context (make-fixup label 2 #'emitter #'resizer))))
+           (control+label-emitter fixup position code
+                                  opcode8 opcode16 opcode24)))
+    (emit-fixup context (make-fixup label 2 #'emitter #'control+label-resizer))))
 
 (defun emit-jump (context label)
-  (emit-control+label context +jump-8+ +jump-16+ +jump-24+ label))
+  (emit-control+label context m:jump-8 m:jump-16 m:jump-24 label))
 (defun emit-jump-if (context label)
-  (emit-control+label context +jump-if-8+ +jump-if-16+ +jump-if-24+ label))
+  (emit-control+label context m:jump-if-8 m:jump-if-16 m:jump-if-24 label))
 (defun emit-exit (context label)
-  (emit-control+label context +exit-8+ +exit-16+ +exit-24+ label))
+  (emit-control+label context m:exit-8 m:exit-16 m:exit-24 label))
 (defun emit-catch (context label)
-  (emit-control+label context +catch-8+ +catch-16+ nil label))
+  (emit-control+label context m:catch-8 m:catch-16 nil label))
 
 (defun emit-jump-if-supplied (context index label)
   (flet ((emitter (fixup position code)
@@ -173,8 +231,8 @@
                   (offset (unsigned (fixup-delta fixup) (* 8 (1- size)))))
              (setf (aref code position)
                    (ecase size
-                     (3 +jump-if-supplied-8+)
-                     (4 +jump-if-supplied-16+)))
+                     (3 m:jump-if-supplied-8)
+                     (4 m:jump-if-supplied-16)))
              (setf (aref code (1+ position)) index)
              (write-le-unsigned code offset (- size 2) (+ position 2))))
          (resizer (fixup)
@@ -187,20 +245,20 @@
 (defun emit-const (context index)
   (if (> index 255)
       (assemble context
-        +long+ +const+
+        m:long m:const
         (logand index #xff) (logand (ash index -8) #xff))
-      (assemble context +const+ index)))
+      (assemble context m:const index)))
 
 (defun emit-fdefinition (context index)
   (if (> index 255)
       (assemble context
-        +long+ +fdefinition+
+        m:long m:fdefinition
         (logand index #xff) (logand (ash index -8) #xff))
-      (assemble context +fdefinition+ index)))
+      (assemble context m:fdefinition index)))
 
 (defun emit-parse-key-args (context max-count key-count key-names env aok-p)
   (if (<= key-count 127)
-      (assemble context +parse-key-args+
+      (assemble context m:parse-key-args
                 max-count
                 (if aok-p (boole boole-ior 128 key-count) key-count)
                 (literal-index (first key-names) context)
@@ -208,73 +266,120 @@
       (error "Handle more than 127 keyword parameters - you need ~s" key-count)))
 
 (defun emit-bind (context count offset)
-  (cond ((= count 1) (assemble context +set+ offset))
+  (cond ((= count 1) (assemble context m:set offset))
         ((= count 0))
-        (t (assemble context +bind+ count offset))))
+        (t (assemble context m:bind count offset))))
 
 (defun emit-call (context count)
   (let ((receiving (context-receiving context)))
     (cond ((or (eql receiving t) (eql receiving 0))
-           (assemble context +call+ count))
+           (assemble context m:call count))
           ((eql receiving 1)
-           (assemble context +call-receive-one+ count))
-          (t (assemble context +call-receive-fixed+ count receiving)))))
+           (assemble context m:call-receive-one count))
+          (t (assemble context m:call-receive-fixed count receiving)))))
 
 (defun emit-mv-call (context)
   (let ((receiving (context-receiving context)))
     (cond ((or (eql receiving t) (eql receiving 0))
-           (assemble context +mv-call+))
+           (assemble context m:mv-call))
           ((eql receiving 1)
-           (assemble context +mv-call-receive-one+))
-          (t (assemble context +mv-call-receive-fixed+ receiving)))))
+           (assemble context m:mv-call-receive-one))
+          (t (assemble context m:mv-call-receive-fixed receiving)))))
 
 (defun emit-special-bind (context symbol)
-  (assemble context +special-bind+ (literal-index symbol context)))
+  (assemble context m:special-bind (literal-index symbol context)))
 
 (defun emit-unbind (context count)
   (dotimes (_ count)
-    (assemble context +unbind+)))
+    (assemble context m:unbind)))
 
-;;; Different kinds of things can go in the variable namespace and they can
-;;; all shadow each other, so we use this structure to disambiguate.
-(defstruct (var-info (:constructor make-var-info (kind data)))
-  (kind (error "kind required")
-   :type (member :lexical :special :symbol-macro :constant))
-  data)
+(flet ((maybe-emit (lexical-info opcode context)
+         (assert lexical-info)
+         (flet ((emitter (fixup position code)
+                  (assert (= (fixup-size fixup) 1))
+                  (setf (aref code position) opcode))
+                (resizer (fixup)
+                  (declare (ignore fixup))
+                  (if (indirect-lexical-p lexical-info) 1 0)))
+           (emit-fixup context
+                       (make-fixup lexical-info 0 #'emitter #'resizer)))))
+  (defun maybe-emit-make-cell (lexical-info context)
+    (maybe-emit lexical-info m:make-cell context))
+  (defun maybe-emit-cell-ref (lexical-info context)
+    (maybe-emit lexical-info m:cell-ref context)))
 
-(defstruct (lexical-info (:constructor make-lexical-info (frame-offset function)))
-  frame-offset
-  function
-  (closed-over-p nil)
-  (set-p nil))
+;;; FIXME: This is probably a good candidate for a specialized
+;;; instruction.
+(defun maybe-emit-encage (lexical-info context)
+  (let ((index (frame-offset lexical-info)))
+    (flet ((emitter (fixup position code)
+             (assert (= (fixup-size fixup) 5))
+             (assemble-into code position
+                            m:ref index m:make-cell m:set index))
+           (resizer (fixup)
+             (declare (ignore fixup))
+             (if (indirect-lexical-p lexical-info) 5 0)))
+      (emit-fixup context (make-fixup lexical-info 0 #'emitter #'resizer)))))
 
-;;; Does the variable with LEXICAL-INFO need a cell?
-(defun indirect-lexical-p (lexical-info)
-  (and (lexical-info-closed-over-p lexical-info)
-       (lexical-info-set-p lexical-info)))
+(defun emit-lexical-set (lexical-info context)
+  (let ((index (frame-offset lexical-info)))
+    (flet ((emitter (fixup position code)
+             (if (= (fixup-size fixup) 3)
+                 (assemble-into code position m:ref index m:cell-set)
+                 (assemble-into code position m:set index)))
+           (resizer (fixup)
+             (declare (ignore fixup))
+             (if (indirect-lexical-p lexical-info) 3 2)))
+      (emit-fixup context (make-fixup lexical-info 2 #'emitter #'resizer)))))
 
-(defun make-lexical-var-info (frame-offset function)
-  (make-var-info :lexical (make-lexical-info frame-offset function)))
-(defun make-special-var-info () (make-var-info :special nil))
-(defun make-symbol-macro-var-info (expansion)
-  (make-var-info :symbol-macro expansion))
-(defun make-constant-var-info (value) (make-var-info :constant value))
+(defun constant-resizer (n) (lambda (fixup) (declare (ignore fixup)) n))
 
-(defstruct (fun-info (:constructor make-fun-info (kind data)))
-  (kind (error "kind required")
-   :type (member :global-function :global-macro
-                 :local-function :local-macro))
-  data)
+(defun emit-entry-or-save-sp (context dynenv-info)
+  (let ((index (frame-offset dynenv-info)))
+    (flet ((emitter (fixup position code)
+             (declare (ignore fixup))
+             (if (closed-over-p dynenv-info)
+                 (assemble-into code position m:entry index)
+                 (assemble-into code position m:save-sp index))))
+      (emit-fixup context (make-fixup dynenv-info 2 #'emitter (constant-resizer 2))))))
 
-(defun make-global-function-fun-info () (make-fun-info :global-function nil))
-(defun make-global-macro-fun-info (expander)
-  (make-fun-info :global-macro expander))
-(defun make-local-function-fun-info (fun-var)
-  (make-fun-info :local-function fun-var))
-(defun make-local-macro-fun-info (expander)
-  (make-fun-info :local-macro expander))
+(defun emit-ref-or-restore-sp (context dynenv-info)
+  (let ((index (frame-offset dynenv-info)))
+    (flet ((emitter (fixup position code)
+             (declare (ignore fixup))
+             (if (closed-over-p dynenv-info)
+                 (assemble-into code position m:ref index)
+                 (assemble-into code position m:restore-sp index))))
+      (emit-fixup context (make-fixup dynenv-info 2 #'emitter (constant-resizer 2))))))
 
-(defstruct (lexical-environment (:constructor make-null-lexical-environment)
+(defun emit-exit-or-jump (context dynenv-info label)
+  (flet ((emitter (fixup position code)
+           (if (closed-over-p dynenv-info)
+               (control+label-emitter fixup position code
+                                      m:exit-8 m:exit-16 m:exit-24)
+               (control+label-emitter fixup position code
+                                      m:jump-8 m:jump-16 m:jump-24))))
+    (emit-fixup context (make-fixup label 2 #'emitter #'control+label-resizer))))
+
+(defun maybe-emit-entry-close (context dynenv-info)
+  (flet ((emitter (fixup position code)
+           (assert (= (fixup-size fixup) 1))
+           (assemble-into code position m:entry-close))
+         (resizer (fixup)
+           (declare (ignore fixup))
+           (if (closed-over-p dynenv-info) 1 0)))
+    (emit-fixup context (make-fixup dynenv-info 0 #'emitter #'resizer))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; Environments
+;;;
+
+;;; Trucler client used for querying global environment.
+(defvar *client*)
+
+(defstruct (lexical-environment (:constructor make-null-lexical-environment
+                                    (global-environment))
                                 (:constructor %make-lexical-environment)
                                 (:conc-name nil))
   ;; An alist of (var . var-info) in the current environment.
@@ -286,15 +391,70 @@
   ;; An alist of (fun . fun-var) in the current environment.
   (funs nil :type list)
   ;; The current end of the frame.
-  (frame-end 0 :type integer))
+  (frame-end 0 :type integer)
+  ;; Global environment, which we just pass to Trucler.
+  global-environment)
 
+;;; We don't use Trucler's augmentation protocol internally since we often
+;;; want to add a bunch of stuff at once, which is awkward in Trucler.
 (defun make-lexical-environment (parent &key (vars (vars parent))
                                              (tags (tags parent))
                                              (blocks (blocks parent))
                                              (frame-end (frame-end parent))
                                              (funs (funs parent)))
   (%make-lexical-environment
-   :vars vars :tags tags :blocks blocks :frame-end frame-end :funs funs))
+   :vars vars :tags tags :blocks blocks :frame-end frame-end :funs funs
+   :global-environment (global-environment parent)))
+
+;;; We don't actually use Trucler's query protocol internally, since the
+;;; environments are necessarily ours (they include bytecode-specific
+;;; information, etc.)
+;;; But we do fall back to it when we hit the global environment.
+
+(defun var-info (name env)
+  (or (cdr (assoc name (vars env)))
+      (trucler:describe-variable *client* (global-environment env) name)))
+(defun fun-info (name env)
+  (or (cdr (assoc name (funs env)))
+      (trucler:describe-function *client* (global-environment env) name)))
+
+;;; We could use the IDENTITY slot, but we have a bunch of stuff to include.
+(defclass lexical-variable-description (trucler:lexical-variable-description)
+  ((%frame-offset :initarg :frame-offset :reader frame-offset :type (integer 0))
+   (%cfunction :initarg :cfunction :reader lvar-cfunction :type cfunction)
+   (%closed-over-p :initform nil :accessor closed-over-p :type boolean)
+   (%setp :initform nil :accessor setp :type boolean))
+  ;; Trucler errors without an identity for some reason.
+  (:default-initargs :identity nil))
+
+;;; Does the lexical variable need a cell?
+(defun indirect-lexical-p (lvar)
+  (and (closed-over-p lvar) (setp lvar)))
+
+(defun make-lexical-variable (name frame-offset cfunction)
+  (make-instance 'lexical-variable-description
+    :name name :frame-offset frame-offset :cfunction cfunction))
+
+(defun make-symbol-macro (name expansion)
+  (make-instance 'trucler:symbol-macro-description
+    :name name :expansion expansion))
+
+(defun constantp (symbol env)
+  (typep (var-info symbol env) 'trucler:constant-variable-description))
+
+(defun specialp (symbol env)
+  (typep (var-info symbol env) 'trucler:special-variable-description))
+
+(defun globally-special-p (symbol env)
+  (typep (var-info symbol env) 'trucler:global-special-variable-description))
+
+(defun make-local-function (name lvar)
+  (make-instance 'trucler:local-function-description
+    :name name :identity lvar))
+
+(defun make-local-macro (name expander)
+  (make-instance 'trucler:local-macro-description
+    :name name :expander expander))
 
 ;;; Bind each variable to a stack location, returning a new lexical
 ;;; environment. The max local count in the current function is also
@@ -309,250 +469,203 @@
     (do ((index frame-start (1+ index))
          (vars vars (rest vars))
          (new-vars (vars env)
-                   (acons (first vars) (make-lexical-var-info index function) new-vars)))
+                   (acons (first vars)
+                          (make-lexical-variable (first vars) index function)
+                          new-vars)))
         ((>= index frame-end)
          (make-lexical-environment env :vars new-vars :frame-end frame-end))
-      (when (constantp (first vars))
+      (when (constantp (first vars) env)
         (error "Cannot bind constant value ~a!" (first vars))))))
 
-;;; Get information about a variable.
-;;; Returns two values.
-;;; The first is :LEXICAL, :SPECIAL, :CONSTANT, :SYMBOL-MACRO, or NIL.
-;;; If the variable is lexical, the first is :LEXICAL and the second is more info.
-;;; If the variable is special, the first is :SPECIAL and the second is NIL.
-;;; If the variable is a macro, the first is :SYMBOL-MACRO and the second is
-;;; the expansion.
-;;; If the variable is a constant, :CONSTANT and the value.
-;;; If the first value is NIL, the variable is unknown, and the second
-;;; value is NIL.
-(defun var-info (symbol env)
-  (let ((info (cdr (assoc symbol (vars env)))))
-    (cond (info (values (var-info-kind info) (var-info-data info)))
-          ((constantp symbol nil) (values :constant (eval symbol)))
-          ;; globally special
-          ((eq (trivial-cltl2:variable-information symbol) :special)
-           (values :special nil))
-          (t (values nil nil)))))
-
-;;; Like the above. Check the struct for details.
-(defun fun-info (symbol env)
-  (let ((info (cdr (assoc symbol (funs env) :test #'equal))))
-    (cond (info (values (fun-info-kind info) (fun-info-data info)))
-          ((macro-function symbol nil)
-           (values :global-macro (macro-function symbol nil)))
-          ((special-operator-p symbol)
-           (error "Tried to get FUN-INFO for a special operator - impossible"))
-          ((fboundp symbol) (values :global-function nil))
-          (t (values nil nil)))))
-
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
+(deftype function-name () '(or symbol (cons (eql setf) (cons symbol null))))
 
-(defstruct (cfunction (:constructor make-cfunction (cmodule)))
-  cmodule
-  ;; Bytecode vector for this function.
-  (bytecode (make-array 0 :element-type '(unsigned-byte 8)
-                          :fill-pointer 0 :adjustable t))
-  ;; An ordered vector of annotations emitted in this function.
-  (annotations (make-array 0 :fill-pointer 0 :adjustable t))
-  (nlocals 0)
-  (closed (make-array 0 :fill-pointer 0 :adjustable t))
-  (entry-point (make-label))
-  ;; The position of the start of this function in this module
-  ;; (optimistic).
-  position
-  ;; How much to add to the bytecode vector length for increased fixup
-  ;; sizes for the true length.
-  (extra 0)
-  ;; The index of this function in the containing module's function
-  ;; vector.
-  index
-  info)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; Compilation
+;;;
 
-(defstruct (cmodule (:constructor make-cmodule (literals)))
-  (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
-  literals)
-
-;;; The context contains information about what the current form needs
-;;; to know about what it is enclosed by.
-(defstruct context receiving function)
-
-(defun context-module (context)
-  (cfunction-cmodule (context-function context)))
-
-(defun context-assembly (context)
-  (cfunction-bytecode (context-function context)))
-
-(defun literal-index (literal context)
-  (let ((literals (cmodule-literals (context-module context))))
-    (or (position literal literals)
-        (vector-push-extend literal literals))))
-
-(defun closure-index (info context)
-  (let ((closed (cfunction-closed (context-function context))))
-    (or (position info closed)
-        (vector-push-extend info closed))))
-
-(defun new-context (parent &key (receiving (context-receiving parent))
-                                (function (context-function parent)))
-  (make-context :receiving receiving :function function))
-
-(defun compile (lambda-expression
-                &optional (env (make-null-lexical-environment)))
+(defun compile (lambda-expression &optional env (*client* *client*))
   (check-type lambda-expression lambda-expression)
-  (let ((module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t)))
+  (let ((env (if (lexical-environment-p env)
+                 env
+                 ;; Assume we've been passed a global environment.
+                 ;; NOTE: Other than the external COMPILE and EVAL,
+                 ;; all functions in this file expecting an environment
+                 ;; specifically want one of our lexical environments.
+                 (make-null-lexical-environment env)))
+        (module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t)))
         (lambda-list (cadr lambda-expression))
         (body (cddr lambda-expression)))
     (link-function (compile-lambda lambda-list body env module))))
 
+(defun eval (form &optional env (*client* *client*))
+  ;; PROGN is so that (eval '(declare)) signals an error.
+  (funcall (compile `(lambda () (progn ,form)) env)))
+
 (defun compile-form (form env context)
-  (etypecase form
-    (symbol (compile-symbol form env context))
-    (cons (compile-cons (car form) (cdr form) env context))
+  (typecase form
+    (symbol (compile-symbol (var-info form env) form env context))
+    ((cons symbol)
+     (compile-combination (fun-info (car form) env) form env context))
+    (cons (compile-lambda-form form env context))
     (t (compile-literal form env context))))
 
 (defun compile-literal (form env context)
   (declare (ignore env))
   (unless (eql (context-receiving context) 0)
     (case form
-      ((nil) (assemble context +nil+))
+      ((nil) (assemble context m:nil))
       (t (emit-const context (literal-index form context))))
     (when (eql (context-receiving context) t)
-      (assemble context +pop+))))
+      (assemble context m:pop))))
 
-(defun compile-load-time-value (form read-only-p env context)
-  (declare (ignore read-only-p))
-  (compile-literal (eval form) env context))
+(defgeneric compile-symbol (info form env context))
 
-(flet ((maybe-emit (lexical-info opcode context)
-         (assert lexical-info)
-         (flet ((emitter (fixup position code)
-                  (assert (= (fixup-size fixup) 1))
-                  (setf (aref code position) opcode))
-                (resizer (fixup)
-                  (declare (ignore fixup))
-                  (if (indirect-lexical-p lexical-info) 1 0)))
-           (emit-fixup context
-                       (make-fixup lexical-info 0 #'emitter #'resizer)))))
-  (defun maybe-emit-make-cell (lexical-info context)
-    (maybe-emit lexical-info +make-cell+ context))
-  (defun maybe-emit-cell-ref (lexical-info context)
-    (maybe-emit lexical-info +cell-ref+ context)))
+(defun symbol-macro-expansion (info symbol env)
+  (let* ((expansion (trucler:expansion info))
+         (expander (lambda (form env) (declare (ignore form env)) expansion)))
+    (funcall *macroexpand-hook* expander symbol env)))
 
-;;; FIXME: This is probably a good candidate for a specialized
-;;; instruction.
-(defun maybe-emit-encage (lexical-info context)
-  (let ((index (lexical-info-frame-offset lexical-info)))
-    (flet ((emitter (fixup position code)
-             (assert (= (fixup-size fixup) 5))
-             (assemble-into code position
-                            +ref+ index +make-cell+ +set+ index))
-           (resizer (fixup)
-             (declare (ignore fixup))
-             (if (indirect-lexical-p lexical-info) 5 0)))
-      (emit-fixup context (make-fixup lexical-info 0 #'emitter #'resizer)))))
+(defmethod compile-symbol ((info trucler:symbol-macro-description)
+                           form env context)
+  (compile-form (symbol-macro-expansion info form env) env context))
 
-(defun emit-lexical-set (lexical-info context)
-  (let ((index (lexical-info-frame-offset lexical-info)))
-    (flet ((emitter (fixup position code)
-             (if (= (fixup-size fixup) 3)
-                 (assemble-into code position +ref+ index +cell-set+)
-                 (assemble-into code position +set+ index)))
-           (resizer (fixup)
-             (declare (ignore fixup))
-             (if (indirect-lexical-p lexical-info) 3 2)))
-      (emit-fixup context (make-fixup lexical-info 2 #'emitter #'resizer)))))
-
-(defun compile-symbol (form env context)
-  (multiple-value-bind (kind data) (var-info form env)
-    (cond ((eq kind :symbol-macro) (compile-form data env context))
-          ;; A symbol macro could expand into something with arbitrary side
-          ;; effects so we always have to compile that, but otherwise, if no
-          ;; values are wanted, we want to not compile anything.
-          ((eql (context-receiving context) 0))
+(defmethod compile-symbol ((info lexical-variable-description)
+                           form env context)
+  (declare (ignore form env))
+  (unless (eql (context-receiving context) 0)
+    (cond ((eq (lvar-cfunction info) (context-function context))
+           (assemble context m:ref (frame-offset info)))
           (t
-           (ecase kind
-             ((:lexical)
-              (cond ((eq (lexical-info-function data) (context-function context))
-                     (assemble context +ref+ (lexical-info-frame-offset data)))
-                    (t
-                     (setf (lexical-info-closed-over-p data) t)
-                     (assemble context +closure+ (closure-index data context))))
-              (maybe-emit-cell-ref data context))
-             ((:special) (assemble context +symbol-value+
-                           (literal-index form context)))
-             ((:constant) (return-from compile-symbol ; don't pop again.
-                            (compile-literal data env context)))
-             ((nil)
-              (warn "Unknown variable ~a: treating as special" form)
-              (assemble context +symbol-value+
-                (literal-index form context))))
-           (when (eq (context-receiving context) t)
-             (assemble context +pop+))))))
+           (setf (closed-over-p info) t)
+           (assemble context m:closure (closure-index info context))))
+    (when (eql (context-receiving context) 't)
+      (assemble context m:pop))))
 
-(defun compile-cons (head rest env context)
-  (case head
-    ((progn) (compile-progn rest env context))
-    ((let) (compile-let (first rest) (rest rest) env context))
-    ((let*) (compile-let* (first rest) (rest rest) env context))
-    ((flet) (compile-flet (first rest) (rest rest) env context))
-    ((labels) (compile-labels (first rest) (rest rest) env context))
-    ((setq) (compile-setq rest env context))
-    ((if) (compile-if (first rest) (second rest) (third rest) env context))
-    ((function) (compile-function (first rest) env context))
-    ((tagbody) (compile-tagbody rest env context))
-    ((go) (compile-go (first rest) env context))
-    ((block) (compile-block (first rest) (rest rest) env context))
-    ((return-from) (compile-return-from (first rest) (second rest) env context))
-    ((catch) (compile-catch (first rest) (rest rest) env context))
-    ((throw) (compile-throw (first rest) (second rest) env context))
-    ((progv) (compile-progv (first rest) (second rest) (rest (rest rest)) env context))
-    ((quote) (compile-literal (first rest) env context))
-    ((load-time-value) (compile-load-time-value (first rest) (second rest) env context))
-    ((symbol-macrolet)
-     (compile-symbol-macrolet (first rest) (rest rest) env context))
-    ((macrolet)
-     (compile-macrolet (first rest) (rest rest) env context))
-    ((multiple-value-call)
-     (compile-multiple-value-call (first rest) (rest rest) env context))
-    ((multiple-value-prog1)
-     (compile-multiple-value-prog1 (first rest) (rest rest) env context))
-    ((locally) (compile-locally rest env context))
-    ((eval-when) (compile-eval-when (first rest) (rest rest) env context))
-    ((the) ; don't do anything.
-     (compile-form (second rest) env context))
-    (otherwise ; function call or macro
-     (multiple-value-bind (kind data) (fun-info head env)
-       (ecase kind
-         ((:global-macro :local-macro)
-          (compile-form (funcall *macroexpand-hook* data (cons head rest) env)
-                        env context))
-         ((:global-function :local-function nil)
-          ;; unknown function warning handled by compile-function
-          ;; note we do a double lookup, which is inefficient
-          (compile-function head env (new-context context :receiving 1))
-          (do ((args rest (rest args))
-               (arg-count 0 (1+ arg-count)))
-              ((endp args)
-               (emit-call context arg-count))
-            (compile-form (first args) env (new-context context :receiving 1)))))))))
+(defmethod compile-symbol ((info trucler:constant-variable-description)
+                           form env context)
+  (declare (ignore form))
+  (compile-literal (trucler:value info) env context))
+
+(defmethod compile-symbol ((info trucler:special-variable-description)
+                           form env context)
+  (declare (ignore env))
+  (unless (eql (context-receiving context) 0)
+    (assemble context m:symbol-value (literal-index form context))
+    (when (eql (context-receiving context) 't)
+      (assemble context m:pop))))
+
+(defmethod compile-symbol ((info null) form env context)
+  (warn "Unknown variable ~a: treating as special" form)
+  (unless (eql (context-receiving context) 0)
+    (assemble context m:symbol-value (literal-index form context))
+    (when (eql (context-receiving context) 't)
+      (assemble context m:pop))))
+
+(defgeneric compile-combination (info form env context))
+
+(defmethod compile-combination ((info trucler:macro-description)
+                                form env context)
+  (compile-form (funcall *macroexpand-hook* (trucler:expander info) form env)
+                env context))
+
+;;; Compile a call, where the callee is already on the stack.
+(defun compile-call (args env context)
+  (do ((args args (rest args))
+       (arg-count 0 (1+ arg-count)))
+      ((endp args)
+       (emit-call context arg-count))
+    (compile-form (first args) env (new-context context :receiving 1))))
+
+(defmethod compile-combination ((info trucler:global-function-description)
+                                form env context)
+  (let ((expander (trucler:compiler-macro info)))
+    (when expander
+      (let ((expansion (funcall *macroexpand-hook* expander form env)))
+        (unless (eq form expansion)
+          (return-from compile-combination
+            (compile-form expansion env context)))))
+    (emit-fdefinition context (literal-index (trucler:name info) context))
+    (compile-call (rest form) env context)))
+
+(defmethod compile-combination ((info null) form env context)
+  (warn "Unknown operator ~a: treating as global function" (first form))
+  (emit-fdefinition context (literal-index (first form) context))
+  (compile-call (rest form) env context))
+
+(defmethod compile-combination ((info trucler:local-function-description)
+                                form env context)
+  (reference-lexical-variable (trucler:identity info) context)
+  (compile-call (rest form) env context))
+
+;;; Given a lambda expression, generate code to push it to the stack
+;;; as you would for #'(lambda ...).
+;;; CONTEXT's number of return values is ignored.
+(defun compile-lambda-expression (lexpr env context)
+  (check-type lexpr lambda-expression)
+  (let* ((cfunction (compile-lambda (cadr lexpr) (cddr lexpr)
+                                    env (context-module context)))
+         (closed (cfunction-closed cfunction)))
+    (loop for info across closed
+          do (reference-lexical-variable info context))
+    (if (zerop (length closed))
+        (emit-const context (literal-index cfunction context))
+        (assemble context m:make-closure (literal-index cfunction context)))))
+
+(defun compile-lambda-form (form env context)
+  ;; FIXME: We can probably handle this more efficiently (without consing
+  ;; a closure) by using compile-with-lambda-list instead.
+  (let ((lexpr (car form)) (args (rest form)))
+    (compile-lambda-expression lexpr env context)
+    (compile-call args env context)))
+
+(defmethod compile-combination ((info trucler:special-operator-description)
+                                form env context)
+  (compile-special (trucler:name info) form env context))
+
+(defgeneric compile-special (operator form env context))
 
 (defun compile-progn (forms env context)
-  (do ((forms forms (rest forms)))
+  (do ((forms forms (rest forms))
+       (body-context (new-context context :receiving 0)))
       ((null (rest forms))
+       ;; this subsumes (progn) because (rest nil) = (first nil) = nil.
        (compile-form (first forms) env context))
-    (compile-form (first forms) env (new-context context :receiving 0))))
+    (compile-form (first forms) env body-context)))
+
+(defun compile-locally (body env context)
+  (multiple-value-bind (body decls) (alexandria:parse-body body)
+    (compile-progn body (add-specials (extract-specials decls) env) context)))
+
+(defun fun-name-block-name (fun-name)
+  (if (symbolp fun-name)
+      fun-name
+      ;; setf name
+      (second fun-name)))
+
+(defmethod compile-special ((operator (eql 'progn)) form env context)
+  (compile-progn (rest form) env context))
 
 ;;; Add VARS as specials in ENV.
 (defun add-specials (vars env)
-  (if vars
-      (do ((vars vars (rest vars))
-           (new-vars (vars env)
-                     (acons (first vars)
-                            (make-special-var-info)
-                            new-vars)))
-          ((endp vars)
-           (make-lexical-environment env :vars new-vars)))
-      env))
+  (do* ((evars (vars env))
+        (ivars vars (rest ivars))
+        (new-vars
+         evars
+         (let* ((var (first ivars))
+                (desc (trucler:describe-variable *client* env var))
+                (specialp (typep desc 'trucler:special-variable-description)))
+           (if specialp
+               new-vars ; already present
+               (acons var (make-instance
+                              'trucler:local-special-variable-description
+                            :name var)
+                      new-vars)))))
+       ((endp ivars)
+        (if (eq new-vars evars) ; nothing added
+            env           
+            (make-lexical-environment env :vars new-vars)))))
 
 (defun extract-specials (declarations)
   (let ((specials '()))
@@ -564,149 +677,89 @@
              (push var specials))))))
     specials))
 
-(defun compile-locally (body env context)
-  (multiple-value-bind (body decls) (alexandria:parse-body body)
-    (compile-progn body (add-specials (extract-specials decls) env) context)))
-
-(defun compile-eval-when (situations body env context)
-  (if (or (member 'cl:eval situations) (member :execute situations))
-      (compile-progn body env context)
-      (compile-literal nil env context)))
-
-;;; Return the variable and value form for a LET binding.
 (defun canonicalize-binding (binding)
   (if (consp binding)
       (values (first binding) (second binding))
       (values binding nil)))
 
-(defun compile-let (bindings body env context)
+(defmethod compile-special ((operator (eql 'let)) form env context)
   (multiple-value-bind (body decls)
-      (alexandria:parse-body body)
+      (alexandria:parse-body (cddr form))
     (let* ((specials (extract-specials decls))
            (lexical-binding-count 0)
            (special-binding-count 0)
-           (post-binding-env (add-specials specials env)))
-      (dolist (binding bindings)
+           (post-binding-env (add-specials specials env))
+           (valf-context (new-context context :receiving 1)))
+      (dolist (binding (second form))
         (multiple-value-bind (var valf) (canonicalize-binding binding)
-          (compile-form valf env (new-context context :receiving 1))
+          (compile-form valf env valf-context)
           (cond ((or (member var specials)
-                     (eq (trivial-cltl2:variable-information var) :special))
+                     (globally-special-p var env))
                  (incf special-binding-count)
                  (emit-special-bind context var))
                 (t
-                 (setq post-binding-env (bind-vars (list var) post-binding-env context))
+                 (setq post-binding-env
+                       (bind-vars (list var) post-binding-env context))
                  (incf lexical-binding-count)
-                 (maybe-emit-make-cell (nth-value 1 (var-info var post-binding-env))
+                 (maybe-emit-make-cell (var-info var post-binding-env)
                                        context)))))
       (emit-bind context lexical-binding-count (frame-end env))
       (compile-progn body post-binding-env context)
       (emit-unbind context special-binding-count))))
 
-(defun compile-let* (bindings body env context)
-  (multiple-value-bind (body decls)
-      (alexandria:parse-body body)
-    (let ((specials (extract-specials decls))
-          (special-binding-count 0))
-      (dolist (binding bindings)
-        (multiple-value-bind (var valf) (canonicalize-binding binding)
-          (compile-form valf env (new-context context :receiving 1))
-          (cond ((or (member var specials)
-                     (eq (trivial-cltl2:variable-information var) :special))
-                 (setq env (add-specials (list var) env))
-                 (incf special-binding-count)
-                 (emit-special-bind context var))
-                (t
-                 (let ((frame-start (frame-end env)))
-                   (setq env (bind-vars (list var) env context))
-                   (maybe-emit-make-cell (nth-value 1 (var-info var env))
-                                         context)
-                   (assemble context +set+ frame-start))))))
-      (compile-progn body env context)
-      (emit-unbind context special-binding-count))))
+(defun compile-let* (bindings decls body env context)
+  (let ((special-binding-count 0)
+        (specials (extract-specials decls))
+        (inner-context context))
+    (dolist (binding bindings)
+      (multiple-value-bind (var valf) (canonicalize-binding binding)
+        (compile-form valf env (new-context inner-context :receiving 1))
+        (cond ((or (member var specials) (globally-special-p var env))
+               (incf special-binding-count)
+               (setq env (add-specials (list var) env))
+               (emit-special-bind inner-context var)
+               (setq inner-context (new-context inner-context
+                                                :dynenv '(:special))))
+              (t
+               (let ((frame-start (frame-end env)))
+                 (setq env (bind-vars (list var) env inner-context))
+                 (maybe-emit-make-cell (var-info var env) inner-context)
+                 (assemble-maybe-long inner-context m:set frame-start))))))
+    (compile-progn body
+                   (if specials
+                       ;; We do this to make sure special declarations get
+                       ;; through even if this form doesn't bind them.
+                       ;; This creates duplicate alist entries for anything
+                       ;; that _is_ bound here, but that's not a big deal.
+                       (add-specials specials env)
+                       env)
+                   inner-context)
+    (emit-unbind context special-binding-count)))
 
-(defun compile-setq (pairs env context)
-  (if (null pairs)
-      (unless (eql (context-receiving context) 0)
-        (assemble context +nil+))
-      (do ((pairs pairs (cddr pairs)))
-          ((endp pairs))
-        (let ((var (car pairs))
-              (valf (cadr pairs))
-              (rest (cddr pairs)))
-          (compile-setq-1 var valf env
-                          (if rest
-                              (new-context context :receiving 0)
-                              context))))))
+(defmethod compile-special ((operator (eql 'let*)) form env context)
+  (let ((bindings (second form)) (body (cddr form)))
+    (multiple-value-bind (body decls) (alexandria:parse-body body)
+      (compile-let* bindings decls body env context))))
 
-(defun compile-setq-1 (var valf env context)
-  (multiple-value-bind (kind data) (var-info var env)
-    (ecase kind
-      ((:symbol-macro)
-       (compile-form `(setf ,data ,valf) env context))
-      ((:special nil)
-       (when (null kind)
-         (warn "Unknown variable ~a: treating as special" var))
-       (compile-form valf env (new-context context :receiving 1))
-       ;; If we need to return the new value, stick it into a new local
-       ;; variable, do the set, then return the lexical variable.
-       ;; We can't just read from the special, since some other thread may
-       ;; alter it.
-       (let ((index (frame-end env)))
-         (unless (eql (context-receiving context) 0)
-           (assemble context +set+ index +ref+ index)
-           ;; called for effect, i.e. to keep frame size correct
-           (bind-vars (list var) env context))
-         (assemble context +symbol-value-set+ (literal-index var context))
-         (unless (eql (context-receiving context) 0)
-           (assemble context +ref+ index)
-           (when (eql (context-receiving context) t)
-             (assemble context +pop+)))))
-      ((:lexical)
-       (let ((localp (eq (lexical-info-function data)
-                         (context-function context)))
-             (index (frame-end env)))
-         (unless localp
-           (setf (lexical-info-closed-over-p data) t))
-         (setf (lexical-info-set-p data) t)
-         (compile-form valf env (new-context context :receiving 1))
-         ;; similar concerns to specials above.
-         (unless (eql (context-receiving context) 0)
-           (assemble context +set+ index +ref+ index)
-           (bind-vars (list var) env context))
-         (cond (localp
-                (emit-lexical-set data context))
-               ;; Don't emit a fixup if we already know we need a cell.
-               (t
-                (assemble context +closure+ (closure-index data context))
-                (assemble context +cell-set+)))
-         (unless (eql (context-receiving context) 0)
-           (assemble context +ref+ index)
-           (when (eql (context-receiving context) t)
-             (assemble context +pop+))))))))
-
-(defun fun-name-block-name (fun-name)
-  (if (symbolp fun-name)
-      fun-name
-      ;; setf name
-      (second fun-name)))
-
-(defun compile-flet (definitions body env context)
-  (let ((fun-vars '())
-        (funs '())
-        (fun-count 0)
+(defmethod compile-special ((operator (eql 'flet)) form env context)
+  (let ((definitions (second form)) (body (cddr form))
+        (fun-vars '()) (funs '()) (fun-count 0)
         ;; HACK FIXME
         (frame-slot (frame-end env)))
     (dolist (definition definitions)
       (let ((name (first definition))
             (fun-var (gensym "FLET-FUN")))
-        (compile-function `(lambda ,(second definition)
-                             (block ,(fun-name-block-name name)
-                               (locally ,@(cddr definition))))
-                          env (new-context context :receiving 1))
+        (compile-lambda-expression
+         `(lambda ,(second definition)
+            (block ,(fun-name-block-name name)
+              (locally ,@(cddr definition))))
+         env context)
         (push fun-var fun-vars)
-        (push (cons name (make-local-function-fun-info
-                          (make-lexical-info frame-slot
-                                             (context-function context))))
+        ;; This is the hacky part.
+        (push (cons name (make-local-function
+                          name
+                          (make-lexical-variable
+                           fun-var frame-slot (context-function context))))
               funs)
         (incf frame-slot)
         (incf fun-count)))
@@ -714,10 +767,11 @@
     (let ((env (make-lexical-environment
                 (bind-vars fun-vars env context)
                 :funs (append funs (funs env)))))
-      (compile-progn body env context))))
+      (compile-locally body env context))))
 
-(defun compile-labels (definitions body env context)
-  (let ((fun-count 0)
+(defmethod compile-special ((operator (eql 'labels)) form env context)
+  (let ((definitions (second form)) (body (cddr form))
+        (fun-count 0)
         (funs '())
         (fun-vars '())
         (closures '())
@@ -728,9 +782,10 @@
       (let ((name (first definition))
             (fun-var (gensym "LABELS-FUN")))
         (push fun-var fun-vars)
-        (push (cons name (make-local-function-fun-info
-                          (make-lexical-info frame-slot
-                                             (context-function context))))
+        (push (cons name (make-local-function
+                          name
+                          (make-lexical-variable
+                           fun-var frame-slot (context-function context))))
               funs)
         (incf frame-slot)
         (incf fun-count)))
@@ -750,56 +805,364 @@
                  (emit-const context literal-index))
                 (t
                  (push (cons fun frame-slot) closures)
-                 (assemble context +make-uninitialized-closure+
-                   literal-index))))
+                 (assemble-maybe-long context
+                                      m:make-uninitialized-closure
+                                      literal-index))))
         (incf frame-slot))
       (emit-bind context fun-count frame-start)
       (dolist (closure closures)
-        (loop for info across (cfunction-closed (car closure)) do
-          (reference-lexical-info info context))
-        (assemble context +initialize-closure+ (cdr closure)))
+        (dotimes (i (length (cfunction-closed (car closure))))
+          (reference-lexical-variable (aref (cfunction-closed (car closure)) i)
+                                      context))
+        (assemble-maybe-long context m:initialize-closure (cdr closure)))
       (compile-progn body env context))))
 
-(defun compile-if (condition then else env context)
-  (compile-form condition env (new-context context :receiving 1))
-  (let ((then-label (make-label))
-        (done-label (make-label)))
-    (emit-jump-if context then-label)
-    (compile-form else env context)
-    (emit-jump context done-label)
-    (emit-label context then-label)
-    (compile-form then env context)
-    (emit-label context done-label)))
+(defgeneric compile-setq-1 (info var value-form environment context))
+
+(defmethod compile-setq-1 ((info trucler:symbol-macro-description)
+                           var valf env context)
+  ;; SETF can do its own macroexpansion of the variable.
+  (compile-form `(setf ,var ,valf) env context))
+
+(defun compile-setq-1-special (var valf env context)
+  (compile-form valf env (new-context context :receiving 1))
+  ;; If we need to return the new value, stick it into a new local
+  ;; variable, do the set, then return the lexical variable.
+  ;; We can't just read from the special, since some other thread may
+  ;; alter it.
+  (let ((index (frame-end env)))
+    (unless (eql (context-receiving context) 0)
+      (assemble-maybe-long context m:set index)
+      (assemble-maybe-long context m:ref index)
+      ;; called for effect, i.e. to keep frame size correct
+      (bind-vars (list var) env context))
+    (assemble-maybe-long context m:symbol-value-set (literal-index var context))
+    (unless (eql (context-receiving context) 0)
+      (assemble-maybe-long context m:ref index)
+      (when (eql (context-receiving context) t)
+        (assemble context m:pop)))))
+
+(defmethod compile-setq-1 ((info trucler:special-variable-description)
+                           var valf env context)
+  (compile-setq-1-special var valf env context))
+
+(defmethod compile-setq-1 ((info null) var valf env context)
+  (warn "Unknown variable ~a: treating as special" var)
+  (compile-setq-1-special var valf env context))
+
+(defmethod compile-setq-1 ((info lexical-variable-description)
+                           var valf env context)
+  (let ((localp (eq (lvar-cfunction info) (context-function context)))
+        (index (frame-end env)))
+    (unless localp
+      (setf (closed-over-p info) t))
+    (setf (setp info) t)
+    (compile-form valf env (new-context context :receiving 1))
+    ;; similar concerns to specials above.
+    (unless (eql (context-receiving context) 0)
+      (assemble-maybe-long context m:set index)
+      (assemble-maybe-long context m:ref index)
+      (bind-vars (list var) env context))
+    (cond (localp
+           (emit-lexical-set info context))
+          ;; Don't emit a fixup if we already know we need a cell.
+          (t
+           (assemble-maybe-long context m:closure
+                                (closure-index info context))
+           (assemble context m:cell-set)))
+    (unless (eql (context-receiving context) 0)
+      (assemble-maybe-long context m:ref index)
+      (when (eql (context-receiving context) t)
+        (assemble context m:pop)))))
+
+(defmethod compile-special ((op (eql 'setq)) form env context)
+  (let ((pairs (rest form)))
+    (if (null pairs)
+        (unless (eql (context-receiving context) 0)
+          (assemble context m:nil))
+        (do ((pairs pairs (cddr pairs)))
+            ((endp pairs))
+          (let ((var (car pairs))
+                (valf (cadr pairs))
+                (rest (cddr pairs)))
+            (compile-setq-1 (var-info var env) var valf env
+                            (if rest
+                                (new-context context :receiving 0)
+                                context)))))))
+
+(defmethod compile-special ((op (eql 'if)) form env context)
+  (destructuring-bind (condition then else) (rest form)
+    (compile-form condition env (new-context context :receiving 1))
+    (let ((then-label (make-label))
+          (done-label (make-label)))
+      (emit-jump-if context then-label)
+      (compile-form else env context)
+      (emit-jump context done-label)
+      (emit-label context then-label)
+      (compile-form then env context)
+      (emit-label context done-label))))
 
 ;;; Push the immutable value or cell of lexical in CONTEXT.
-(defun reference-lexical-info (info context)
-  (if (eq (lexical-info-function info) (context-function context))
-      (assemble context +ref+ (lexical-info-frame-offset info))
-      (assemble context +closure+ (closure-index info context))))
+(defun reference-lexical-variable (info context)
+  (if (eq (lvar-cfunction info) (context-function context))
+      (assemble-maybe-long context m:ref (frame-offset info))
+      (assemble-maybe-long context m:closure (closure-index info context))))
 
-(defun compile-function (fnameoid env context)
+(defun compile-function-lookup (fnameoid env context)
+  (etypecase fnameoid
+    (lambda-expression (compile-lambda-expression fnameoid env context))
+    (function-name
+     (let ((info (fun-info fnameoid env)))
+       (etypecase info
+         (trucler:global-function-description
+          (emit-fdefinition context (literal-index fnameoid context)))
+         (trucler:local-function-description
+          (reference-lexical-variable (trucler:identity info) context))
+         (null
+          (warn "Unknown function ~a: treating as global function" fnameoid)
+          (emit-fdefinition context (literal-index fnameoid context))))))))
+
+(defmethod compile-special ((op (eql 'function)) form env context)
   (unless (eql (context-receiving context) 0)
-    (if (typep fnameoid 'lambda-expression)
-        (let* ((cfunction (compile-lambda (cadr fnameoid) (cddr fnameoid)
-                                         env (context-module context)))
-               (closed (cfunction-closed cfunction)))
-          (loop for info across closed do
-            (reference-lexical-info info context))
-          (if (zerop (length closed))
-              (emit-const context (literal-index cfunction context))
-              (assemble context +make-closure+ (literal-index cfunction context))))
-        (multiple-value-bind (kind data) (fun-info fnameoid env)
-          (ecase kind
-            ((:global-function nil)
-             (when (null kind) (warn "Unknown function ~a" fnameoid))
-             (emit-fdefinition context (literal-index fnameoid context)))
-            ((:local-function)
-             (reference-lexical-info data context)))))
+    (compile-function-lookup (second form) env context)
     (when (eql (context-receiving context) t)
-      (assemble context +pop+))))
+      (assemble context m:pop))))
 
-;;; Deal with lambda lists. Return the new environment resulting from
-;;; binding these lambda vars.
+(defun go-tag-p (object) (typep object '(or symbol integer)))
+
+(defmethod compile-special ((op (eql 'tagbody)) form env context)
+  (let* ((statements (rest form))
+         (new-tags (tags env))
+         (tagbody-dynenv (gensym "TAG-DYNENV"))
+         (env (bind-vars (list tagbody-dynenv) env context))
+         (dynenv-info (var-info tagbody-dynenv env))
+         (stmt-context (new-context context
+                                    :receiving 0 :dynenv (list dynenv-info))))
+    (dolist (statement statements)
+      (when (go-tag-p statement)
+        (push (list* statement dynenv-info (make-label)) new-tags)))
+    (let ((env (make-lexical-environment env :tags new-tags)))
+      ;; Bind the dynamic environment.
+      (assemble context m:entry (frame-offset dynenv-info))
+      ;; Compile the body, emitting the tag destination labels.
+      (dolist (statement statements)
+        (if (go-tag-p statement)
+            (emit-label context (cddr (assoc statement (tags env))))
+            (compile-form statement env stmt-context)))))
+  (assemble context m:entry-close)
+  ;; return nil if we really have to
+  (unless (eql (context-receiving context) 0)
+    (assemble context m:nil)
+    (when (eql (context-receiving context) t)
+      (assemble context m:pop))))
+
+(defun compile-exit (exit-info context)
+  (destructuring-bind (dynenv-info . label) exit-info
+    (cond ((eq (lvar-cfunction dynenv-info) (context-function context))
+           ;; Local unwind.
+           (dolist (entry (context-dynenv context))
+             (when (eq entry dynenv-info) (return))
+             (etypecase entry
+               ((eql :special) ; special binding
+                ;; TODO: Doesn't matter now, but if we had an unbind-n
+                ;; instruction we could leverage that here.
+                (emit-unbind context 1))
+               (lexical-variable-description
+                (maybe-emit-entry-close context entry))))
+           ;; Exit.
+           (emit-ref-or-restore-sp context dynenv-info)
+           (emit-exit-or-jump context dynenv-info label))
+          (t
+           (setf (closed-over-p dynenv-info) t)
+           (assemble-maybe-long context m:closure
+                                (closure-index dynenv-info context))
+           (emit-exit context label)))))
+
+(defmethod compile-special ((op (eql 'go)) form env context)
+  (let ((pair (assoc (second form) (tags env))))
+    (if pair
+        (compile-exit (cdr pair) context)
+        (error "The GO tag ~a does not exist." (second form)))))
+
+(defmethod compile-special ((op (eql 'block)) form env context)
+  (let* ((name (second form)) (body (cddr form))
+         (block-dynenv (gensym "BLOCK-DYNENV"))
+         (env (bind-vars (list block-dynenv) env context))
+         (dynenv-info (var-info block-dynenv env))
+         (body-context (new-context context :dynenv (list dynenv-info)))
+         (label (make-label))
+         (normal-label (make-label)))
+    ;; Bind the dynamic environment.
+    (emit-entry-or-save-sp context dynenv-info)
+    (let ((env (make-lexical-environment
+                env
+                :blocks (acons name (cons dynenv-info label) (blocks env)))))
+      ;; Force single values into multiple so that we can uniformly PUSH afterward.
+      (compile-progn body env body-context))
+    (when (eql (context-receiving context) 1)
+      (emit-jump context normal-label))
+    (emit-label context label)
+    ;; When we need 1 value, we have to make sure that the
+    ;; "exceptional" case pushes a single value onto the stack.
+    (when (eql (context-receiving context) 1)
+      (assemble context m:push)
+      (emit-label context normal-label))
+    (maybe-emit-entry-close context dynenv-info)))
+
+(defmethod compile-special ((op (eql 'return-from)) form env context)
+  (let ((name (second form)) (value (third form)))
+    (compile-form value env (new-context context :receiving t))
+    (let ((pair (assoc name (blocks env))))
+      (if pair
+          (compile-exit (cdr pair) context)
+          (error "The block ~a does not exist." name)))))
+
+(defmethod compile-special ((op (eql 'catch)) form env context)
+  (let ((tag (second form)) (body (cddr form))
+        (target (make-label)))
+    (compile-form tag env (new-context context :receiving 1))
+    (emit-catch context target)
+    (compile-progn body env context)
+    (assemble context m:catch-close)
+    (emit-label context target)))
+
+(defmethod compile-special ((op (eql 'throw)) form env context)
+  (let ((tag (second form)) (result (third form)))
+    (compile-form tag env (new-context context :receiving 1))
+    (compile-form result env (new-context context :receiving t))
+    (assemble context m:throw)))
+
+(defmethod compile-special ((op (eql 'progv)) form env context)
+  (destructuring-bind (symbols values . body) (rest form)
+    (compile-form symbols env (new-context context :receiving 1))
+    (compile-form values env (new-context context :receiving 1))
+    (assemble context m:progv)
+    (compile-progn body env context)
+    (emit-unbind context 1)))
+
+(defmethod compile-special ((op (eql 'quote)) form env context)
+  (compile-literal (second form) env context))
+
+(defmethod compile-special ((op (eql 'load-time-value)) form env context)
+  (destructuring-bind (form &optional read-only-p) (rest form)
+    (check-type read-only-p boolean)
+    ;; Stick info about the LTV into the literals vector. It will be handled
+    ;; later by COMPILE or a file compiler.
+    (let ((index (new-literal-index (make-ltv-info form read-only-p)
+                                    context)))
+      ;; Maybe compile a literal load.
+      ;; (Note that we do always need to register the LTV, since it may have
+      ;;  some weird side effect. We could hypothetically save some space by
+      ;;  not allocating a spot in the constants if the value isn't actually
+      ;;  used, but that's a very marginal case.)
+      (ecase (context-receiving context)
+        ((0))
+        ((1) (assemble-maybe-long context m:const index))
+        ((t) (assemble-maybe-long context m:const index)
+         (assemble context m:pop))))))
+
+(defmethod compile-special ((op (eql 'symbol-macrolet)) form env context)
+  (let* ((bindings (second form)) (body (cddr form))
+         (smacros
+           (loop for (name expansion) in bindings
+                 collect (cons name (make-symbol-macro name expansion)))))
+    (compile-locally body (make-lexical-environment
+                           env
+                           :vars (append (nreverse smacros) (vars env)))
+                     context)))
+
+(defun lexenv-for-macrolet (env)
+  ;; Macrolet expanders need to be compiled in the local compilation environment,
+  ;; so that e.g. their bodies can use macros defined in outer macrolets.
+  ;; At the same time, they obviously do not have access to any runtime
+  ;; environment. Taking out all runtime information is one way to do this but
+  ;; it's slightly not-nice in that if someone writes a macroexpander that does
+  ;; try to use local runtime information may fail silently by using global info
+  ;; instead. So: FIXME.
+  (make-lexical-environment
+   env
+   :vars (loop for pair in (vars env)
+               when (typep (cdr pair) '(or trucler:constant-variable-description
+                                        trucler:symbol-macro-description))
+                 collect pair)
+   :funs (loop for pair in (funs env)
+               when (typep (cdr pair) 'trucler:macro-description)
+                 collect pair)
+   :tags nil :blocks nil :frame-end 0))
+
+(defmethod compile-special ((op (eql 'macrolet)) form env context)
+  (let* ((bindings (second form)) (body (cddr form))
+         (macros
+           (loop with env = (lexenv-for-macrolet env)
+                 for (name lambda-list . body) in bindings
+                 for macro-lexpr
+                   = (trivial-cltl2:parse-macro name lambda-list body)
+                 for info = (make-local-macro name (compile macro-lexpr env))
+                 collect (cons name info))))
+    (compile-locally body (make-lexical-environment
+                           env :funs (append macros (funs env)))
+                     context)))
+
+;;; Compile resolution of a function designator into a function.
+;;; This is only one value, so CONTEXT's receiving is ignored.
+;;; We pick off some special cases (e.g. #'foo) as a basic optimization,
+;;; and otherwise fall back to a more complicated etypecase.
+;;; With runtime support we could expand into (coerce-fdesignator form).
+(defun compile-fdesignator (form env context)
+  (typecase form
+    ((cons (eql function) (cons t null)) ; #'foo or #'(lambda ...)
+     (compile-function-lookup (second form) env context))
+    ((cons (eql lambda))
+     (compile-lambda-expression form env context))
+    ((cons (eql quote) (cons symbol null)) ; 'foo
+     (compile-form `(fdefinition ,form) env (new-context context :receiving 1)))
+    (t
+     (let* ((fsym (gensym "FUNCTION-DESIGNATOR"))
+            (form `(etypecase ,fsym
+                     (function ,fsym)
+                     (symbol (fdefinition ,fsym)))))
+       (compile-form form env (new-context context :receiving 1))))))
+
+(defmethod compile-special ((op (eql 'multiple-value-call)) form env context)
+  (let ((function-form (second form)) (forms (cddr form)))
+    (compile-fdesignator function-form env context)
+    (if forms
+        (let ((first (first forms))
+              (rest (rest forms)))
+          (compile-form first env (new-context context :receiving t))
+          (when rest
+            (assemble context m:push-values)
+            (dolist (form rest)
+              (compile-form form env (new-context context :receiving t))
+              (assemble context m:append-values))
+            (assemble context m:pop-values))
+          (emit-mv-call context))
+        (emit-call context 0))))
+
+(defmethod compile-special ((op (eql 'multiple-value-prog1)) form env context)
+  (let ((first-form (second form)) (forms (cddr form)))
+    (compile-form first-form env context)
+    (unless (member (context-receiving context) '(0 1))
+      (assemble context m:push-values))
+    (dolist (form forms)
+      (compile-form form env (new-context context :receiving 0)))
+    (unless (member (context-receiving context) '(0 1))
+      (assemble context m:pop-values))))
+
+(defmethod compile-special ((op (eql 'locally)) form env context)
+  (compile-locally (rest form) env context))
+
+(defmethod compile-special ((op (eql 'eval-when)) form env context)
+  (let ((situations (second form)) (body (cddr form)))
+    (if (or (member 'cl:eval situations) (member :execute situations))
+        (compile-progn body env context)
+        (compile-literal nil env context))))
+
+(defmethod compile-special ((op (eql 'the)) form env context)
+  ;; ignore
+  (compile-form (third form) env context))
+
+;;; Deal with lambda lists. Compile the body with the lambda vars bound.
 ;;; Optional/key handling is done in two steps:
 ;;;
 ;;; 1. Bind any supplied optional/key vars to the passed values.
@@ -818,136 +1181,190 @@
              (max-count (+ min-count optional-count))
              (key-count (length keys))
              (more-p (or rest key-p))
-             (env (bind-vars required env context))
+             (new-env (bind-vars required env context))
              (specials (extract-specials decls))
-             (special-binding-count 0))
+             (special-binding-count 0)
+             ;; An alist from optional and key variables to their local indices.
+             ;; This is needed so that we can properly mark any that are special as
+             ;; such while leaving them temporarily "lexically" bound during
+             ;; argument parsing.
+             (opt-key-indices nil))
         (emit-label context entry-point)
-        ;; Check that a valid number of arguments have been
-        ;; supplied to this function.
+        ;; Generate argument count check.
         (cond ((and required (= min-count max-count) (not more-p))
-               (assemble context +check-arg-count=+ min-count))
+               (assemble context m:check-arg-count-= min-count))
               (t
                (when required
-                 (assemble context +check-arg-count>=+ min-count))
+                 (assemble context m:check-arg-count->= min-count))
                (when (not more-p)
-                 (assemble context +check-arg-count<=+ max-count))))
+                 (assemble context m:check-arg-count-<= max-count))))
         (unless (zerop min-count)
-          (assemble context +bind-required-args+ min-count)
+          (assemble-maybe-long context m:bind-required-args min-count)
           (dolist (var required)
-            (cond ((member var specials)
-                   (let ((info (nth-value 1 (var-info var env))))
-                     (assemble context +ref+ (lexical-info-frame-offset info))
+            ;; We account for special declarations in outer environments/globally
+            ;; by checking the original environment - not our new one - for info.
+            (cond ((or (member var specials) (specialp var env))
+                   (let ((info (var-info var new-env)))
+                     (assemble-maybe-long context m:ref (frame-offset info))
                      (emit-special-bind context var))
                    (incf special-binding-count))
                   (t
-                   (maybe-emit-encage (nth-value 1 (var-info var env)) context))))
-          (setq env (add-specials (intersection specials required) env)))
+                   (maybe-emit-encage (var-info var new-env) context))))
+          (setq new-env (add-specials (intersection specials required) new-env)))
         (unless (zerop optional-count)
-          (assemble context +bind-optional-args+
-            min-count
-            optional-count)
-          (setq env (bind-vars (mapcar #'first optionals) env context)))
+          ;; Generate code to bind the provided optional args; unprovided args will
+          ;; be initialized with the unbound marker.
+          (assemble-maybe-long context m:bind-optional-args
+                               min-count optional-count)
+          (let ((optvars (mapcar #'first optionals)))
+            ;; Mark the location of each optional. Note that we do this even if
+            ;; the variable will be specially bound.
+            (setq new-env (bind-vars optvars new-env context))
+            ;; Add everything to opt-key-indices.
+            (dolist (var optvars)
+              (push (cons var (frame-offset (var-info var new-env)))
+                    opt-key-indices))
+            ;; Re-mark anything that's special in the outer context as such,
+            ;; so that default initforms properly treat them as special.
+            (let ((specials
+                    (remove-if-not
+                     (lambda (sym) (specialp sym env))
+                     optvars)))
+              (when specials
+                (setq new-env (add-specials specials new-env))))))
         (when rest
-          (assemble context +listify-rest-args+ max-count)
-          (assemble context +set+ (frame-end env))
-          (setq env (bind-vars (list rest) env context))
-          (cond ((member rest specials)
-                 (assemble +ref+ (nth-value 1 (var-info rest env)) context)
+          (assemble-maybe-long context m:listify-rest-args max-count)
+          (assemble-maybe-long context m:set (frame-end new-env))
+          (setq new-env (bind-vars (list rest) new-env context))
+          (cond ((or (member rest specials) (specialp rest env))
+                 (assemble-maybe-long
+                  context m:ref (frame-offset (var-info rest new-env)))
                  (emit-special-bind context rest)
                  (incf special-binding-count 1)
-                 (setq env (add-specials (list rest) env)))
+                 (setq new-env (add-specials (list rest) new-env)))
                 (t
-                 (maybe-emit-encage (nth-value 1 (var-info rest env)) context))))
+                 (maybe-emit-encage (var-info rest new-env) context))))
         (when key-p
+          ;; Generate code to parse the key args. As with optionals, we don't do
+          ;; defaulting yet.
           (let ((key-names (mapcar #'caar keys)))
-            (emit-parse-key-args context max-count key-count key-names env aok-p)
+            (emit-parse-key-args context max-count key-count key-names new-env aok-p)
+            ;; emit-parse-key-args establishes the first key in the literals.
+            ;; now do the rest.
             (dolist (key-name (rest key-names))
-              (literal-index key-name context)))
-          (setq env (bind-vars (mapcar #'cadar keys) env context)))
+              (new-literal-index key-name context)))
+          (let ((keyvars (mapcar #'cadar keys)))
+            (setq new-env (bind-vars keyvars new-env context))
+            (dolist (var keyvars)
+              (let ((info (var-info var new-env)))
+                (push (cons var (frame-offset info)) opt-key-indices)))
+            (let ((specials (remove-if-not (lambda (sym) (specialp sym env))
+                                           keyvars)))
+              (when specials
+                (setq new-env (add-specials specials new-env))))))
+        ;; Generate defaulting code for optional args, and special-bind them
+        ;; if necessary.
         (unless (zerop optional-count)
           (do ((optionals optionals (rest optionals))
                (optional-label (make-label) next-optional-label)
                (next-optional-label (make-label) (make-label)))
-              ((null optionals)
+              ((endp optionals)
                (emit-label context optional-label))
             (emit-label context optional-label)
             (destructuring-bind (optional-var defaulting-form supplied-var)
                 (first optionals)
-              (multiple-value-bind (new-env special-count)
-                  (compile-optional/key-item optional-var defaulting-form supplied-var
-                                             next-optional-label specials context env)
-                (setq env new-env)
-                (incf special-binding-count special-count)))))
+              (let ((optional-special-p (or (member optional-var specials)
+                                            (specialp optional-var env)))
+                    (index (cdr (assoc optional-var opt-key-indices)))
+                    (supplied-special-p
+                      (and supplied-var
+                           (or (member supplied-var specials)
+                               (specialp supplied-var env)))))
+                (setq new-env
+                      (compile-optional/key-item optional-var defaulting-form
+                                                 index
+                                                 supplied-var next-optional-label
+                                                 optional-special-p supplied-special-p
+                                                 context env))
+                (when optional-special-p (incf special-binding-count))
+                (when supplied-special-p (incf special-binding-count))))))
+        ;; Generate defaulting code for key args, and special-bind them if necessary.
         (when key-p
           (do ((keys keys (rest keys))
                (key-label (make-label) next-key-label)
                (next-key-label (make-label) (make-label)))
-              ((null keys)
-               (emit-label context key-label))
+              ((endp keys) (emit-label context key-label))
             (emit-label context key-label)
             (destructuring-bind ((key-name key-var) defaulting-form supplied-var)
                 (first keys)
               (declare (ignore key-name))
-              (multiple-value-bind (new-env special-count)
-                  (compile-optional/key-item key-var defaulting-form supplied-var
-                                             next-key-label specials context env)
-                (setq env new-env)
-                (incf special-binding-count special-count)))))
-        (compile-let* aux body env context)
+              (let ((index (cdr (assoc key-var opt-key-indices)))
+                    (key-special-p (or (member key-var specials)
+                                       (specialp key-var env)))
+                    (supplied-special-p
+                      (and supplied-var
+                           (or (member supplied-var specials)
+                               (specialp supplied-var env)))))
+                (setq new-env
+                      (compile-optional/key-item key-var defaulting-form index
+                                                 supplied-var next-key-label
+                                                 key-special-p supplied-special-p
+                                                 context new-env))
+                (when key-special-p (incf special-binding-count))
+                (when supplied-special-p (incf special-binding-count))))))
+        ;; Generate aux and the body as a let*.
+        ;; We repeat the special declarations so that let* will know the auxs
+        ;; are special, and so that any free special declarations are processed.
+        (compile-let* aux `((special ,@specials)) body new-env context)
         (emit-unbind context special-binding-count)))))
 
 ;;; Compile an optional/key item and return the resulting environment.
-(defun compile-optional/key-item (var defaulting-form supplied-var next-label
-                                  specials context env)
-  (let ((special-count 0))
-    (flet ((default (suppliedp specialp var info)
-             (cond (suppliedp
-                    (cond (specialp
-                           (assemble context +ref+ (lexical-info-frame-offset info))
-                           (emit-special-bind context var)
-                           (incf special-count))
-                          (t
-                           (maybe-emit-encage info context))))
-                   (t
-                    (compile-form defaulting-form env
-                                  (new-context context :receiving 1))
-                    (cond (specialp
-                           (emit-special-bind context var)
-                           (incf special-count))
-                          (t
-                           (maybe-emit-make-cell info context)
-                           (assemble context +set+ (lexical-info-frame-offset info)))))))
-           (supply (suppliedp specialp var)
-             (if suppliedp
-                 (compile-literal t env (new-context context :receiving 1))
-                 (assemble context +nil+))
-             (cond (specialp
-                    (emit-special-bind context var)
-                    (incf special-count))
-                   (t
-                    (let ((info (nth-value 1 (var-info var env))))
-                      (maybe-emit-make-cell info context)
-                      (assemble context +set+ (lexical-info-frame-offset info)))))))
-      (let ((supplied-label (make-label))
-            (info (nth-value 1 (var-info var env)))
-            (specialp (member var specials))
-            (supplied-specialp (member supplied-var specials)))
-        (when specialp
-          (setq env (add-specials (list var) env)))
+(defun compile-optional/key-item (var defaulting-form var-index supplied-var next-label
+                                  var-specialp supplied-specialp context env)
+  (flet ((default (suppliedp specialp var info)
+           (cond (suppliedp
+                  (cond (specialp
+                         (assemble-maybe-long context m:ref var-index)
+                         (emit-special-bind context var))
+                        (t
+                         (maybe-emit-encage info context))))
+                 (t
+                  (compile-form defaulting-form env
+                                (new-context context :receiving 1))
+                  (cond (specialp
+                         (emit-special-bind context var))
+                        (t
+                         (maybe-emit-make-cell info context)
+                         (assemble-maybe-long context m:set var-index))))))
+         (supply (suppliedp specialp var info)
+           (if suppliedp
+               (compile-literal t env (new-context context :receiving 1))
+               (assemble context m:nil))
+           (cond (specialp
+                  (emit-special-bind context var))
+                 (t
+                  (maybe-emit-make-cell info context)
+                  (assemble-maybe-long
+                   context m:set (frame-offset info))))))
+    (let ((supplied-label (make-label))
+          (var-info (var-info var env)))
+      (when supplied-var
+        (setq env (bind-vars (list supplied-var) env context)))
+      (let ((supplied-info (var-info supplied-var env)))
+        (emit-jump-if-supplied context var-index supplied-label)
+        (default nil var-specialp var var-info)
         (when supplied-var
-          (setq env (bind-vars (list supplied-var) env context))
-          (when supplied-specialp
-            (setq env (add-specials (list supplied-var) env))))
-        (emit-jump-if-supplied context (lexical-info-frame-offset info) supplied-label)
-        (default nil specialp var info)
-        (when supplied-var
-          (supply nil supplied-specialp supplied-var))
+          (supply nil supplied-specialp supplied-var supplied-info))
         (emit-jump context next-label)
         (emit-label context supplied-label)
-        (default t specialp var info)
+        (default t var-specialp var var-info)
         (when supplied-var
-          (supply t supplied-specialp supplied-var))
-        (values env special-count)))))
+          (supply t supplied-specialp supplied-var supplied-info))
+        (when var-specialp
+          (setq env (add-specials (list var) env)))
+        (when supplied-specialp
+          (setq env (add-specials (list supplied-var) env)))
+        env))))
 
 ;;; Compile the lambda in MODULE, returning the resulting
 ;;; CFUNCTION.
@@ -958,161 +1375,8 @@
     (setf (cfunction-index function)
           (vector-push-extend function (cmodule-cfunctions module)))
     (compile-with-lambda-list lambda-list body env context)
-    (assemble context +return+)
+    (assemble context m:return)
     function))
-
-(defun go-tag-p (object) (typep object '(or symbol integer)))
-
-(defun compile-tagbody (statements env context)
-  (let* ((new-tags (tags env))
-         (tagbody-dynenv (gensym "TAG-DYNENV"))
-         (env (bind-vars (list tagbody-dynenv) env context))
-         (dynenv-info (nth-value 1 (var-info tagbody-dynenv env))))
-    (dolist (statement statements)
-      (when (go-tag-p statement)
-        (push (list* statement dynenv-info (make-label))
-              new-tags)))
-    (let ((env (make-lexical-environment env :tags new-tags)))
-      ;; Bind the dynamic environment.
-      (assemble context +entry+ (lexical-info-frame-offset dynenv-info))
-      ;; Compile the body, emitting the tag destination labels.
-      (dolist (statement statements)
-        (if (go-tag-p statement)
-            (emit-label context (cddr (assoc statement (tags env))))
-            (compile-form statement env (new-context context :receiving 0))))))
-  (assemble context +entry-close+)
-  ;; return nil if we really have to
-  (unless (eql (context-receiving context) 0)
-    (assemble context +nil+)
-    (when (eql (context-receiving context) t)
-      (assemble context +pop+))))
-
-(defun compile-go (tag env context)
-  (let ((pair (assoc tag (tags env))))
-    (if pair
-        (destructuring-bind (dynenv-info . tag-label) (cdr pair)
-          (reference-lexical-info dynenv-info context)
-          (emit-exit context tag-label))
-        (error "The GO tag ~a does not exist." tag))))
-
-(defun compile-block (name body env context)
-  (let* ((block-dynenv (gensym "BLOCK-DYNENV"))
-         (env (bind-vars (list block-dynenv) env context))
-         (dynenv-info (nth-value 1 (var-info block-dynenv env)))
-         (label (make-label))
-         (normal-label (make-label)))
-    ;; Bind the dynamic environment.
-    (assemble context +entry+ (lexical-info-frame-offset dynenv-info))
-    (let ((env (make-lexical-environment
-                env
-                :blocks (acons name (cons dynenv-info label) (blocks env)))))
-      (compile-progn body env context))
-    (when (eql (context-receiving context) 1)
-      (emit-jump context normal-label))
-    (emit-label context label)
-    ;; When we need 1 value, we have to make sure that the
-    ;; "exceptional" case pushes a single value onto the stack.
-    (when (eql (context-receiving context) 1)
-      (assemble context +push+)
-      (emit-label context normal-label))
-    (assemble context +entry-close+)))
-
-(defun compile-return-from (name value env context)
-  (compile-form value env (new-context context :receiving t))
-  (let ((pair (assoc name (blocks env))))
-    (if pair
-        (destructuring-bind (dynenv-info . block-label) (cdr pair)
-          (reference-lexical-info dynenv-info context)
-          (emit-exit context block-label))
-        (error "The block ~a does not exist." name))))
-
-(defun compile-catch (tag body env context)
-  (compile-form tag env (new-context context :receiving 1))
-  (let ((target (make-label)))
-    (emit-catch context target)
-    (compile-progn body env context)
-    (assemble context +catch-close+)
-    (emit-label context target)))
-
-(defun compile-throw (tag result env context)
-  (compile-form tag env (new-context context :receiving 1))
-  (compile-form result env (new-context context :receiving t))
-  (assemble context +throw+))
-
-(defun compile-progv (symbols values body env context)
-  (compile-form symbols env (new-context context :receiving 1))
-  (compile-form values env (new-context context :receiving 1))
-  (assemble context +progv+)
-  (compile-progn body env context)
-  (emit-unbind context 1))
-
-(defun compile-symbol-macrolet (bindings body env context)
-  (let ((smacros nil))
-    (dolist (binding bindings)
-      (push (cons (car binding) (make-symbol-macro-var-info (cadr binding)))
-            smacros))
-    (compile-progn body (make-lexical-environment
-                         env
-                         :vars (append (nreverse smacros) (vars env)))
-                   context)))
-
-(defun lexenv-for-macrolet (env)
-  ;; Macrolet expanders need to be compiled in the local compilation environment,
-  ;; so that e.g. their bodies can use macros defined in outer macrolets.
-  ;; At the same time, they obviously do not have access to any runtime
-  ;; environment. Taking out all runtime information is one way to do this but
-  ;; it's slightly not-nice in that if someone writes a macroexpander that does
-  ;; try to use local runtime information may fail silently by using global info
-  ;; instead. So: KLUDGE.
-  (make-lexical-environment
-   env
-   :vars (let ((cpairs nil))
-           (dolist (pair (vars env) (nreverse cpairs))
-             (let ((info (cdr pair)))
-               (when (member (var-info-kind info) '(:constant :symbol-macro))
-                 (push pair cpairs)))))
-   :funs (let ((cpairs nil))
-           (dolist (pair (funs env) (nreverse cpairs))
-             (let ((info (cdr pair)))
-               (when (member (fun-info-kind info) '(:global-macro :local-macro))
-                 (push pair cpairs)))))
-   :tags nil :blocks nil :frame-end 0))
-
-(defun compile-macrolet (bindings body env context)
-  (let ((macros nil))
-    (dolist (binding bindings)
-      (let* ((name (car binding))
-             (lambda-list (cadr binding))
-             (body (cddr binding))
-             (info (make-local-macro-fun-info
-                    (compile (trivial-cltl2:parse-macro name lambda-list body)
-                             (lexenv-for-macrolet env)))))
-        (push (cons name info) macros)))
-    (compile-locally body (make-lexical-environment
-                           env :funs (append macros (funs env)))
-                     context)))
-
-(defun compile-multiple-value-call (function-form forms env context)
-  (compile-form function-form env (new-context context :receiving 1))
-  (let ((first (first forms))
-        (rest (rest forms)))
-    (compile-form first env (new-context context :receiving t))
-    (when rest
-      (assemble context +push-values+)
-      (dolist (form rest)
-        (compile-form form env (new-context context :receiving t))
-        (assemble context +append-values+))
-      (assemble context +pop-values+)))
-  (emit-mv-call context))
-
-(defun compile-multiple-value-prog1 (first-form forms env context)
-  (compile-form first-form env context)
-  (unless (member (context-receiving context) '(0 1))
-    (assemble context +push-values+))
-  (dolist (form forms)
-    (compile-form form env (new-context context :receiving 0)))
-  (unless (member (context-receiving context) '(0 1))
-    (assemble context +pop-values+)))
 
 ;;;; linkage
 
@@ -1223,88 +1487,29 @@
            (literals (make-array literal-length))
            (bytecode (create-module-bytecode cmodule))
            (bytecode-module
-             #-clasp
-             (vm::make-bytecode-module
+             (m:make-bytecode-module
               :bytecode bytecode
-              :literals literals)
-             #+clasp
-             (core:bytecode-module/make)))
+              :literals literals)))
       ;; Create the real function objects.
       (dotimes (i (length (cmodule-cfunctions cmodule)))
         (let ((cfunction (aref (cmodule-cfunctions cmodule) i)))
           (setf (cfunction-info cfunction)
-                #-clasp
-                (vm::make-bytecode-function
+                (m:make-bytecode-function
                  bytecode-module
                  (cfunction-nlocals cfunction)
                  (length (cfunction-closed cfunction))
-                 (annotation-module-position (cfunction-entry-point cfunction)))
-                #+clasp
-                (core:global-bytecode-entry-point/make
-                 (core:function-description/make :function-name 'test)
-                 bytecode-module
-                 (cfunction-nlocals cfunction)
-                 0 0 0 0 nil 0 ; unused at the moment
-                 (length (cfunction-closed cfunction))
-                 (make-list 7 :initial-element
-                            (annotation-module-position (cfunction-entry-point cfunction)))))))
+                 (annotation-module-position (cfunction-entry-point cfunction))))))
       ;; Now replace the cfunctions in the cmodule literal vector with
       ;; real bytecode functions.
+      ;; Also replace the load-time-value infos with the evaluated forms.
       (dotimes (index literal-length)
         (setf (aref literals index)
               (let ((literal (aref cmodule-literals index)))
-                (if (cfunction-p literal)
-                    (cfunction-info literal)
-                    literal))))
-      #+clasp
-      (progn
-        (core:bytecode-module/setf-literals bytecode-module literals)
-        ;; Now just install the bytecode and Bob's your uncle.
-        (core:bytecode-module/setf-bytecode bytecode-module bytecode))))
+                (typecase literal
+                  (cfunction (cfunction-info literal))
+                  (ltv-info 
+                   ;; FIXME: This uses a global environment of NIL rather
+                   ;; than whatever was passed to the compiler.
+                   (eval (ltv-info-form literal)))
+                  (t literal)))))))
   (cfunction-info cfunction))
-
-;;; --------------------------------------------------
-;;;
-;;; Generate C++ code for the VM bytecodes
-;;;
-;;; Generate an enum called vm_codes that sets the values
-;;; for all of the vm bytecodes according to the order in
-;;; which they are defined above in *codes*.
-;;;
-
-(defun c++ify (name)
-  (flet ((submatch (substr remain)
-           (let ((sublen (length substr)))
-             (and (>= (length remain) sublen) (string= substr remain :start2 0 :end2 sublen)))))
-    (with-output-to-string (sout)
-      (loop for index below (length name)
-            for remain = (subseq name index)
-            for chr = (elt remain 0)
-            do (cond
-                 ((submatch "/=" remain)
-                  (format sout "_NE_")
-                  (incf index))
-                 ((submatch ">=" remain)
-                  (format sout "_GE_")
-                  (incf index))
-                 ((submatch "<=" remain)
-                  (format sout "_LE_")
-                  (incf index))
-                 ((char= chr #\=) (format sout "_EQ_"))
-                 ((char= chr #\<) (format sout "_LT_"))
-                 ((char= chr #\>) (format sout "_GT_"))
-                 ((char= chr #\-) (format sout "_"))
-                 (t (format sout "~a" chr)))))))
-
-(defun generate-header (&optional (file-name "virtualMachine.h"))
-  (with-open-file (fout file-name :direction :output :if-exists :supersede)
-    (write-string "#ifndef virtualMachine_H" fout) (terpri fout)
-    (write-string "#define virtualMachine_H" fout) (terpri fout) (terpri fout)
-    (let ((enums (loop for sym in *codes*
-                       for index from 0
-                       for trimmed-sym-name = (string-downcase (string-trim "+" (symbol-name sym)))
-                       for sym-name = (format nil "vm_~a" (c++ify trimmed-sym-name))
-                       collect (format nil "~a=~a" sym-name index))))
-      (format fout "enum vm_codes {~%~{   ~a~^,~^~%~} };~%" enums))
-    (terpri fout)
-    (write-string "#endif /*guard */" fout) (terpri fout)))
