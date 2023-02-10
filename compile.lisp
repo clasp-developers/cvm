@@ -418,22 +418,46 @@
   (or (cdr (assoc name (funs env)))
       (trucler:describe-function *client* (global-environment env) name)))
 
-;;; We could use the IDENTITY slot, but we have a bunch of stuff to include.
-(defclass lexical-variable-description (trucler:lexical-variable-description)
-  ((%frame-offset :initarg :frame-offset :reader frame-offset :type (integer 0))
-   (%cfunction :initarg :cfunction :reader lvar-cfunction :type cfunction)
-   (%closed-over-p :initform nil :accessor closed-over-p :type boolean)
-   (%setp :initform nil :accessor setp :type boolean))
-  ;; Trucler errors without an identity for some reason.
-  (:default-initargs :identity nil))
+;; never actually called
+(defun missing-arg () (error "missing arg"))
+
+(defstruct (lexical-variable-info
+            (:constructor make-lexical-variable-info
+                (frame-offset cfunction)))
+  ;; Register index for this lvar.
+  (frame-offset (missing-arg) :read-only t :type (integer 0))
+  ;; Cfunction this lvar belongs to (i.e. is bound by)
+  (cfunction (missing-arg) :read-only t :type cfunction)
+  (closed-over-p nil :type boolean)
+  (setp nil :type boolean))
+
+(defun frame-offset (lvar-desc)
+  (lexical-variable-info-frame-offset (trucler:identity lvar-desc)))
+
+(defun lvar-cfunction (lvar-desc)
+  (lexical-variable-info-cfunction (trucler:identity lvar-desc)))
+
+(defun closed-over-p (lvar-desc)
+  (lexical-variable-info-closed-over-p (trucler:identity lvar-desc)))
+
+(defun (setf closed-over-p) (new lvar-desc)
+  (setf (lexical-variable-info-closed-over-p (trucler:identity lvar-desc))
+        new))
+
+(defun setp (lvar-desc)
+  (lexical-variable-info-setp (trucler:identity lvar-desc)))
+
+(defun (setf setp) (new lvar-desc)
+  (setf (lexical-variable-info-setp (trucler:identity lvar-desc)) new))
 
 ;;; Does the lexical variable need a cell?
 (defun indirect-lexical-p (lvar)
   (and (closed-over-p lvar) (setp lvar)))
 
 (defun make-lexical-variable (name frame-offset cfunction)
-  (make-instance 'lexical-variable-description
-    :name name :frame-offset frame-offset :cfunction cfunction))
+  (make-instance 'trucler:lexical-variable-description
+    :name name
+    :identity (make-lexical-variable-info frame-offset cfunction)))
 
 (defun make-symbol-macro (name expansion)
   (make-instance 'trucler:symbol-macro-description
@@ -531,7 +555,7 @@
                            form env context)
   (compile-form (symbol-macro-expansion info form env) env context))
 
-(defmethod compile-symbol ((info lexical-variable-description)
+(defmethod compile-symbol ((info trucler:lexical-variable-description)
                            form env context)
   (declare (ignore form env))
   (unless (eql (context-receiving context) 0)
@@ -850,7 +874,7 @@
   (warn "Unknown variable ~a: treating as special" var)
   (compile-setq-1-special var valf env context))
 
-(defmethod compile-setq-1 ((info lexical-variable-description)
+(defmethod compile-setq-1 ((info trucler:lexical-variable-description)
                            var valf env context)
   (let ((localp (eq (lvar-cfunction info) (context-function context)))
         (index (frame-end env)))
@@ -967,7 +991,7 @@
                 ;; TODO: Doesn't matter now, but if we had an unbind-n
                 ;; instruction we could leverage that here.
                 (emit-unbind context 1))
-               (lexical-variable-description
+               (trucler:lexical-variable-description
                 (maybe-emit-entry-close context entry))))
            ;; Exit.
            (emit-ref-or-restore-sp context dynenv-info)
