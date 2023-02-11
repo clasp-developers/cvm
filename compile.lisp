@@ -293,44 +293,44 @@
   (dotimes (_ count)
     (assemble context m:unbind)))
 
-(flet ((maybe-emit (lexical-info opcode context)
-         (assert lexical-info)
+(flet ((maybe-emit (lexical-var opcode context)
+         (assert lexical-var)
          (flet ((emitter (fixup position code)
                   (assert (= (fixup-size fixup) 1))
                   (setf (aref code position) opcode))
                 (resizer (fixup)
                   (declare (ignore fixup))
-                  (if (indirect-lexical-p lexical-info) 1 0)))
+                  (if (indirect-lexical-p lexical-var) 1 0)))
            (emit-fixup context
-                       (make-fixup lexical-info 0 #'emitter #'resizer)))))
-  (defun maybe-emit-make-cell (lexical-info context)
-    (maybe-emit lexical-info m:make-cell context))
-  (defun maybe-emit-cell-ref (lexical-info context)
-    (maybe-emit lexical-info m:cell-ref context)))
+                       (make-fixup lexical-var 0 #'emitter #'resizer)))))
+  (defun maybe-emit-make-cell (lexical-var context)
+    (maybe-emit lexical-var m:make-cell context))
+  (defun maybe-emit-cell-ref (lexical-var context)
+    (maybe-emit lexical-var m:cell-ref context)))
 
 ;;; FIXME: This is probably a good candidate for a specialized
 ;;; instruction.
-(defun maybe-emit-encage (lexical-info context)
-  (let ((index (frame-offset lexical-info)))
+(defun maybe-emit-encage (lexical-var context)
+  (let ((index (frame-offset lexical-var)))
     (flet ((emitter (fixup position code)
              (assert (= (fixup-size fixup) 5))
              (assemble-into code position
                             m:ref index m:make-cell m:set index))
            (resizer (fixup)
              (declare (ignore fixup))
-             (if (indirect-lexical-p lexical-info) 5 0)))
-      (emit-fixup context (make-fixup lexical-info 0 #'emitter #'resizer)))))
+             (if (indirect-lexical-p lexical-var) 5 0)))
+      (emit-fixup context (make-fixup lexical-var 0 #'emitter #'resizer)))))
 
-(defun emit-lexical-set (lexical-info context)
-  (let ((index (frame-offset lexical-info)))
+(defun emit-lexical-set (lexical-var context)
+  (let ((index (frame-offset lexical-var)))
     (flet ((emitter (fixup position code)
              (if (= (fixup-size fixup) 3)
                  (assemble-into code position m:ref index m:cell-set)
                  (assemble-into code position m:set index)))
            (resizer (fixup)
              (declare (ignore fixup))
-             (if (indirect-lexical-p lexical-info) 3 2)))
-      (emit-fixup context (make-fixup lexical-info 2 #'emitter #'resizer)))))
+             (if (indirect-lexical-p lexical-var) 3 2)))
+      (emit-fixup context (make-fixup lexical-var 2 #'emitter #'resizer)))))
 
 (defun constant-resizer (n) (lambda (fixup) (declare (ignore fixup)) n))
 
@@ -421,21 +421,30 @@
 ;; never actually called
 (defun missing-arg () (error "missing arg"))
 
-(defstruct (lexical-variable-info
-            (:constructor make-lexical-variable-info
+;;; Our info for lexical bindings (variable and function).
+(defstruct (lexical-info
+            (:constructor make-lexical-info
                 (frame-offset cfunction)))
   ;; Register index for this lvar.
   (frame-offset (missing-arg) :read-only t :type (integer 0))
   ;; Cfunction this lvar belongs to (i.e. is bound by)
-  (cfunction (missing-arg) :read-only t :type cfunction)
+  (cfunction (missing-arg) :read-only t :type cfunction))
+
+;;; Our info for specifically variable bindings.
+;;; (while function bindings can be closed over, they can't be modified,
+;;;  so we don't really care.)
+(defstruct (lexical-variable-info
+            (:constructor make-lexical-variable-info
+                (frame-offset cfunction))
+            (:include lexical-info))
   (closed-over-p nil :type boolean)
   (setp nil :type boolean))
 
-(defun frame-offset (lvar-desc)
-  (lexical-variable-info-frame-offset (trucler:identity lvar-desc)))
+(defun frame-offset (lex-desc)
+  (lexical-info-frame-offset (trucler:identity lex-desc)))
 
-(defun lvar-cfunction (lvar-desc)
-  (lexical-variable-info-cfunction (trucler:identity lvar-desc)))
+(defun lvar-cfunction (lex-desc)
+  (lexical-info-cfunction (trucler:identity lex-desc)))
 
 (defun closed-over-p (lvar-desc)
   (lexical-variable-info-closed-over-p (trucler:identity lvar-desc)))
@@ -472,9 +481,10 @@
 (defun globally-special-p (symbol env)
   (typep (var-info symbol env) 'trucler:global-special-variable-description))
 
-(defun make-local-function (name lvar)
+(defun make-local-function (name frame-offset cfunction)
   (make-instance 'trucler:local-function-description
-    :name name :identity lvar))
+    :name name
+    :identity (make-lexical-info frame-offset cfunction)))
 
 (defun make-local-macro (name expander)
   (make-instance 'trucler:local-macro-description
@@ -500,6 +510,23 @@
          (make-lexical-environment env :vars new-vars :frame-end frame-end))
       (when (constantp (first vars) env)
         (error "Cannot bind constant value ~a!" (first vars))))))
+
+;;; Like the above, but function namespace.
+(defun bind-fvars (funs env context)
+  (let* ((frame-start (frame-end env))
+         (var-count (length funs))
+         (frame-end (+ frame-start var-count))
+         (function (context-function context)))
+    (setf (cfunction-nlocals function)
+          (max (cfunction-nlocals function) frame-end))
+    (do ((index frame-start (1+ index))
+         (funs funs (rest funs))
+         (new-vars (funs env)
+                   (acons (first funs)
+                          (make-local-function (first funs) index function)
+                          new-vars)))
+        ((>= index frame-end)
+         (make-lexical-environment env :funs new-vars :frame-end frame-end)))))
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 (deftype function-name () '(or symbol (cons (eql setf) (cons symbol null))))
@@ -620,7 +647,7 @@
 
 (defmethod compile-combination ((info trucler:local-function-description)
                                 form env context)
-  (reference-lexical-variable (trucler:identity info) context)
+  (reference-lexical-variable info context)
   (compile-call (rest form) env context))
 
 ;;; Given a lambda expression, generate code to push it to the stack
@@ -766,80 +793,39 @@
       (compile-let* bindings decls body env context))))
 
 (defmethod compile-special ((operator (eql 'flet)) form env context)
-  (let ((definitions (second form)) (body (cddr form))
-        (fun-vars '()) (funs '()) (fun-count 0)
-        ;; HACK FIXME
-        (frame-slot (frame-end env)))
-    (dolist (definition definitions)
-      (let ((name (first definition))
-            (fun-var (gensym "FLET-FUN")))
-        (compile-lambda-expression
-         `(lambda ,(second definition)
-            (block ,(fun-name-block-name name)
-              (locally ,@(cddr definition))))
-         env context)
-        (push fun-var fun-vars)
-        ;; This is the hacky part.
-        (push (cons name (make-local-function
-                          name
-                          (make-lexical-variable
-                           fun-var frame-slot (context-function context))))
-              funs)
-        (incf frame-slot)
-        (incf fun-count)))
-    (emit-bind context fun-count (frame-end env))
-    (let ((env (make-lexical-environment
-                (bind-vars fun-vars env context)
-                :funs (append funs (funs env)))))
-      (compile-locally body env context))))
+  (destructuring-bind (definitions . body) (rest form)
+    (loop for (name lambda-list . body) in definitions
+          do (compile-lambda-expression
+              `(lambda ,lambda-list
+                 (block ,(fun-name-block-name name) (locally ,@body)))
+              env context))
+    (emit-bind context (length definitions) (frame-end env))
+    (compile-locally body
+                     (bind-fvars (mapcar #'car definitions) env context)
+                     context)))
 
 (defmethod compile-special ((operator (eql 'labels)) form env context)
-  (let ((definitions (second form)) (body (cddr form))
-        (fun-count 0)
-        (funs '())
-        (fun-vars '())
-        (closures '())
-        (env env)
-        (frame-start (frame-end env))
-        (frame-slot (frame-end env)))
-    (dolist (definition definitions)
-      (let ((name (first definition))
-            (fun-var (gensym "LABELS-FUN")))
-        (push fun-var fun-vars)
-        (push (cons name (make-local-function
-                          name
-                          (make-lexical-variable
-                           fun-var frame-slot (context-function context))))
-              funs)
-        (incf frame-slot)
-        (incf fun-count)))
-    (let ((frame-slot (frame-end env))
-          (env (make-lexical-environment
-                (bind-vars fun-vars env context)
-                :funs (append funs (funs env)))))
-      (dolist (definition definitions)
-        (let* ((name (first definition))
-               (fun (compile-lambda (second definition)
-                                    `((block ,(fun-name-block-name name)
-                                        (locally ,@(cddr definition))))
-                                    env
-                                    (context-module context)))
-               (literal-index (literal-index fun context)))
-          (cond ((zerop (length (cfunction-closed fun)))
-                 (emit-const context literal-index))
-                (t
-                 (push (cons fun frame-slot) closures)
-                 (assemble-maybe-long context
-                                      m:make-uninitialized-closure
-                                      literal-index))))
-        (incf frame-slot))
-      (emit-bind context fun-count frame-start)
+  (destructuring-bind (definitions . body) (rest form)
+    (let* ((new-env (bind-fvars (mapcar #'first definitions) env context))
+           (module (context-module context))
+           (closures
+             (loop for (name lambda-list . body) in definitions
+                   for fun = (compile-lambda lambda-list body new-env
+                                             module)
+                   for literal-index = (literal-index fun context)
+                   if (zerop (length (cfunction-closed fun)))
+                     do (emit-const context literal-index)
+                   else
+                     collect (cons fun (frame-offset (fun-info name new-env)))
+                     and do (assemble-maybe-long context
+                                                 m:make-uninitialized-closure
+                                                 literal-index))))
+      (emit-bind context (length definitions) (frame-end env))
       (dolist (closure closures)
-        (dotimes (i (length (cfunction-closed (car closure))))
-          (reference-lexical-variable (aref (cfunction-closed (car closure)) i)
-                                      context))
+        (loop for var across (cfunction-closed (car closure))
+              do (reference-lexical-variable var context))
         (assemble-maybe-long context m:initialize-closure (cdr closure)))
-      (compile-progn body env context))))
+      (compile-locally body new-env context))))
 
 (defgeneric compile-setq-1 (info var value-form environment context))
 
@@ -941,7 +927,7 @@
          (trucler:global-function-description
           (emit-fdefinition context (literal-index fnameoid context)))
          (trucler:local-function-description
-          (reference-lexical-variable (trucler:identity info) context))
+          (reference-lexical-variable info context))
          (null
           (warn "Unknown function ~a: treating as global function" fnameoid)
           (emit-fdefinition context (literal-index fnameoid context))))))))
