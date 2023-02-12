@@ -7,26 +7,27 @@
 (in-package #:cvm/vm)
 
 (defstruct vm
-  values
-  stack
-  stack-top
-  frame-pointer
-  closure
-  literals
-  args
-  arg-count
-  pc)
+  (values nil :type list)
+  (stack #() :type simple-vector)
+  (stack-top 0 :type (and unsigned-byte fixnum))
+  (frame-pointer 0 :type (and unsigned-byte fixnum))
+  (args 0 :type (and unsigned-byte fixnum))
+  (arg-count 0 :type (and unsigned-byte fixnum))
+  (pc 0 :type (and unsigned-byte fixnum)))
 
 (defvar *vm*)
 
 (declaim (type vm *vm*))
 
 (defun bytecode-call (template env args)
+  (declare (optimize speed)
+           (type list args))
   (let* ((entry-pc (m:bytecode-function-entry-pc template))
          (frame-size (m:bytecode-function-locals-frame-size template))
          (module (m:bytecode-function-module template))
          (bytecode (m:bytecode-module-bytecode module))
          (literals (m:bytecode-module-literals module)))
+    (declare (type (unsigned-byte 16) frame-size))
     ;; Set up the stack, then call VM.
     (let* ((vm *vm*)
            (stack (vm-stack vm)))
@@ -57,6 +58,7 @@
                  :stack-top 0))
   (values))
 
+(declaim (inline signed))
 (defun signed (x size)
   (logior x (- (mask-field (byte 1 (1- size)) x))))
 
@@ -77,18 +79,23 @@
 (defun vm (bytecode closure constants frame-size)
   (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
            (type (simple-array t (*)) closure constants)
-           (optimize debug))
+           (type (unsigned-byte 16) frame-size)
+           (optimize speed))
   (let* ((vm *vm*)
          (stack (vm-stack *vm*)))
     (declare (type (simple-array t (*)) stack))
     (symbol-macrolet ((ip (vm-pc vm))
                       (sp (vm-stack-top vm))
                       (bp (vm-frame-pointer vm)))
+      (declare (type (and unsigned-byte fixnum) ip sp bp))
       (labels ((stack (index)
                  ;;(declare (optimize (safety 0))) ; avoid bounds check
                  (svref stack index))
                ((setf stack) (object index)
                  ;;(declare (optimize (safety 0)))
+                 ;; I do not understand SBCL's complaint, so
+                 #+sbcl
+                 (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
                  (setf (svref stack index) object))
                (spush (object)
                  (prog1 (setf (stack sp) object) (incf sp)))
@@ -117,15 +124,16 @@
                  ;;(declare (optimize (safety 0)))
                  (aref closure index))
                (gather (n)
+                 (declare (type (unsigned-byte 16) n))
                  (let ((result nil)) ; put the most recent value on the end
                    (loop repeat n do (push (spop) result))
                    result)))
-        #+(or)
         (declare (inline stack (setf stack) spush spop
                          code next-code constant closure))
         (loop with end = (length bytecode)
+              with trace = *trace*
               until (eql ip end)
-              when *trace*
+              when trace
                 do (fresh-line *trace-output*)
                    (let ((frame-end (+ bp frame-size)))
                      (prin1 (list (m:disassemble-instruction bytecode ip)
@@ -143,15 +151,16 @@
                     (setf (vm-values vm)
                           (multiple-value-list
                            (let ((args (gather (next-code))))
-                             (apply (spop) args))))
+                             (apply (the function (spop)) args))))
                     (incf ip))
                    ((#.m:call-receive-one)
                     (spush (let ((args (gather (next-code))))
-                             (apply (spop) args)))
+                             (apply (the function (spop)) args)))
                     (incf ip))
                    ((#.m:call-receive-fixed)
                     (let ((args (gather (next-code))) (mvals (next-code))
                           (fun (spop)))
+                      (declare (function fun))
                       (case mvals
                         ((0) (apply fun args))
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
@@ -189,12 +198,17 @@
                     (incf ip))
                    ((#.m:initialize-closure)
                     (let ((env (m:bytecode-closure-env (stack (+ bp (next-code))))))
+                      (declare (type simple-vector env))
                       (loop for i from (1- (length env)) downto 0 do
                         (setf (aref env i) (spop))))
                     (incf ip))
                    ((#.m:return)
                     ;; Assert that all temporaries are popped off..
-                    (assert (eql sp (+ bp frame-size)))
+                    (locally
+                        ;; SBCL complains that ASSERT is inefficient.
+                        #+sbcl(declare (sb-ext:muffle-conditions
+                                        sb-ext:compiler-note))
+                      (assert (eql sp (+ bp frame-size))))
                     (return))
                    ((#.m:jump-8) (incf ip (next-code-signed)))
                    ((#.m:jump-16) (incf ip (next-code-signed-16)))
@@ -292,8 +306,10 @@
                           (let ((key (stack (1- arg-index))))
                             (if (eq key :allow-other-keys)
                                 (setf allow-other-keys-p (stack arg-index))
-                                (loop for key-index from key-literal-start below key-literal-end
-                                      for offset from key-frame-start
+                                (loop for key-index from key-literal-start
+                                        below key-literal-end
+                                      for offset of-type (unsigned-byte 16)
+                                      from key-frame-start
                                       do (when (eq (constant key-index) key)
                                            (setf (stack offset) (stack arg-index))
                                            (return))
@@ -317,6 +333,9 @@
                                 (let ((old-sp sp)
                                       (old-bp bp))
                                   (lambda ()
+                                    ;; We know that this GO is never out of
+                                    ;; extent, but that is hard to express.
+                                    (declare (optimize (safety 0)))
                                     (setf sp old-sp
                                           bp old-bp)
                                     (go loop)))))
@@ -389,6 +408,7 @@
                     (incf ip))
                    ((#.m:append-values)
                     (let ((n (spop)))
+                      (declare (type (and unsigned-byte fixnum) n))
                       (dolist (value (vm-values vm))
                         (spush value))
                       (spush (+ n (length (vm-values vm))))
@@ -399,15 +419,16 @@
                    ((#.m:mv-call)
                     (setf (vm-values vm)
                           (multiple-value-list
-                           (apply (spop) (vm-values vm))))
+                           (apply (the function (spop)) (vm-values vm))))
                     (incf ip))
                    ((#.m:mv-call-receive-one)
-                    (spush (apply (spop) (vm-values vm)))
+                    (spush (apply (the function (spop)) (vm-values vm)))
                     (incf ip))
                    ((#.m:mv-call-receive-fixed)
                     (let ((args (vm-values vm))
                           (mvals (next-code))
                           (fun (spop)))
+                      (declare (function fun))
                       (case mvals
                         ((0) (apply fun args))
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
