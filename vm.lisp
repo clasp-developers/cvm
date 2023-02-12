@@ -45,7 +45,7 @@
         ;; set up the stack, then call vm
         (vm bytecode env literals frame-size)
         ;; tear down the frame.
-        (setf (vm-stack-top vm) (vm-frame-pointer vm))
+        (setf (vm-stack-top vm) (- (vm-frame-pointer vm) (length args)))
         (setf (vm-frame-pointer vm) old-fp)
         (setf (vm-pc vm) old-pc))
       (values-list (vm-values vm)))))
