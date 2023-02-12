@@ -1373,7 +1373,7 @@
           (var-info (var-info var env)))
       (when supplied-var
         (setf (values env context)
-              (bind-vars (list supplied-var) env context))
+              (bind-vars (list supplied-var) env context)))
       (let ((supplied-info (var-info supplied-var env)))
         (emit-jump-if-supplied context var-index supplied-label)
         (default nil var-specialp var var-info)
