@@ -746,6 +746,10 @@
            (lexical-binding-count 0)
            (special-binding-count 0)
            (post-binding-env (add-specials specials env))
+           (frame-start (context-frame-end context))
+           ;; The values are compiled in a context with no extra
+           ;; frame slots used, since the BIND takes place after the
+           ;; values are evaluated.
            (valf-context (new-context context :receiving 1)))
       (dolist (binding (second form))
         (multiple-value-bind (var valf) (canonicalize-binding binding)
@@ -755,14 +759,13 @@
                  (incf special-binding-count)
                  (emit-special-bind context var))
                 (t
-                 (setq post-binding-env
+                 (setf (values post-binding-env context)
                        (bind-vars (list var) post-binding-env context))
                  (incf lexical-binding-count)
                  (maybe-emit-make-cell (var-info var post-binding-env)
                                        context)))))
-      (emit-bind context lexical-binding-count (context-frame-end context))
-      (compile-progn body post-binding-env
-                     (new-context context :frame-end lexical-binding-count))
+      (emit-bind context lexical-binding-count frame-start)
+      (compile-progn body post-binding-env context)
       (emit-unbind context special-binding-count))))
 
 (defun compile-let* (bindings decls body env context)
@@ -949,30 +952,32 @@
 (defun go-tag-p (object) (typep object '(or symbol integer)))
 
 (defmethod compile-special ((op (eql 'tagbody)) form env context)
-  (let* ((statements (rest form))
-         (new-tags (tags env))
-         (tagbody-dynenv (gensym "TAG-DYNENV"))
-         (env (bind-vars (list tagbody-dynenv) env context))
-         (dynenv-info (var-info tagbody-dynenv env))
-         (stmt-context (new-context context
-                                    :receiving 0 :dynenv (list dynenv-info))))
-    (dolist (statement statements)
-      (when (go-tag-p statement)
-        (push (list* statement dynenv-info (make-label)) new-tags)))
-    (let ((env (make-lexical-environment env :tags new-tags)))
-      ;; Bind the dynamic environment.
-      (emit-entry-or-save-sp context dynenv-info)
-      ;; Compile the body, emitting the tag destination labels.
-      (dolist (statement statements)
-        (if (go-tag-p statement)
-            (emit-label context (cddr (assoc statement (tags env))))
-            (compile-form statement env stmt-context))))
-    (maybe-emit-entry-close context dynenv-info))
-  ;; return nil if we really have to
-  (unless (eql (context-receiving context) 0)
-    (assemble context m:nil)
-    (when (eql (context-receiving context) t)
-      (assemble context m:pop))))
+  (let ((statements (rest form))
+        (new-tags (tags env))
+        (tagbody-dynenv (gensym "TAG-DYNENV")))
+    (multiple-value-bind (env stmt-context-1)
+        (bind-vars (list tagbody-dynenv) env context)
+      (let* ((dynenv-info (var-info tagbody-dynenv env))
+             (stmt-context (new-context stmt-context-1
+                                        :receiving 0
+                                        :dynenv (list dynenv-info))))
+        (dolist (statement statements)
+          (when (go-tag-p statement)
+            (push (list* statement dynenv-info (make-label)) new-tags)))
+        (let ((env (make-lexical-environment env :tags new-tags)))
+          ;; Bind the dynamic environment.
+          (emit-entry-or-save-sp context dynenv-info)
+          ;; Compile the body, emitting the tag destination labels.
+          (dolist (statement statements)
+            (if (go-tag-p statement)
+                (emit-label context (cddr (assoc statement (tags env))))
+                (compile-form statement env stmt-context))))
+        (maybe-emit-entry-close context dynenv-info))
+      ;; return nil if we really have to
+      (unless (eql (context-receiving context) 0)
+        (assemble context m:nil)
+        (when (eql (context-receiving context) t)
+          (assemble context m:pop))))))
 
 (defun compile-exit (exit-info context)
   (destructuring-bind (dynenv-info . label) exit-info
@@ -1003,29 +1008,33 @@
         (error "The GO tag ~a does not exist." (second form)))))
 
 (defmethod compile-special ((op (eql 'block)) form env context)
-  (let* ((name (second form)) (body (cddr form))
-         (block-dynenv (gensym "BLOCK-DYNENV"))
-         (env (bind-vars (list block-dynenv) env context))
-         (dynenv-info (var-info block-dynenv env))
-         (body-context (new-context context :dynenv (list dynenv-info)))
-         (label (make-label))
-         (normal-label (make-label)))
-    ;; Bind the dynamic environment.
-    (emit-entry-or-save-sp context dynenv-info)
-    (let ((env (make-lexical-environment
-                env
-                :blocks (acons name (cons dynenv-info label) (blocks env)))))
-      ;; Force single values into multiple so that we can uniformly PUSH afterward.
-      (compile-progn body env body-context))
-    (when (eql (context-receiving context) 1)
-      (emit-jump context normal-label))
-    (emit-label context label)
-    ;; When we need 1 value, we have to make sure that the
-    ;; "exceptional" case pushes a single value onto the stack.
-    (when (eql (context-receiving context) 1)
-      (assemble context m:push)
-      (emit-label context normal-label))
-    (maybe-emit-entry-close context dynenv-info)))
+  (let ((name (second form)) (body (cddr form))
+        (block-dynenv (gensym "BLOCK-DYNENV")))
+    (multiple-value-bind (env body-context-1)
+        (bind-vars (list block-dynenv) env context)
+      (let* ((dynenv-info (var-info block-dynenv env))
+             (body-context (new-context body-context-1
+                                        :dynenv (list dynenv-info)))
+             (label (make-label))
+             (normal-label (make-label)))
+        ;; Bind the dynamic environment.
+        (emit-entry-or-save-sp context dynenv-info)
+        (let ((env (make-lexical-environment
+                    env
+                    :blocks (acons name (cons dynenv-info label)
+                                   (blocks env)))))
+          ;; Force single values into multiple
+          ;; so that we can uniformly PUSH afterward.
+          (compile-progn body env body-context))
+        (when (eql (context-receiving context) 1)
+          (emit-jump context normal-label))
+        (emit-label context label)
+        ;; When we need 1 value, we have to make sure that the
+        ;; "exceptional" case pushes a single value onto the stack.
+        (when (eql (context-receiving context) 1)
+          (assemble context m:push)
+          (emit-label context normal-label))
+        (maybe-emit-entry-close context dynenv-info)))))
 
 (defmethod compile-special ((op (eql 'return-from)) form env context)
   (let ((name (second form)) (value (third form)))
