@@ -912,7 +912,7 @@
                                 context)))))))
 
 (defmethod compile-special ((op (eql 'if)) form env context)
-  (destructuring-bind (condition then else) (rest form)
+  (destructuring-bind (condition then &optional else) (rest form)
     (compile-form condition env (new-context context :receiving 1))
     (let ((then-label (make-label))
           (done-label (make-label)))
