@@ -3,7 +3,18 @@
   (:local-nicknames (#:m #:cvm/machine))
   (:shadow #:compile #:eval #:constantp)
   (:export #:compile-into #:compile #:eval)
-  (:export #:*client*))
+  (:export #:*client*)
+  ;; Compiler guts - used in cmpltv
+  (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
+           #:make-lexical-environment #:make-local-macro #:make-symbol-macro
+           #:coerce-to-lexenv #:funs #:vars)
+  (:export #:var-info #:fun-info #:expand #:symbol-macro-expansion)
+  (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
+  (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
+  (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
+           #:cfunction-closed #:cfunction-entry-point #:cfunction-name
+           #:cfunction-lambda-list #:cfunction-doc
+           #:annotation-module-position))
 
 (in-package #:cvm/compile)
 

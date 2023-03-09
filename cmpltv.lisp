@@ -541,12 +541,12 @@
         (add-creator value (creation-form-creator value create))
       (add-initializer-form initialize))))
 
-(defmethod add-constant ((value cmp::ltv-info))
+(defmethod add-constant ((value cmp:ltv-info))
   (add-instruction
    (make-instance 'load-time-value-creator
-     :function (add-form (cmp::ltv-info-form value))
-     :read-only-p (cmp::ltv-info-read-only-p value)
-     :form (cmp::ltv-info-form value)
+     :function (add-form (cmp:ltv-info-form value))
+     :read-only-p (cmp:ltv-info-read-only-p value)
+     :form (cmp:ltv-info-form value)
      :info value)))
 
 ;;; Loop over the instructions, assigning indices to the creators such that
@@ -1001,7 +1001,7 @@
 ;;;   
 
 (defun bytecode-cf-compile-lexpr (lambda-expression environment)
-  (cmp:compile-into (cmp::make-cmodule) lambda-expression environment))
+  (cmp:compile-into (cmp:make-cmodule) lambda-expression environment))
 
 (defun bytecode-compile-file-form (form env)
   (add-initializer-form form env))
@@ -1017,22 +1017,22 @@
    (%entry-point :initarg :entry-point :reader entry-point
                  :type (unsigned-byte 32))))
 
-(defmethod add-constant ((value cmp::cfunction))
+(defmethod add-constant ((value cmp:cfunction))
   (let ((inst
           (add-creator
            value
            (make-instance 'bytefunction-creator
              :cfunction value
-             :module (ensure-constant (cmp::cfunction-cmodule value))
+             :module (ensure-constant (cmp:cfunction-cmodule value))
              :name (ensure-constant nil #+(or) (cmp:cfunction-name value))
              :lambda-list (ensure-constant
                            nil
-                           #+(or) (cmp:cfunction/lambda-list value))
-             :docstring (ensure-constant nil #+(or) (cmp:cfunction/doc value))
-             :nlocals (cmp::cfunction-nlocals value)
-             :nclosed (length (cmp::cfunction-closed value))
-             :entry-point (cmp::annotation-module-position
-                           (cmp::cfunction-entry-point value))))))
+                           #+(or) (cmp:cfunction-lambda-list value))
+             :docstring (ensure-constant nil #+(or) (cmp:cfunction-doc value))
+             :nlocals (cmp:cfunction-nlocals value)
+             :nclosed (length (cmp:cfunction-closed value))
+             :entry-point (cmp:annotation-module-position
+                           (cmp:cfunction-entry-point value))))))
     #+clasp ; source info
     (let ((cspi core:*current-source-pos-info*))
       (add-instruction
@@ -1075,19 +1075,19 @@
    (%literals :initarg :literals :reader setf-literals-literals
               :type simple-vector)))
 
-(defmethod add-constant ((value cmp::cmodule))
+(defmethod add-constant ((value cmp:cmodule))
   ;; Add the module first to prevent recursion.
   (let ((mod
           (add-creator
            value
            (make-instance 'bytemodule-creator
-             :prototype value :lispcode (cmp::link value)))))
+             :prototype value :lispcode (cmp:link value)))))
     ;; Modules can indirectly refer to themselves recursively through
     ;; cfunctions, so we need to 2stage it here.
     (add-instruction
      (make-instance 'setf-literals
        :module mod :literals (map 'simple-vector #'ensure-constant
-                                  (cmp::cmodule-literals value))))
+                                  (cmp:cmodule-literals value))))
     mod))
 
 (defmethod encode ((inst bytemodule-creator) stream)
@@ -1160,7 +1160,7 @@
 
 (defun bytecode-compile-toplevel-locally (body env)
   (multiple-value-bind (body decls) (alexandria:parse-body body)
-    (let* ((new-env (cmp::add-specials (cmp::extract-specials decls) env)))
+    (let* ((new-env (cmp:add-specials (cmp:extract-specials decls) env)))
       (bytecode-compile-toplevel-progn body new-env))))
 
 (defun bytecode-compile-toplevel-macrolet (bindings body env)
@@ -1169,35 +1169,35 @@
       (let* ((name (car binding)) (lambda-list (cadr binding))
              (body (cddr binding))
              (eform (trivial-cltl2:parse-macro name lambda-list body env))
-             (aenv (cmp::lexenv-for-macrolet env))
+             (aenv (cmp:lexenv-for-macrolet env))
              (expander (cmp:compile eform aenv))
-             (info (cmp::make-local-macro name expander)))
+             (info (cmp:make-local-macro name expander)))
         (push (cons name info) macros)))
     (bytecode-compile-toplevel-locally
      body (cmp::make-lexical-environment
-           env :funs (append macros (cmp::funs env))))))
+           env :funs (append macros (cmp:funs env))))))
 
 (defun bytecode-compile-toplevel-symbol-macrolet (bindings body env)
   (let ((smacros
           (loop for (name expansion) in bindings
-                for info = (cmp::make-symbol-macro name expansion)
+                for info = (cmp:make-symbol-macro name expansion)
                 collect (cons name info))))
     (bytecode-compile-toplevel-locally
-     body (cmp::make-lexical-environment
+     body (cmp:make-lexical-environment
            env
-           :vars (append (nreverse smacros) (cmp::vars env))))))
+           :vars (append (nreverse smacros) (cmp:vars env))))))
 
 (defun macroexpand-1 (form &optional env)
   (typecase form
     (symbol
-     (let ((info (cmp::var-info form env)))
+     (let ((info (cmp:var-info form env)))
        (if (typep info 'trucler:symbol-macro-description)
-           (values (cmp::symbol-macro-expansion info form env) t)
+           (values (cmp:symbol-macro-expansion info form env) t)
            (values form nil))))
     ((cons symbol)
-     (let ((info (cmp::fun-info (car form) env)))
+     (let ((info (cmp:fun-info (car form) env)))
        (if (typep info 'trucler:macro-description)
-           (values (cmp::expand (trucler:expander info) form env) t)
+           (values (cmp:expand (trucler:expander info) form env) t)
            (values form nil))))
     (t (values form nil))))
 
@@ -1239,7 +1239,7 @@
 (defun compile-stream (input output &key environment &allow-other-keys)
   (with-constants (:compiler #'bytecode-cf-compile-lexpr)
     ;; Read and compile the forms.
-    (loop with env = (cmp::coerce-to-lexenv environment)
+    (loop with env = (cmp:coerce-to-lexenv environment)
           with eof = (gensym "EOF")
           with *compile-time-too* = nil
           #|
