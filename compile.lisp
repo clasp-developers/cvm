@@ -2,7 +2,7 @@
   (:use #:cl)
   (:local-nicknames (#:m #:cvm/machine))
   (:shadow #:compile #:eval #:constantp)
-  (:export #:compile #:eval)
+  (:export #:compile-into #:compile #:eval)
   (:export #:*client*))
 
 (in-package #:cvm/compile)
@@ -33,9 +33,9 @@
   index
   info)
 
-(defstruct (cmodule (:constructor make-cmodule (literals)))
+(defstruct (cmodule (:constructor make-cmodule ()))
   (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
-  literals)
+  (literals (make-array 0 :fill-pointer 0 :adjustable t)))
 
 (defstruct (ltv-info (:constructor make-ltv-info (form read-only-p)))
   form read-only-p)
@@ -542,20 +542,29 @@
 ;;; Compilation
 ;;;
 
-(defun compile (lambda-expression &optional env (*client* *client*))
+(defun coerce-to-lexenv (env)
+  (if (lexical-environment-p env)
+      env
+      ;; Assume we've been passed a global environment.
+      ;; NOTE: Other than the external COMPILE(-INTO) and EVAL,
+      ;; all functions in this file expecting an environment
+      ;; specifically want one of our lexical environments.
+      (make-null-lexical-environment env)))
+
+;;; Compile into an existing module. Don't link.
+;;; Useful for the file compiler, and for the first stage of runtime COMPILE.
+(defun compile-into (module lambda-expression &optional env (*client* *client*))
   (check-type lambda-expression lambda-expression)
-  (let ((env (if (lexical-environment-p env)
-                 env
-                 ;; Assume we've been passed a global environment.
-                 ;; NOTE: Other than the external COMPILE and EVAL,
-                 ;; all functions in this file expecting an environment
-                 ;; specifically want one of our lexical environments.
-                 (make-null-lexical-environment env)))
-        (module (make-cmodule (make-array 0 :fill-pointer 0 :adjustable t)))
+  (let ((env (coerce-to-lexenv env))
         (lambda-list (cadr lambda-expression))
         (body (cddr lambda-expression)))
-    (link-function (compile-lambda lambda-list body env module))))
+    (compile-lambda lambda-list body env module)))
 
+;;; As CL:COMPILE, but doesn't mess with function bindings.
+(defun compile (lambda-expression &optional env (*client* *client*))
+  (link-function (compile-into (make-cmodule) lambda-expression env)))
+
+;;; As CL:EVAL.
 (defun eval (form &optional env (*client* *client*))
   ;; PROGN is so that (eval '(declare)) signals an error.
   (funcall (compile `(lambda () (progn ,form)) env)))
@@ -579,10 +588,13 @@
 
 (defgeneric compile-symbol (info form env context))
 
+(defun expand (expander form env)
+  (funcall *macroexpand-hook* expander form env))
+
 (defun symbol-macro-expansion (info symbol env)
   (let* ((expansion (trucler:expansion info))
          (expander (lambda (form env) (declare (ignore form env)) expansion)))
-    (funcall *macroexpand-hook* expander symbol env)))
+    (expand expander symbol env)))
 
 (defmethod compile-symbol ((info trucler:symbol-macro-description)
                            form env context)
@@ -624,8 +636,7 @@
 
 (defmethod compile-combination ((info trucler:macro-description)
                                 form env context)
-  (compile-form (funcall *macroexpand-hook* (trucler:expander info) form env)
-                env context))
+  (compile-form (expand (trucler:expander info) form env) env context))
 
 ;;; Compile a call, where the callee is already on the stack.
 (defun compile-call (args env context)
@@ -639,7 +650,7 @@
                                 form env context)
   (let ((expander (trucler:compiler-macro info)))
     (when expander
-      (let ((expansion (funcall *macroexpand-hook* expander form env)))
+      (let ((expansion (expand expander form env)))
         (unless (eq form expansion)
           (return-from compile-combination
             (compile-form expansion env context)))))
@@ -1507,42 +1518,47 @@
           (incf index (- end position)))))
     bytecode))
 
+;;; Finish fixups for a module and return its final bytecode.
+(defun link (cmodule)
+  (initialize-cfunction-positions cmodule)
+  (resolve-fixup-sizes cmodule)
+  (create-module-bytecode cmodule))
+
 ;;; Run down the hierarchy and link the compile time representations
-;;; of modules and functions together into runtime objects. Return the
-;;; bytecode function corresponding to CFUNCTION.
+;;; of modules and functions together into runtime objects.
+(defun link-load (cmodule)
+  (let* ((bytecode (link cmodule))
+         (cmodule-literals (cmodule-literals cmodule))
+         (literal-length (length cmodule-literals))
+         (literals (make-array literal-length))
+         (bytecode-module
+           (m:make-bytecode-module
+            :bytecode bytecode
+            :literals literals)))
+    ;; Create the real function objects.
+    (dotimes (i (length (cmodule-cfunctions cmodule)))
+      (let ((cfunction (aref (cmodule-cfunctions cmodule) i)))
+        (setf (cfunction-info cfunction)
+              (m:make-bytecode-function
+               bytecode-module
+               (cfunction-nlocals cfunction)
+               (length (cfunction-closed cfunction))
+               (annotation-module-position (cfunction-entry-point cfunction))))))
+    ;; Now replace the cfunctions in the cmodule literal vector with
+    ;; real bytecode functions.
+    ;; Also replace the load-time-value infos with the evaluated forms.
+    (dotimes (index literal-length)
+      (setf (aref literals index)
+            (let ((literal (aref cmodule-literals index)))
+              (typecase literal
+                (cfunction (cfunction-info literal))
+                (ltv-info 
+                 ;; FIXME: This uses a global environment of NIL rather
+                 ;; than whatever was passed to the compiler.
+                 (eval (ltv-info-form literal)))
+                (t literal))))))
+  (values))
+
 (defun link-function (cfunction)
-  (declare (optimize debug))
-  (let ((cmodule (cfunction-cmodule cfunction)))
-    (initialize-cfunction-positions cmodule)
-    (resolve-fixup-sizes cmodule)
-    (let* ((cmodule-literals (cmodule-literals cmodule))
-           (literal-length (length cmodule-literals))
-           (literals (make-array literal-length))
-           (bytecode (create-module-bytecode cmodule))
-           (bytecode-module
-             (m:make-bytecode-module
-              :bytecode bytecode
-              :literals literals)))
-      ;; Create the real function objects.
-      (dotimes (i (length (cmodule-cfunctions cmodule)))
-        (let ((cfunction (aref (cmodule-cfunctions cmodule) i)))
-          (setf (cfunction-info cfunction)
-                (m:make-bytecode-function
-                 bytecode-module
-                 (cfunction-nlocals cfunction)
-                 (length (cfunction-closed cfunction))
-                 (annotation-module-position (cfunction-entry-point cfunction))))))
-      ;; Now replace the cfunctions in the cmodule literal vector with
-      ;; real bytecode functions.
-      ;; Also replace the load-time-value infos with the evaluated forms.
-      (dotimes (index literal-length)
-        (setf (aref literals index)
-              (let ((literal (aref cmodule-literals index)))
-                (typecase literal
-                  (cfunction (cfunction-info literal))
-                  (ltv-info 
-                   ;; FIXME: This uses a global environment of NIL rather
-                   ;; than whatever was passed to the compiler.
-                   (eval (ltv-info-form literal)))
-                  (t literal)))))))
+  (link-load (cfunction-cmodule cfunction))
   (cfunction-info cfunction))
