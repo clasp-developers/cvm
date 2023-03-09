@@ -135,7 +135,9 @@
               until (eql ip end)
               when trace
                 do (fresh-line *trace-output*)
-                   (let ((frame-end (+ bp frame-size)))
+                   (let ((frame-end (+ bp frame-size))
+                         ; skip package prefixes on inst names.
+                         (*package* (find-package "CVM/MACHINE")))
                      (prin1 (list (m:disassemble-instruction bytecode ip)
                                   bp
                                   sp
