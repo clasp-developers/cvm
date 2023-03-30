@@ -46,7 +46,17 @@
 
 (defstruct (cmodule (:constructor make-cmodule ()))
   (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
+  ;; Each entry in this vector is either a constant-info, an ltv-info,
+  ;; a global-function-reference, or a cfunction.
+  ;; The compiler treats them all pretty identically, but the linker
+  ;; needs to distinguish these things.
+  ;; For example, a cfunction appearing literally in the code (for whatever
+  ;; odd reason) gets a constant-info, distinguishing it from a cfunction
+  ;; in the vector which will be linked to an actual function.
   (literals (make-array 0 :fill-pointer 0 :adjustable t)))
+
+(defstruct (constant-info (:constructor make-constant-info (value)))
+  value)
 
 (defstruct (ltv-info (:constructor make-ltv-info (form read-only-p)))
   form read-only-p)
@@ -75,15 +85,34 @@
 (defun context-assembly (context)
   (cfunction-bytecode (context-function context)))
 
+(defun find-literal-index (literal literals)
+  (loop for i from 0
+        for info across literals
+        when (and (constant-info-p info)
+                  (eql (constant-info-value info) literal))
+          return i))
+
 (defun literal-index (literal context)
   (let ((literals (cmodule-literals (context-module context))))
-    (or (position literal literals)
-        (vector-push-extend literal literals))))
+    (or (find-literal-index literal literals)
+        (vector-push-extend (make-constant-info literal) literals))))
 
 ;;; Force a literal into the end of the literals even if it's already
 ;;; there. This is used in keyword argument parsing and load-time-value.
 (defun new-literal-index (literal context)
-  (vector-push-extend literal (cmodule-literals (context-module context))))
+  (vector-push-extend (make-constant-info literal)
+                      (cmodule-literals (context-module context))))
+
+;;; Like literal-index, but for cfunctions (that will be linked as functions)
+(defun cfunction-literal-index (cfunction context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (position cfunction literals)
+        (vector-push-extend cfunction literals))))
+
+;;; Like literal-index but for LTVs.
+;;; We don't bother coalescing load-time-value forms so this is trivial.
+(defun ltv-index (ltv-info context)
+  (vector-push-extend ltv-info (cmodule-literals (context-module context))))
 
 (defun closure-index (info context)
   (let ((closed (cfunction-closed (context-function context))))
@@ -689,8 +718,9 @@
     (loop for info across closed
           do (reference-lexical-variable info context))
     (if (zerop (length closed))
-        (emit-const context (literal-index cfunction context))
-        (assemble context m:make-closure (literal-index cfunction context)))))
+        (emit-const context (cfunction-literal-index cfunction context))
+        (assemble context m:make-closure
+          (cfunction-literal-index cfunction context)))))
 
 (defun compile-lambda-form (form env context)
   ;; FIXME: We can probably handle this more efficiently (without consing
@@ -845,7 +875,7 @@
                (loop for (name lambda-list . body) in definitions
                      for fun = (compile-lambda lambda-list body new-env
                                                module)
-                     for literal-index = (literal-index fun context)
+                     for literal-index = (cfunction-literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
                        do (emit-const context literal-index)
                      else
@@ -1097,8 +1127,7 @@
     (check-type read-only-p boolean)
     ;; Stick info about the LTV into the literals vector. It will be handled
     ;; later by COMPILE or a file compiler.
-    (let ((index (new-literal-index (make-ltv-info form read-only-p)
-                                    context)))
+    (let ((index (ltv-index (make-ltv-info form read-only-p) context)))
       ;; Maybe compile a literal load.
       ;; (Note that we do always need to register the LTV, since it may have
       ;;  some weird side effect. We could hypothetically save some space by
@@ -1560,14 +1589,14 @@
     ;; Also replace the load-time-value infos with the evaluated forms.
     (dotimes (index literal-length)
       (setf (aref literals index)
-            (let ((literal (aref cmodule-literals index)))
-              (typecase literal
-                (cfunction (cfunction-info literal))
+            (let ((info (aref cmodule-literals index)))
+              (etypecase info
+                (cfunction (cfunction-info info))
                 (ltv-info 
                  ;; FIXME: This uses a global environment of NIL rather
                  ;; than whatever was passed to the compiler.
-                 (eval (ltv-info-form literal)))
-                (t literal))))))
+                 (eval (ltv-info-form info)))
+                (constant-info (constant-info-value info)))))))
   (values))
 
 (defun link-function (cfunction)
