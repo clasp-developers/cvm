@@ -11,6 +11,7 @@
   (:export #:var-info #:fun-info #:expand #:symbol-macro-expansion)
   (:export #:load-literal-info)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
+  (:export #:fdefinition-info #:fdefinition-info-name)
   (:export #:constant-info #:constant-info-value)
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
@@ -63,6 +64,12 @@
 (defstruct (ltv-info (:constructor make-ltv-info (form read-only-p)))
   form read-only-p)
 
+;;; Info about a name that we use for FDEFINITION.
+;;; This is separate from CONSTANT-INFO because some clients can do better
+;;; than a full call to CL:FDEFINITION on the actual name, e.g. with cells.
+(defstruct (fdefinition-info (:constructor make-fdefinition-info (name)))
+  name)
+
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
 (defstruct context
@@ -104,6 +111,18 @@
 (defun new-literal-index (literal context)
   (vector-push-extend (make-constant-info literal)
                       (cmodule-literals (context-module context))))
+
+(defun find-fdefinition-index (function-name literals)
+  (loop for i from 0
+        for info across literals
+        when (and (fdefinition-info-p info)
+                  (equal (fdefinition-info-name info) function-name))
+          return i))
+
+(defun fdefinition-index (function-name context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (find-fdefinition-index function-name literals)
+        (vector-push-extend (make-fdefinition-info function-name) literals))))
 
 ;;; Like literal-index, but for cfunctions (that will be linked as functions)
 (defun cfunction-literal-index (cfunction context)
@@ -697,12 +716,12 @@
         (unless (eq form expansion)
           (return-from compile-combination
             (compile-form expansion env context)))))
-    (emit-fdefinition context (literal-index (trucler:name info) context))
+    (emit-fdefinition context (fdefinition-index (trucler:name info) context))
     (compile-call (rest form) env context)))
 
 (defmethod compile-combination ((info null) form env context)
   (warn "Unknown operator ~a: treating as global function" (first form))
-  (emit-fdefinition context (literal-index (first form) context))
+  (emit-fdefinition context (fdefinition-index (first form) context))
   (compile-call (rest form) env context))
 
 (defmethod compile-combination ((info trucler:local-function-description)
@@ -991,12 +1010,12 @@
      (let ((info (fun-info fnameoid env)))
        (etypecase info
          (trucler:global-function-description
-          (emit-fdefinition context (literal-index fnameoid context)))
+          (emit-fdefinition context (fdefinition-index fnameoid context)))
          (trucler:local-function-description
           (reference-lexical-variable info context))
          (null
           (warn "Unknown function ~a: treating as global function" fnameoid)
-          (emit-fdefinition context (literal-index fnameoid context))))))))
+          (emit-fdefinition context (fdefinition-index fnameoid context))))))))
 
 (defmethod compile-special ((op (eql 'function)) form env context)
   (unless (eql (context-receiving context) 0)
@@ -1579,6 +1598,10 @@
 (defmethod load-literal-info (client (info constant-info) env)
   (declare (ignore client env))
   (constant-info-value info))
+;;; By default we expect the runtime to use CL:FDEFINITION.
+(defmethod load-literal-info (client (info fdefinition-info) env)
+  (declare (ignore client env))
+  (fdefinition-info-name info))
 
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects.
