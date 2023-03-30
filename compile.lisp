@@ -9,7 +9,9 @@
            #:make-lexical-environment #:make-local-macro #:make-symbol-macro
            #:coerce-to-lexenv #:funs #:vars)
   (:export #:var-info #:fun-info #:expand #:symbol-macro-expansion)
+  (:export #:load-literal-info)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
+  (:export #:constant-info #:constant-info-value)
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
            #:cfunction-closed #:cfunction-entry-point #:cfunction-name
@@ -586,7 +588,8 @@
   (if (lexical-environment-p env)
       env
       ;; Assume we've been passed a global environment.
-      ;; NOTE: Other than the external COMPILE(-INTO) and EVAL,
+      ;; NOTE: Other than the external COMPILE(-INTO), EVAL,
+      ;; and LOAD-LITERAL-INFO,
       ;; all functions in this file expecting an environment
       ;; specifically want one of our lexical environments.
       (make-null-lexical-environment env)))
@@ -602,7 +605,7 @@
 
 ;;; As CL:COMPILE, but doesn't mess with function bindings.
 (defun compile (lambda-expression &optional env (*client* *client*))
-  (link-function (compile-into (make-cmodule) lambda-expression env)))
+  (link-function (compile-into (make-cmodule) lambda-expression env) env))
 
 ;;; As CL:EVAL.
 (defun eval (form &optional env (*client* *client*))
@@ -1564,9 +1567,22 @@
   (resolve-fixup-sizes cmodule)
   (create-module-bytecode cmodule))
 
+;;; Given info about a literal, return an object corresponding to it for an
+;;; actual runtime constants vector.
+(defgeneric load-literal-info (client literal-info environment))
+
+(defmethod load-literal-info (client (info cfunction) env)
+  (declare (ignore client env))
+  (cfunction-info info))
+(defmethod load-literal-info (client (info ltv-info) env)
+  (eval (ltv-info-form info) env client))
+(defmethod load-literal-info (client (info constant-info) env)
+  (declare (ignore client env))
+  (constant-info-value info))
+
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects.
-(defun link-load (cmodule)
+(defun link-load (cmodule env)
   (let* ((bytecode (link cmodule))
          (cmodule-literals (cmodule-literals cmodule))
          (literal-length (length cmodule-literals))
@@ -1574,31 +1590,24 @@
          (bytecode-module
            (m:make-bytecode-module
             :bytecode bytecode
-            :literals literals)))
+            :literals literals))
+         (client *client*))
     ;; Create the real function objects.
-    (dotimes (i (length (cmodule-cfunctions cmodule)))
-      (let ((cfunction (aref (cmodule-cfunctions cmodule) i)))
-        (setf (cfunction-info cfunction)
-              (m:make-bytecode-function
-               bytecode-module
-               (cfunction-nlocals cfunction)
-               (length (cfunction-closed cfunction))
-               (annotation-module-position (cfunction-entry-point cfunction))))))
+    (loop for cfunction across (cmodule-cfunctions cmodule)
+          do (setf (cfunction-info cfunction)
+                   (m:make-bytecode-function
+                    bytecode-module
+                    (cfunction-nlocals cfunction)
+                    (length (cfunction-closed cfunction))
+                    (annotation-module-position
+                     (cfunction-entry-point cfunction)))))
     ;; Now replace the cfunctions in the cmodule literal vector with
     ;; real bytecode functions.
     ;; Also replace the load-time-value infos with the evaluated forms.
-    (dotimes (index literal-length)
-      (setf (aref literals index)
-            (let ((info (aref cmodule-literals index)))
-              (etypecase info
-                (cfunction (cfunction-info info))
-                (ltv-info 
-                 ;; FIXME: This uses a global environment of NIL rather
-                 ;; than whatever was passed to the compiler.
-                 (eval (ltv-info-form info)))
-                (constant-info (constant-info-value info)))))))
+    (map-into literals (lambda (info) (load-literal-info client info env))
+              cmodule-literals))
   (values))
 
-(defun link-function (cfunction)
-  (link-load (cfunction-cmodule cfunction))
+(defun link-function (cfunction env)
+  (link-load (cfunction-cmodule cfunction) env)
   (cfunction-info cfunction))
