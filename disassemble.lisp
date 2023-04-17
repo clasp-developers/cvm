@@ -21,9 +21,8 @@
     (if res (first res) (error "unknown bytecode opcode ~d" opcode))))
 
 ;;; Return a list of all IPs that are jumped to.
-(defun gather-labels (bytecode ip length)
-  (let ((end (+ ip length))
-        (result ())
+(defun gather-labels (bytecode ip end)
+  (let ((result ())
         (longp ())
         op)
     (loop (setq op (decode-instr (aref bytecode ip)))
@@ -69,10 +68,9 @@
           do (incf ip nbytes)
           finally (cl:return (values (list* (first desc) longp args) ip)))))
 
-(defun %disassemble-bytecode (bytecode)
-  (let* ((length (length bytecode))
-         (labels (gather-labels bytecode 0 length))
-         (ip 0))
+(defun %disassemble-bytecode (bytecode start end)
+  (let* ((labels (gather-labels bytecode start end))
+         (ip start))
     (loop ;; If this is a label position, mark that.
           for labelpos = (position ip labels)
           when labelpos
@@ -82,10 +80,11 @@
                       (disassemble-instruction bytecode ip :labels labels)
                     (setf ip new-ip)
                     inst)
-          until (>= ip length))))
+          until (>= ip end))))
 
-(defun disassemble-bytecode (bytecode literals)
-  (let ((dis (%disassemble-bytecode bytecode)))
+(defun disassemble-bytecode (bytecode literals
+                             &key (start 0) (end (length bytecode)))
+  (let ((dis (%disassemble-bytecode bytecode start end)))
     (flet ((textify-operand (thing)
              (destructuring-bind (kind value) thing
                (cond ((cl:eq kind :constant) (format () "'~s" (aref literals value)))
@@ -134,7 +133,12 @@
 ;; TODO: Record function boundaries, so that among other things we can
 ;; disassemble only the region for the function being disassembled.
 (defmethod disassemble ((object bytecode-function))
-  (disassemble (bytecode-function-module object)))
+  (let ((module (bytecode-function-module object))
+        (entry-pc (bytecode-function-entry-pc object)))
+    (disassemble-bytecode (bytecode-module-bytecode module)
+                          (bytecode-module-literals module)
+                          :start entry-pc
+                          :end (+ entry-pc (bytecode-function-size object)))))
 
 (defmethod disassemble ((object bytecode-closure))
   (disassemble (bytecode-closure-template object)))

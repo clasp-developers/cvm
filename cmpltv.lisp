@@ -643,7 +643,7 @@
 (defun write-magic (stream) (write-b32 +magic+ stream))
 
 (defparameter *major-version* 0)
-(defparameter *minor-version* 7)
+(defparameter *minor-version* 8)
 
 (defun write-version (stream)
   (write-b16 *major-version* stream)
@@ -1015,7 +1015,8 @@
    (%nlocals :initarg :nlocals :reader nlocals :type (unsigned-byte 16))
    (%nclosed :initarg :nclosed :reader nclosed :type (unsigned-byte 16))
    (%entry-point :initarg :entry-point :reader entry-point
-                 :type (unsigned-byte 32))))
+                 :type (unsigned-byte 32))
+   (%size :initarg :size :reader size :type (unsigned-byte 32))))
 
 (defmethod add-constant ((value cmp:cfunction))
   (let ((inst
@@ -1032,7 +1033,8 @@
              :nlocals (cmp:cfunction-nlocals value)
              :nclosed (length (cmp:cfunction-closed value))
              :entry-point (cmp:annotation-module-position
-                           (cmp:cfunction-entry-point value))))))
+                           (cmp:cfunction-entry-point value))
+             :size (cmp:cfunction-final-size value)))))
     #+clasp ; source info
     (let ((cspi core:*current-source-pos-info*))
       (add-instruction
@@ -1053,6 +1055,7 @@
   (write-mnemonic 'make-bytecode-function stream)
   (write-index inst stream)
   (write-b32 (entry-point inst) stream)
+  (write-b32 (size inst) stream)
   (write-b16 (nlocals inst) stream)
   (write-b16 (nclosed inst) stream)
   (write-index (module inst) stream)

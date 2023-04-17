@@ -13,7 +13,7 @@
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
            #:cfunction-closed #:cfunction-entry-point #:cfunction-name
-           #:cfunction-lambda-list #:cfunction-doc
+           #:cfunction-lambda-list #:cfunction-doc #:cfunction-final-size
            #:annotation-module-position))
 
 (in-package #:cvm/compile)
@@ -43,6 +43,9 @@
   ;; vector.
   index
   info)
+
+(defun cfunction-final-size (cfunction)
+  (+ (length (cfunction-bytecode cfunction)) (cfunction-extra cfunction)))
 
 (defstruct (cmodule (:constructor make-cmodule ()))
   (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
@@ -1554,7 +1557,8 @@
                bytecode-module
                (cfunction-nlocals cfunction)
                (length (cfunction-closed cfunction))
-               (annotation-module-position (cfunction-entry-point cfunction))))))
+               (annotation-module-position (cfunction-entry-point cfunction))
+               (cfunction-final-size cfunction)))))
     ;; Now replace the cfunctions in the cmodule literal vector with
     ;; real bytecode functions.
     ;; Also replace the load-time-value infos with the evaluated forms.
