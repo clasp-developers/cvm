@@ -13,7 +13,11 @@
   (frame-pointer 0 :type (and unsigned-byte fixnum))
   (args 0 :type (and unsigned-byte fixnum))
   (arg-count 0 :type (and unsigned-byte fixnum))
-  (pc 0 :type (and unsigned-byte fixnum)))
+  (pc 0 :type (and unsigned-byte fixnum))
+  ;; A function used for FDEFINITION instructions.
+  ;; It takes exactly one argument - whatever the compiler put in the literals
+  ;; for FDEFINITIONs - and must return the function referenced.
+  (fdefinition-resolver #'cl:fdefinition :type function))
 
 (defvar *vm*)
 
@@ -51,11 +55,13 @@
         (setf (vm-pc vm) old-pc))
       (values-list (vm-values vm)))))
 
-(defun initialize-vm (stack-size)
+(defun initialize-vm (stack-size
+                      &optional (fdefinition-resolver #'cl:fdefinition))
   (setf *vm*
         (make-vm :stack (make-array stack-size)
                  :frame-pointer 0
-                 :stack-top 0))
+                 :stack-top 0
+                 :fdefinition-resolver fdefinition-resolver))
   (values))
 
 (declaim (inline signed))
@@ -82,7 +88,8 @@
            (type (unsigned-byte 16) frame-size)
            (optimize speed))
   (let* ((vm *vm*)
-         (stack (vm-stack *vm*)))
+         (stack (vm-stack vm))
+         (fdef (vm-fdefinition-resolver vm)))
     (declare (type (simple-array t (*)) stack))
     (symbol-macrolet ((ip (vm-pc vm))
                       (sp (vm-stack-top vm))
@@ -436,7 +443,8 @@
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))
-                   ((#.m:fdefinition) (spush (fdefinition (constant (next-code)))) (incf ip))
+                   ((#.m:fdefinition)
+                    (spush (funcall fdef (constant (next-code)))) (incf ip))
                    ((#.m:nil) (spush nil) (incf ip))
                    ((#.m:eq) (spush (eq (spop) (spop))) (incf ip))
                    ((#.m:pop) (setf (vm-values vm) (list (spop))) (incf ip))
