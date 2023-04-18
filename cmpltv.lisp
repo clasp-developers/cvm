@@ -199,6 +199,9 @@
    ;; If something's referenced directly from load-time-value, it's permanent.
    (%permanency :initform t)))
 
+(defclass init-object-array (instruction)
+  ((%count :initarg :count :reader init-object-array-count)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
 ;;; Attributes are bonus, possibly implementation-defined stuff also in the file.
@@ -506,7 +509,9 @@
             ((call-with-dumpable-arguments-p form)
              (make-instance 'general-creator
                :prototype value
-               :function (ensure-constant (car form))
+               :function (add-instruction
+                          (make-instance 'fdefinition-lookup
+                            :name (ensure-constant (car form))))
                :arguments (mapcar (f-dumpable-form-creator env) (rest form))))
             (t (default))))))
 
@@ -529,7 +534,9 @@
                     :arguments (mapcar cre (cddr form))))
                  (add-instruction
                   (make-instance 'general-initializer
-                    :function (ensure-constant (car form))
+                    :function (add-instruction
+                               (make-instance 'fdefinition-lookup
+                                 :name (ensure-constant (car form))))
                     :arguments (mapcar cre (rest form)))))))
            (t (default)))))
 
@@ -601,23 +608,21 @@
     ((setf gethash) 77 htind keyind valueind)
     (make-sb64 78 sind sb64)
     (find-package 79 sind nameind)
-    (make-bignum 80 sind size . words) ; size is signed
-    (make-symbol 81) ; make-bitvector in clasp
-    (intern 82 sind packageind nameind) ; make-symbol in clasp
-    (make-character 83 sind ub32) ; ub64 in clasp, i think?
+    (make-bignum 80 sind size . words)
+    (make-symbol 81)
+    (intern 82 sind packageind nameind)
+    (make-character 83 sind ub32)
     (make-pathname 85)
-    (make-bytecode-function 87) ; ltvc_make_global_entry_point
-    (make-bytecode-module 88) ; ltvc_make_local_entry_point - overriding
-    (setf-literals 89) ; make_random_state. compatibility is a sham here anyway
+    (make-bytecode-function 87)
+    (make-bytecode-module 88)
+    (setf-literals 89)
     (make-single-float 90 sind ub32)
     (make-double-float 91 sind ub64)
     (funcall-create 93 sind find nargs . args)
     (funcall-initialize 94 find nargs . args)
     (fdefinition 95 find nameind)
     (find-class 98 sind cnind)
-    ;; set-ltv-funcall in clasp- redundant
-    #+(or) ; obsolete as of v0.3
-    (make-specialized-array 97 sind rank dims etype . elems)
+    (init-object-array 99 ub64)        
     (attribute 255 name nbytes . data)))
 
 ;;; STREAM is a ub8 stream.
@@ -643,7 +648,7 @@
 (defun write-magic (stream) (write-b32 +magic+ stream))
 
 (defparameter *major-version* 0)
-(defparameter *minor-version* 8)
+(defparameter *minor-version* 9)
 
 (defun write-version (stream)
   (write-b16 *major-version* stream)
@@ -659,8 +664,8 @@
     (dbgprint "Instructions:~{~&~a~}" instructions)
     (write-magic stream)
     (write-version stream)
-    (write-b64 nobjs stream)
     (write-b64 ninsts stream)
+    (encode (make-instance 'init-object-array :count nobjs) stream)
     (map nil (lambda (inst) (encode inst stream)) instructions)))
 
 (defun %write-bytecode (stream)
@@ -1128,6 +1133,10 @@
   (write-b64 (lineno attr) stream)
   (write-b64 (column attr) stream)
   (write-b64 (filepos attr) stream))
+
+(defmethod encode ((init init-object-array) stream)
+  (write-mnemonic 'init-object-array stream)
+  (write-b64 (init-object-array-count init) stream))
 
 ;;;
 
