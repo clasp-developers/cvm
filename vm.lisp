@@ -80,8 +80,6 @@
 (defstruct (sbind-dynenv (:include dynenv)
                          (:constructor make-sbind-dynenv ())))
 
-(defvar *dynenv* nil)
-
 (defun vm (bytecode closure constants frame-size)
   (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
            (type (simple-array t (*)) closure constants)
@@ -335,9 +333,8 @@
                     (setf sp (stack (+ bp (next-code))))
                     (incf ip))
                    ((#.m:entry)
-                    (let ((*dynenv* *dynenv*))
                       (tagbody
-                         (setf *dynenv*
+                         (setf (stack (+ bp (next-code)))
                                (make-entry-dynenv
                                 (let ((old-sp sp)
                                       (old-bp bp))
@@ -348,10 +345,9 @@
                                     (setf sp old-sp
                                           bp old-bp)
                                     (go loop)))))
-                         (setf (stack (+ bp (next-code))) *dynenv*)
                          (incf ip)
                        loop
-                         (vm bytecode closure constants frame-size))))
+                         (vm bytecode closure constants frame-size)))
                    ((#.m:catch-8)
                     (let ((target (+ ip (next-code-signed) 1))
                           (tag (spop))
@@ -391,10 +387,9 @@
                     (incf ip)
                     (return))
                    ((#.m:special-bind)
-                    (let ((*dynenv* (make-sbind-dynenv)))
-                      (progv (list (constant (next-code))) (list (spop))
-                        (incf ip)
-                        (vm bytecode closure constants frame-size))))
+                    (progv (list (constant (next-code))) (list (spop))
+                      (incf ip)
+                      (vm bytecode closure constants frame-size)))
                    ((#.m:symbol-value)
                     (spush (symbol-value (constant (next-code))))
                     (incf ip))
@@ -402,8 +397,7 @@
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
                    ((#.m:progv)
-                    (let ((*dynenv* (make-sbind-dynenv))
-                          (values (spop)))
+                    (let ((values (spop)))
                       (progv (spop) values
                         (incf ip)
                         (vm bytecode closure constants frame-size))))
