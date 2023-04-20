@@ -4,6 +4,7 @@
            #:set #:push #:pop)
   (:shadow #:disassemble)
   ;; Additional opname exports are done below.
+  (:export #:*client*)
   (:export #:bytecode-module #:make-bytecode-module
            #:bytecode-module-bytecode #:bytecode-module-literals)
   (:export #:bytecode-function #:make-bytecode-function
@@ -12,6 +13,7 @@
            #:bytecode-function-locals-frame-size)
   (:export #:bytecode-closure #:make-bytecode-closure
            #:bytecode-closure-template #:bytecode-closure-env)
+  (:export #:compute-instance-function)
   (:export #:disassemble #:disassemble-instruction))
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.

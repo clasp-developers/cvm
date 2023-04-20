@@ -3,7 +3,6 @@
   (:local-nicknames (#:m #:cvm/machine))
   (:shadow #:compile #:eval #:constantp)
   (:export #:compile-into #:compile #:eval)
-  (:export #:*client*)
   ;; Compiler guts - used in cmpltv
   (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
            #:make-lexical-environment #:make-local-macro #:make-symbol-macro
@@ -12,6 +11,7 @@
   (:export #:load-literal-info)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
   (:export #:fdefinition-info #:fdefinition-info-name)
+  (:export #:value-cell-info #:value-cell-info-name)
   (:export #:constant-info #:constant-info-value)
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
@@ -73,6 +73,11 @@
 (defstruct (fdefinition-info (:constructor make-fdefinition-info (name)))
   name)
 
+;;; Info about a global symbol value.
+;;; For example, the linker may want to make it a cell.
+(defstruct (value-cell-info (:constructor make-value-cell-info (name)))
+  name)
+
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
 (defstruct context
@@ -132,6 +137,18 @@
   (let ((literals (cmodule-literals (context-module context))))
     (or (position cfunction literals)
         (vector-push-extend cfunction literals))))
+
+(defun find-value-cell-index (name literals)
+  (loop for i from 0
+        for info across literals
+        when (and (value-cell-info-p info)
+                  (equal (value-cell-info-name info) name))
+          return i))
+
+(defun value-cell-index (name context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (find-value-cell-index name literals)
+        (vector-push-extend (make-value-cell-info name) literals))))
 
 ;;; Like literal-index but for LTVs.
 ;;; We don't bother coalescing load-time-value forms so this is trivial.
@@ -446,9 +463,6 @@
 ;;; Environments
 ;;;
 
-;;; Trucler client used for querying global environment.
-(defvar *client*)
-
 (defstruct (lexical-environment (:constructor make-null-lexical-environment
                                     (global-environment))
                                 (:constructor %make-lexical-environment)
@@ -481,10 +495,10 @@
 
 (defun var-info (name env)
   (or (cdr (assoc name (vars env)))
-      (trucler:describe-variable *client* (global-environment env) name)))
+      (trucler:describe-variable m:*client* (global-environment env) name)))
 (defun fun-info (name env)
   (or (cdr (assoc name (funs env)))
-      (trucler:describe-function *client* (global-environment env) name)))
+      (trucler:describe-function m:*client* (global-environment env) name)))
 
 ;; never actually called
 (defun missing-arg () (error "missing arg"))
@@ -618,7 +632,7 @@
 
 ;;; Compile into an existing module. Don't link.
 ;;; Useful for the file compiler, and for the first stage of runtime COMPILE.
-(defun compile-into (module lambda-expression &optional env (*client* *client*))
+(defun compile-into (module lambda-expression &optional env (m:*client* m:*client*))
   (check-type lambda-expression lambda-expression)
   (let ((env (coerce-to-lexenv env))
         (lambda-list (cadr lambda-expression))
@@ -626,11 +640,11 @@
     (compile-lambda lambda-list body env module)))
 
 ;;; As CL:COMPILE, but doesn't mess with function bindings.
-(defun compile (lambda-expression &optional env (*client* *client*))
+(defun compile (lambda-expression &optional env (m:*client* m:*client*))
   (link-function (compile-into (make-cmodule) lambda-expression env) env))
 
 ;;; As CL:EVAL.
-(defun eval (form &optional env (*client* *client*))
+(defun eval (form &optional env (m:*client* m:*client*))
   ;; PROGN is so that (eval '(declare)) signals an error.
   (funcall (compile `(lambda () (progn ,form)) env)))
 
@@ -686,14 +700,16 @@
                            form env context)
   (declare (ignore env))
   (unless (eql (context-receiving context) 0)
-    (assemble context m:symbol-value (literal-index form context))
+    (assemble context m:symbol-value (literal-index form context)
+      (value-cell-index form context))
     (when (eql (context-receiving context) 't)
       (assemble context m:pop))))
 
 (defmethod compile-symbol ((info null) form env context)
   (warn "Unknown variable ~a: treating as special" form)
   (unless (eql (context-receiving context) 0)
-    (assemble context m:symbol-value (literal-index form context))
+    (assemble context m:symbol-value (literal-index form context)
+      (value-cell-index form context))
     (when (eql (context-receiving context) 't)
       (assemble context m:pop))))
 
@@ -788,7 +804,7 @@
         (new-vars
          evars
          (let* ((var (first ivars))
-                (desc (trucler:describe-variable *client* env var))
+                (desc (trucler:describe-variable m:*client* env var))
                 (specialp (typep desc 'trucler:special-variable-description)))
            (if specialp
                new-vars ; already present
@@ -934,7 +950,9 @@
       (assemble-maybe-long context m:ref index)
       ;; called for effect, i.e. to keep frame size correct
       (bind-vars (list var) env context))
-    (assemble-maybe-long context m:symbol-value-set (literal-index var context))
+    (assemble-maybe-long context m:symbol-value-set
+                         (literal-index var context)
+                         (value-cell-index var context))
     (unless (eql (context-receiving context) 0)
       (assemble-maybe-long context m:ref index)
       (when (eql (context-receiving context) t)
@@ -1605,6 +1623,10 @@
 (defmethod load-literal-info (client (info fdefinition-info) env)
   (declare (ignore client env))
   (fdefinition-info-name info))
+;;; ...and SYMBOL-NAME
+(defmethod load-literal-info (client (info value-cell-info) env)
+  (declare (ignore client env))
+  (value-cell-info-name info))
 
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects.
@@ -1617,11 +1639,12 @@
            (m:make-bytecode-module
             :bytecode bytecode
             :literals literals))
-         (client *client*))
+         (client m:*client*))
     ;; Create the real function objects.
     (loop for cfunction across (cmodule-cfunctions cmodule)
           do (setf (cfunction-info cfunction)
                    (m:make-bytecode-function
+                    m:*client*
                     bytecode-module
                     (cfunction-nlocals cfunction)
                     (length (cfunction-closed cfunction))

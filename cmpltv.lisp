@@ -165,6 +165,14 @@
 (defclass fcell-lookup (creator)
   ((%name :initarg :name :reader name :type creator)))
 
+;;; Look up the "cell" for a global variable binding, that the VM's
+;;; (SET-)SYMBOL-VALUE instructions can use.
+;;; The nature of this cell is implementation-dependent.
+;;; In a simple implementation, the "cell" can just be the symbol name,
+;;; and the SYMBOL-VALUE instruction just does CL:SYMBOL-VALUE, etc.
+(defclass vcell-lookup (creator)
+  ((%name :initarg :name :reader name :type creator)))
+
 (defclass general-creator (vcreator)
   (;; Reference to a function designator to call to allocate the object,
    ;; e.g. a function made of the first return value from make-load-form.
@@ -630,6 +638,7 @@
     (funcall-initialize 94 find nargs . args)
     (fdefinition 95 find nameind)
     (fcell 96 find nameind)
+    (vcell 97 vind nameind)
     (find-class 98 sind cnind)
     (init-object-array 99 ub64)        
     (attribute 255 name nbytes . data)))
@@ -987,6 +996,11 @@
   (write-index inst stream)
   (write-index (name inst) stream))
 
+(defmethod encode ((inst vcell-lookup) stream)
+  (write-mnemonic 'vcell stream)
+  (write-index inst stream)
+  (write-index (name inst) stream))
+
 (defmethod encode ((inst general-creator) stream)
   (write-mnemonic 'funcall-create stream)
   (write-index inst stream)
@@ -1121,6 +1135,13 @@
 
 (defmethod ensure-module-literal ((info cmp:fdefinition-info))
   (ensure-fcell info))
+
+(defun ensure-vcell (info)
+  (or (find-oob info)
+      (let ((name (cmp:value-cell-info-name info)))
+        (add-oob info
+                 (make-instance 'vcell-lookup
+                   :name (ensure-constant name))))))
 
 (defun add-module (value)
   ;; Add the module first to prevent recursion.
