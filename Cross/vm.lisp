@@ -2,7 +2,8 @@
   (:use #:cl)
   (:local-nicknames (#:m #:cvm.machine))
   (:export #:initialize-vm)
-  (:export #:*trace*))
+  (:export #:*trace*)
+  (:export #:symbol-cell))
 
 (in-package #:cvm.cross.vm)
 
@@ -23,14 +24,20 @@
 
 (defstruct (cell (:constructor make-cell (value))) value)
 (defstruct unbound-marker)
+(defvar *unbound* (make-unbound-marker))
 
 (defstruct dynenv)
 (defstruct (entry-dynenv (:include dynenv)
                          (:constructor make-entry-dynenv (tag)))
   (tag (error "missing arg")))
 (defstruct (sbind-dynenv (:include dynenv)
-                         (:constructor make-sbind-dynenv (symbol value)))
-  symbol value)
+                         (:constructor %make-sbind-dynenv (symbol cell)))
+  symbol cell)
+
+;;; For uniformity, we put a Clostrum-style cell into these structs even though
+;;; it's not really necessary.
+(defun make-sbind-dynenv (symbol value)
+  (%make-sbind-dynenv symbol (cons value *unbound*)))
 
 (defun bytecode-call (template closure-env args)
   (declare (optimize speed)
@@ -83,23 +90,22 @@
     (when (eq symbol (sbind-dynenv-symbol de))
       (return de))))
 
-(defun %ssymbol-value (symbol stack global-cell)
-  (let ((de (%find-sbind-dynenv symbol stack)))
+(defun symbol-cell (symbol global-cell)
+  (let* ((de (%find-sbind-dynenv symbol (vm-dynenv-stack *vm*))))
     (if de
-        (let ((value (sbind-dynenv-value de)))
-          (if (unbound-marker-p value)
-              (error 'unbound-variable :name symbol)
-              value))
-        (let ((value (car global-cell)))
-          (if (eq value (cdr global-cell))
-              (error 'unbound-variable :name symbol)
-              value)))))
+        (sbind-dynenv-cell de)
+        global-cell)))
 
-(defun (setf %ssymbol-value) (new symbol stack global-cell)
-  (let ((de (%find-sbind-dynenv symbol stack)))
-    (if de
-        (setf (sbind-dynenv-value de) new)
-        (setf (car global-cell) new))))
+(defun %symbol-value (symbol global-cell)
+  (let* ((cell (symbol-cell symbol global-cell))
+         (value (car cell)))
+    (if (eq value (cdr cell))
+        (error 'unbound-variable :name symbol)
+        value)))
+
+(defun (setf %symbol-value) (new symbol global-cell)
+  (let ((cell (symbol-cell symbol global-cell)))
+    (setf (car cell) new)))
 
 (defvar *dynenv* nil)
 
@@ -426,14 +432,12 @@
                       (push de (vm-dynenv-stack vm))
                       (incf ip)))
                    ((#.m:symbol-value)
-                    (spush (%ssymbol-value (constant (next-code))
-                                           (vm-dynenv-stack vm)
-                                           (constant (next-code))))
+                    (spush (%symbol-value (constant (next-code))
+                                          (constant (next-code))))
                     (incf ip))
                    ((#.m:symbol-value-set)
-                    (setf (%ssymbol-value (constant (next-code))
-                                          (vm-dynenv-stack vm)
-                                          (constant (next-code)))
+                    (setf (%symbol-value (constant (next-code))
+                                         (constant (next-code)))
                           (spop))
                     (incf ip))
                    #+(or)
