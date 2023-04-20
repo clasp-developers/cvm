@@ -1,6 +1,6 @@
-(defpackage #:cvm/compile
+(defpackage #:cvm.compile
   (:use #:cl)
-  (:local-nicknames (#:m #:cvm/machine))
+  (:local-nicknames (#:m #:cvm.machine))
   (:shadow #:compile #:eval #:constantp)
   (:export #:compile-into #:compile #:eval)
   ;; Compiler guts - used in cmpltv
@@ -19,7 +19,7 @@
            #:cfunction-lambda-list #:cfunction-doc #:cfunction-final-size
            #:annotation-module-position))
 
-(in-package #:cvm/compile)
+(in-package #:cvm.compile)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;

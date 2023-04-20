@@ -1,4 +1,4 @@
-(in-package #:cvm/machine)
+(in-package #:cvm.machine)
 
 (defvar *client*)
 

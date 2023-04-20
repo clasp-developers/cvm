@@ -7,14 +7,10 @@
   :version "0.5.0"
   :depends-on (:closer-mop ; machine
                :alexandria :trucler :trivial-cltl2 ; compiler
-               :ieee-floats ; compile-file
-               :clostrum) ; cross
+               :ieee-floats) ; compile-file
   :components ((:file "machine")
                (:file "structures" :depends-on ("machine"))
                (:file "disassemble" :depends-on ("structures" "machine"))
                (:file "compile" :depends-on ("structures" "machine"))
                (:file "cmpltv" :depends-on ("compile"))
-               (:file "vm" :depends-on ("disassemble" "structures" "machine"))
-               (:file "cross-client" :depends-on ("compile"))
-               (:file "vm-cross" :depends-on ("disassemble" "structures"
-                                              "machine" "cross-client"))))
+               (:file "vm" :depends-on ("disassemble" "structures" "machine"))))

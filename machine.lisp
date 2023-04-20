@@ -1,4 +1,4 @@
-(defpackage #:cvm/machine
+(defpackage #:cvm.machine
   (:use #:cl)
   (:shadow #:return #:throw #:symbol-value #:progv #:fdefinition #:nil #:eq
            #:set #:push #:pop)
@@ -18,7 +18,7 @@
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.
 
-(in-package #:cvm/machine)
+(in-package #:cvm.machine)
 
 (defconstant +mask-arg+     #b011000)
 (defconstant +constant-arg+ #b001000)

@@ -1,10 +1,10 @@
-(defpackage #:cvm/vm/cross
+(defpackage #:cvm.cross.vm
   (:use #:cl)
-  (:local-nicknames (#:m #:cvm/machine))
+  (:local-nicknames (#:m #:cvm.machine))
   (:export #:initialize-vm)
   (:export #:*trace*))
 
-(in-package #:cvm/vm/cross)
+(in-package #:cvm.cross.vm)
 
 (defstruct vm
   (values nil :type list)
@@ -494,14 +494,14 @@
                        (incf ip)))))
                  (go loop)))))))
 
-(defmethod m:compute-instance-function ((client cvm/cross:client)
+(defmethod m:compute-instance-function ((client cvm.cross:client)
                                         (closure m:bytecode-closure))
   (let ((template (m:bytecode-closure-template closure))
         (env (m:bytecode-closure-env closure)))
     (lambda (&rest args)
       (bytecode-call template env args))))
 
-(defmethod m:compute-instance-function ((client cvm/cross:client)
+(defmethod m:compute-instance-function ((client cvm.cross:client)
                                         (fun m:bytecode-function))
   (lambda (&rest args)
     (bytecode-call fun #() args)))

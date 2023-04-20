@@ -1,6 +1,6 @@
-(defpackage #:cvm/compile-file
+(defpackage #:cvm.compile-file
   (:use #:cl)
-  (:local-nicknames (#:cmp #:cvm/compile))
+  (:local-nicknames (#:cmp #:cvm.compile))
   (:shadow #:compile-file #:macroexpand-1 #:macroexpand)
   (:export #:with-constants
            #:ensure-constant #:add-constant #:find-constant-index)
@@ -12,7 +12,7 @@
   (:export #:write-fasl #:save-fasl)
   (:export #:concatenate-fasls #:concatenate-fasl-files))
 
-(in-package #:cvm/compile-file)
+(in-package #:cvm.compile-file)
 
 ;;; For this first version, I'm going to track permanency but not do anything
 ;;; with it - cutting out transients can be later, since I think it will need

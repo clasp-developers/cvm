@@ -1,9 +1,9 @@
-(defpackage #:cvm/cross
+(defpackage #:cvm.cross
   (:use #:cl)
-  (:local-nicknames (#:cmp #:cvm/compile))
+  (:local-nicknames (#:cmp #:cvm.compile))
   (:export #:client))
 
-(in-package #:cvm/cross)
+(in-package #:cvm.cross)
 
 (defclass client () ())
 
