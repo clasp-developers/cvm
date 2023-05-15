@@ -490,6 +490,9 @@
   (make-instance 'trucler:symbol-macro-description
     :name name :expansion expansion))
 
+(defun symbol-macro-p (symbol env)
+  (typep (var-info symbol env) 'trucler:symbol-macro-description))
+
 (defun constantp (symbol env)
   (typep (var-info symbol env) 'trucler:constant-variable-description))
 
@@ -731,23 +734,18 @@
 
 ;;; Add VARS as specials in ENV.
 (defun add-specials (vars env)
-  (do* ((evars (vars env))
-        (ivars vars (rest ivars))
-        (new-vars
-         evars
-         (let* ((var (first ivars))
-                (desc (trucler:describe-variable *client* env var))
-                (specialp (typep desc 'trucler:special-variable-description)))
-           (if specialp
-               new-vars ; already present
-               (acons var (make-instance
-                              'trucler:local-special-variable-description
-                            :name var)
-                      new-vars)))))
-       ((endp ivars)
-        (if (eq new-vars evars) ; nothing added
-            env           
-            (make-lexical-environment env :vars new-vars)))))
+  (loop for var in vars
+        finally (return (make-lexical-environment
+                         env
+                         :vars (append new-vars (vars env))))
+        if (symbol-macro-p var env)
+          do (error "A symbol macro was declared SPECIAL: ~s" var)
+        else if (not (specialp var env))
+          collect (cons var
+                        (make-instance
+                         'trucler:local-special-variable-description
+                         :name var))
+            into new-vars))
 
 (defun extract-specials (declarations)
   (let ((specials '()))
@@ -832,8 +830,11 @@
   (destructuring-bind (definitions . body) (rest form)
     (loop for (name lambda-list . body) in definitions
           do (compile-lambda-expression
-              `(lambda ,lambda-list
-                 (block ,(fun-name-block-name name) (locally ,@body)))
+              (multiple-value-bind (body decls)
+                  (alexandria:parse-body body)
+                `(lambda ,lambda-list
+                   ,@decls
+                   (block ,(fun-name-block-name name) ,@body)))
               env context))
     (emit-bind context (length definitions) (context-frame-end context))
     (multiple-value-call #'compile-locally body
@@ -846,8 +847,13 @@
       (let* ((module (context-module context))
              (closures
                (loop for (name lambda-list . body) in definitions
-                     for fun = (compile-lambda lambda-list body new-env
-                                               module)
+                     for fun = (compile-lambda lambda-list
+                                               (multiple-value-bind (body decls)
+                                                   (alexandria:parse-body body)
+                                                 `(,@decls
+                                                   (block ,(fun-name-block-name name)
+                                                     ,@body)))
+                                               new-env module)
                      for literal-index = (literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
                        do (emit-const context literal-index)
@@ -1114,14 +1120,19 @@
          (assemble context m:pop))))))
 
 (defmethod compile-special ((op (eql 'symbol-macrolet)) form env context)
-  (let* ((bindings (second form)) (body (cddr form))
-         (smacros
-           (loop for (name expansion) in bindings
-                 collect (cons name (make-symbol-macro name expansion)))))
-    (compile-locally body (make-lexical-environment
-                           env
-                           :vars (append (nreverse smacros) (vars env)))
-                     context)))
+  (loop for (name expansion) in (second form)
+        finally (return (compile-locally (cddr form)
+                                         (make-lexical-environment
+                                          env
+                                          :vars (append new-vars (vars env)))
+                                         context))
+        when (constantp var env)
+          do (error "The symbol bound by SYMBOL-MACROLET must not be a constant variable: ~s"
+                    var)
+        when (specialp var env)
+          do (error "The symbol bound by SYMBOL-MACROLET must not be a special variable: ~s"
+                    var)
+        collect (cons name (make-symbol-macro name expansion)) into new-vars))
 
 (defun lexenv-for-macrolet (env)
   ;; Macrolet expanders need to be compiled in the local compilation environment,
