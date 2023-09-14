@@ -157,6 +157,14 @@
 (defclass fdefinition-lookup (creator)
   ((%name :initarg :name :reader name :type creator)))
 
+;;; Look up the "cell" for a function binding - something that the VM's
+;;; FDEFINITION instruction can get an actual function out of.
+;;; The nature of this cell is implementation-dependent.
+;;; In a simple implementation, the "cell" can just be the function name,
+;;; and the FDEFINITION instruction just does CL:FDEFINITION.
+(defclass fcell-lookup (creator)
+  ((%name :initarg :name :reader name :type creator)))
+
 (defclass general-creator (vcreator)
   (;; Reference to a function designator to call to allocate the object,
    ;; e.g. a function made of the first return value from make-load-form.
@@ -199,6 +207,9 @@
    ;; If something's referenced directly from load-time-value, it's permanent.
    (%permanency :initform t)))
 
+(defclass init-object-array (instruction)
+  ((%count :initarg :count :reader init-object-array-count)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
 ;;; Attributes are bonus, possibly implementation-defined stuff also in the file.
@@ -240,6 +251,13 @@
 ;;; EQL hash table from objects to creators.
 (defvar *coalesce*)
 
+;;; Another EQL hash table for out-of-band objects that are also "coalesced".
+;;; Currently this is just modules.
+;;; This a separate variable because perverse code could use an out-of-band
+;;; object in band (e.g. compiling a literal module) and we don't want to
+;;; confuse those things.
+(defvar *oob-coalesce*)
+
 ;; Look up a value in the existing instructions.
 ;; On success returns the creator, otherwise NIL.
 ;; Could be extended with coalescence relations or made more efficient,
@@ -250,14 +268,12 @@
   (find-if (lambda (c) (and (typep c 'creator) (similarp c value)))
            sequence))
 
+(defun find-oob (value)
+  (values (gethash value *oob-coalesce*)))
+
 ;;; List of instructions to be executed by the loader.
 ;;; In reverse.
 (defvar *instructions*)
-
-;;; Bound by the client to a function that compiles a lambda expression
-;;; relative to an environment, and then returns some object that
-;;; cmpltv can treat as a constant.
-(defvar *compiler*)
 
 ;;; Stack of objects we are in the middle of computing creation forms for.
 ;;; This is used to detect circular dependencies.
@@ -266,10 +282,9 @@
 ;;; rather than the user's problem.
 (defvar *creating*)
 
-(defmacro with-constants ((&key (compiler '*compiler*)) &body body)
+(defmacro with-constants ((&key) &body body)
   `(let ((*instructions* nil) (*creating* nil)
-         (*coalesce* (make-hash-table))
-         (*compiler* ,compiler))
+         (*coalesce* (make-hash-table)) (*oob-coalesce* (make-hash-table)))
      ,@body))
 
 (defun find-constant (value)
@@ -289,6 +304,10 @@
   (setf (gethash value *coalesce*) instruction)
   (add-instruction instruction))
 
+(defun add-oob (key instruction)
+  (setf (gethash key *oob-coalesce*) instruction)
+  (add-instruction instruction))
+
 (defgeneric add-constant (value))
 
 (defun ensure-constant (value &key permanent)
@@ -300,7 +319,7 @@
 ;;; have the effect of evaluating the form in a null lexical environment.
 (defun add-form (form &optional env)
   ;; PROGN so that (declare ...) expressions for example correctly cause errors.
-  (add-constant (funcall *compiler* `(lambda () (progn ,form)) env)))
+  (add-function (bytecode-cf-compile-lexpr `(lambda () (progn ,form)) env)))
 
 (defmethod add-constant ((value cons))
   (let ((cons (add-creator
@@ -449,13 +468,13 @@
 (defun f-dumpable-form-creator (env)
   (lambda (form)
     (cond ((lambda-expression-p form)
-           (ensure-constant (bytecode-cf-compile-lexpr form env)))
+           (add-function (bytecode-cf-compile-lexpr form env)))
           ((not (function-form-p form)) ; must be a constant
            (ensure-constant (eval form)
                             #+(or)(ext:constant-form-value form env)))
           ((and (consp (second form)) (eq (caadr form) 'cl:lambda))
            ;; #'(lambda ...)
-           (ensure-constant (bytecode-cf-compile-lexpr (second form) env)))
+           (add-function (bytecode-cf-compile-lexpr (second form) env)))
           (t
            ;; #'function-name
            (add-instruction
@@ -506,7 +525,9 @@
             ((call-with-dumpable-arguments-p form)
              (make-instance 'general-creator
                :prototype value
-               :function (ensure-constant (car form))
+               :function (add-instruction
+                          (make-instance 'fdefinition-lookup
+                            :name (ensure-constant (car form))))
                :arguments (mapcar (f-dumpable-form-creator env) (rest form))))
             (t (default))))))
 
@@ -529,7 +550,9 @@
                     :arguments (mapcar cre (cddr form))))
                  (add-instruction
                   (make-instance 'general-initializer
-                    :function (ensure-constant (car form))
+                    :function (add-instruction
+                               (make-instance 'fdefinition-lookup
+                                 :name (ensure-constant (car form))))
                     :arguments (mapcar cre (rest form)))))))
            (t (default)))))
 
@@ -540,14 +563,6 @@
     (prog1
         (add-creator value (creation-form-creator value create))
       (add-initializer-form initialize))))
-
-(defmethod add-constant ((value cmp:ltv-info))
-  (add-instruction
-   (make-instance 'load-time-value-creator
-     :function (add-form (cmp:ltv-info-form value))
-     :read-only-p (cmp:ltv-info-read-only-p value)
-     :form (cmp:ltv-info-form value)
-     :info value)))
 
 ;;; Loop over the instructions, assigning indices to the creators such that
 ;;; the permanent objects come first. This only affects their position in the
@@ -601,23 +616,22 @@
     ((setf gethash) 77 htind keyind valueind)
     (make-sb64 78 sind sb64)
     (find-package 79 sind nameind)
-    (make-bignum 80 sind size . words) ; size is signed
-    (make-symbol 81) ; make-bitvector in clasp
-    (intern 82 sind packageind nameind) ; make-symbol in clasp
-    (make-character 83 sind ub32) ; ub64 in clasp, i think?
+    (make-bignum 80 sind size . words)
+    (make-symbol 81)
+    (intern 82 sind packageind nameind)
+    (make-character 83 sind ub32)
     (make-pathname 85)
-    (make-bytecode-function 87) ; ltvc_make_global_entry_point
-    (make-bytecode-module 88) ; ltvc_make_local_entry_point - overriding
-    (setf-literals 89) ; make_random_state. compatibility is a sham here anyway
+    (make-bytecode-function 87)
+    (make-bytecode-module 88)
+    (setf-literals 89)
     (make-single-float 90 sind ub32)
     (make-double-float 91 sind ub64)
     (funcall-create 93 sind find nargs . args)
     (funcall-initialize 94 find nargs . args)
     (fdefinition 95 find nameind)
+    (fcell 96 find nameind)
     (find-class 98 sind cnind)
-    ;; set-ltv-funcall in clasp- redundant
-    #+(or) ; obsolete as of v0.3
-    (make-specialized-array 97 sind rank dims etype . elems)
+    (init-object-array 99 ub64)        
     (attribute 255 name nbytes . data)))
 
 ;;; STREAM is a ub8 stream.
@@ -643,7 +657,7 @@
 (defun write-magic (stream) (write-b32 +magic+ stream))
 
 (defparameter *major-version* 0)
-(defparameter *minor-version* 8)
+(defparameter *minor-version* 10)
 
 (defun write-version (stream)
   (write-b16 *major-version* stream)
@@ -659,8 +673,8 @@
     (dbgprint "Instructions:~{~&~a~}" instructions)
     (write-magic stream)
     (write-version stream)
-    (write-b64 nobjs stream)
     (write-b64 ninsts stream)
+    (encode (make-instance 'init-object-array :count nobjs) stream)
     (map nil (lambda (inst) (encode inst stream)) instructions)))
 
 (defun %write-bytecode (stream)
@@ -968,6 +982,11 @@
   (write-index inst stream)
   (write-index (name inst) stream))
 
+(defmethod encode ((inst fcell-lookup) stream)
+  (write-mnemonic 'fcell stream)
+  (write-index inst stream)
+  (write-index (name inst) stream))
+
 (defmethod encode ((inst general-creator) stream)
   (write-mnemonic 'funcall-create stream)
   (write-index inst stream)
@@ -1018,13 +1037,14 @@
                  :type (unsigned-byte 32))
    (%size :initarg :size :reader size :type (unsigned-byte 32))))
 
-(defmethod add-constant ((value cmp:cfunction))
+;;; Given a CFUNCTION, generate a creator for the eventual runtime function.
+(defun add-function (value)
   (let ((inst
-          (add-creator
+          (add-oob
            value
            (make-instance 'bytefunction-creator
              :cfunction value
-             :module (ensure-constant (cmp:cfunction-cmodule value))
+             :module (ensure-module (cmp:cfunction-cmodule value))
              :name (ensure-constant nil #+(or) (cmp:cfunction-name value))
              :lambda-list (ensure-constant
                            nil
@@ -1063,13 +1083,9 @@
   (write-index (lambda-list inst) stream)
   (write-index (docstring inst) stream))
 
-;;; Having this be a vcreator with a prototype is a slight abuse of notation,
-;;; since what we actually create is a bytecode module, not a compiler module.
-;;; But this allows functions in the same module to share their module.
-;;; This does mean that if someone tries to dump a literal compiler module
-;;; they will hit problems. Unlikely, but nonetheless, FIXME
 (defclass bytemodule-creator (vcreator)
-  ((%lispcode :initform nil :initarg :lispcode :reader bytemodule-lispcode)))
+  ((%cmodule :initarg :cmodule :reader bytemodule-cmodule)
+   (%lispcode :initform nil :initarg :lispcode :reader bytemodule-lispcode)))
 
 (defclass setf-literals (effect)
   ((%module :initarg :module :reader setf-literals-module :type creator)
@@ -1078,10 +1094,38 @@
    (%literals :initarg :literals :reader setf-literals-literals
               :type simple-vector)))
 
-(defmethod add-constant ((value cmp:cmodule))
+(defgeneric ensure-module-literal (literal-info))
+
+(defmethod ensure-module-literal ((info cmp:constant-info))
+  (ensure-constant (cmp:constant-info-value info)))
+
+(defun ensure-function (cfunction)
+  (or (find-oob cfunction) (add-function cfunction)))
+
+(defmethod ensure-module-literal ((info cmp:cfunction))
+  (ensure-function info))
+
+(defmethod ensure-module-literal ((info cmp:ltv-info))
+  (add-instruction
+   (make-instance 'load-time-value-creator
+     :function (add-form (cmp:ltv-info-form info))
+     :read-only-p (cmp:ltv-info-read-only-p info)
+     :form (cmp:ltv-info-form info)
+     :info info)))
+
+(defun ensure-fcell (info)
+  (or (find-oob info)
+      (let ((name (cmp:fdefinition-info-name info)))
+        (add-oob info
+                 (make-instance 'fcell-lookup :name (ensure-constant name))))))
+
+(defmethod ensure-module-literal ((info cmp:fdefinition-info))
+  (ensure-fcell info))
+
+(defun add-module (value)
   ;; Add the module first to prevent recursion.
   (let ((mod
-          (add-creator
+          (add-oob
            value
            (make-instance 'bytemodule-creator
              :prototype value :lispcode (cmp:link value)))))
@@ -1089,9 +1133,12 @@
     ;; cfunctions, so we need to 2stage it here.
     (add-instruction
      (make-instance 'setf-literals
-       :module mod :literals (map 'simple-vector #'ensure-constant
+       :module mod :literals (map 'simple-vector #'ensure-module-literal
                                   (cmp:cmodule-literals value))))
     mod))
+
+(defun ensure-module (module)
+  (or (find-oob module) (add-module module)))
 
 (defmethod encode ((inst bytemodule-creator) stream)
   ;; Write instructions.
@@ -1128,6 +1175,10 @@
   (write-b64 (lineno attr) stream)
   (write-b64 (column attr) stream)
   (write-b64 (filepos attr) stream))
+
+(defmethod encode ((init init-object-array) stream)
+  (write-mnemonic 'init-object-array stream)
+  (write-b64 (init-object-array-count init) stream))
 
 ;;;
 
@@ -1240,7 +1291,7 @@
 
 ;; input is a character stream. output is a ub8 stream.
 (defun compile-stream (input output &key environment &allow-other-keys)
-  (with-constants (:compiler #'bytecode-cf-compile-lexpr)
+  (with-constants ()
     ;; Read and compile the forms.
     (loop with env = (cmp:coerce-to-lexenv environment)
           with eof = (gensym "EOF")

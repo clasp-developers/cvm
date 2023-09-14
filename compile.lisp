@@ -9,7 +9,10 @@
            #:make-lexical-environment #:make-local-macro #:make-symbol-macro
            #:coerce-to-lexenv #:funs #:vars)
   (:export #:var-info #:fun-info #:expand #:symbol-macro-expansion)
+  (:export #:load-literal-info)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
+  (:export #:fdefinition-info #:fdefinition-info-name)
+  (:export #:constant-info #:constant-info-value)
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
            #:cfunction-closed #:cfunction-entry-point #:cfunction-name
@@ -49,10 +52,26 @@
 
 (defstruct (cmodule (:constructor make-cmodule ()))
   (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
+  ;; Each entry in this vector is either a constant-info, an ltv-info,
+  ;; a global-function-reference, or a cfunction.
+  ;; The compiler treats them all pretty identically, but the linker
+  ;; needs to distinguish these things.
+  ;; For example, a cfunction appearing literally in the code (for whatever
+  ;; odd reason) gets a constant-info, distinguishing it from a cfunction
+  ;; in the vector which will be linked to an actual function.
   (literals (make-array 0 :fill-pointer 0 :adjustable t)))
+
+(defstruct (constant-info (:constructor make-constant-info (value)))
+  value)
 
 (defstruct (ltv-info (:constructor make-ltv-info (form read-only-p)))
   form read-only-p)
+
+;;; Info about a name that we use for FDEFINITION.
+;;; This is separate from CONSTANT-INFO because some clients can do better
+;;; than a full call to CL:FDEFINITION on the actual name, e.g. with cells.
+(defstruct (fdefinition-info (:constructor make-fdefinition-info (name)))
+  name)
 
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
@@ -78,15 +97,46 @@
 (defun context-assembly (context)
   (cfunction-bytecode (context-function context)))
 
+(defun find-literal-index (literal literals)
+  (loop for i from 0
+        for info across literals
+        when (and (constant-info-p info)
+                  (eql (constant-info-value info) literal))
+          return i))
+
 (defun literal-index (literal context)
   (let ((literals (cmodule-literals (context-module context))))
-    (or (position literal literals)
-        (vector-push-extend literal literals))))
+    (or (find-literal-index literal literals)
+        (vector-push-extend (make-constant-info literal) literals))))
 
 ;;; Force a literal into the end of the literals even if it's already
 ;;; there. This is used in keyword argument parsing and load-time-value.
 (defun new-literal-index (literal context)
-  (vector-push-extend literal (cmodule-literals (context-module context))))
+  (vector-push-extend (make-constant-info literal)
+                      (cmodule-literals (context-module context))))
+
+(defun find-fdefinition-index (function-name literals)
+  (loop for i from 0
+        for info across literals
+        when (and (fdefinition-info-p info)
+                  (equal (fdefinition-info-name info) function-name))
+          return i))
+
+(defun fdefinition-index (function-name context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (find-fdefinition-index function-name literals)
+        (vector-push-extend (make-fdefinition-info function-name) literals))))
+
+;;; Like literal-index, but for cfunctions (that will be linked as functions)
+(defun cfunction-literal-index (cfunction context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (position cfunction literals)
+        (vector-push-extend cfunction literals))))
+
+;;; Like literal-index but for LTVs.
+;;; We don't bother coalescing load-time-value forms so this is trivial.
+(defun ltv-index (ltv-info context)
+  (vector-push-extend ltv-info (cmodule-literals (context-module context))))
 
 (defun closure-index (info context)
   (let ((closed (cfunction-closed (context-function context))))
@@ -560,7 +610,8 @@
   (if (lexical-environment-p env)
       env
       ;; Assume we've been passed a global environment.
-      ;; NOTE: Other than the external COMPILE(-INTO) and EVAL,
+      ;; NOTE: Other than the external COMPILE(-INTO), EVAL,
+      ;; and LOAD-LITERAL-INFO,
       ;; all functions in this file expecting an environment
       ;; specifically want one of our lexical environments.
       (make-null-lexical-environment env)))
@@ -576,7 +627,7 @@
 
 ;;; As CL:COMPILE, but doesn't mess with function bindings.
 (defun compile (lambda-expression &optional env (*client* *client*))
-  (link-function (compile-into (make-cmodule) lambda-expression env)))
+  (link-function (compile-into (make-cmodule) lambda-expression env) env))
 
 ;;; As CL:EVAL.
 (defun eval (form &optional env (*client* *client*))
@@ -668,12 +719,12 @@
         (unless (eq form expansion)
           (return-from compile-combination
             (compile-form expansion env context)))))
-    (emit-fdefinition context (literal-index (trucler:name info) context))
+    (emit-fdefinition context (fdefinition-index (trucler:name info) context))
     (compile-call (rest form) env context)))
 
 (defmethod compile-combination ((info null) form env context)
   (warn "Unknown operator ~a: treating as global function" (first form))
-  (emit-fdefinition context (literal-index (first form) context))
+  (emit-fdefinition context (fdefinition-index (first form) context))
   (compile-call (rest form) env context))
 
 (defmethod compile-combination ((info trucler:local-function-description)
@@ -692,8 +743,9 @@
     (loop for info across closed
           do (reference-lexical-variable info context))
     (if (zerop (length closed))
-        (emit-const context (literal-index cfunction context))
-        (assemble context m:make-closure (literal-index cfunction context)))))
+        (emit-const context (cfunction-literal-index cfunction context))
+        (assemble context m:make-closure
+          (cfunction-literal-index cfunction context)))))
 
 (defun compile-lambda-form (form env context)
   ;; FIXME: We can probably handle this more efficiently (without consing
@@ -848,7 +900,7 @@
                (loop for (name lambda-list . body) in definitions
                      for fun = (compile-lambda lambda-list body new-env
                                                module)
-                     for literal-index = (literal-index fun context)
+                     for literal-index = (cfunction-literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
                        do (emit-const context literal-index)
                      else
@@ -961,12 +1013,12 @@
      (let ((info (fun-info fnameoid env)))
        (etypecase info
          (trucler:global-function-description
-          (emit-fdefinition context (literal-index fnameoid context)))
+          (emit-fdefinition context (fdefinition-index fnameoid context)))
          (trucler:local-function-description
           (reference-lexical-variable info context))
          (null
           (warn "Unknown function ~a: treating as global function" fnameoid)
-          (emit-fdefinition context (literal-index fnameoid context))))))))
+          (emit-fdefinition context (fdefinition-index fnameoid context))))))))
 
 (defmethod compile-special ((op (eql 'function)) form env context)
   (unless (eql (context-receiving context) 0)
@@ -1100,8 +1152,7 @@
     (check-type read-only-p boolean)
     ;; Stick info about the LTV into the literals vector. It will be handled
     ;; later by COMPILE or a file compiler.
-    (let ((index (new-literal-index (make-ltv-info form read-only-p)
-                                    context)))
+    (let ((index (ltv-index (make-ltv-info form read-only-p) context)))
       ;; Maybe compile a literal load.
       ;; (Note that we do always need to register the LTV, since it may have
       ;;  some weird side effect. We could hypothetically save some space by
@@ -1538,9 +1589,26 @@
   (resolve-fixup-sizes cmodule)
   (create-module-bytecode cmodule))
 
+;;; Given info about a literal, return an object corresponding to it for an
+;;; actual runtime constants vector.
+(defgeneric load-literal-info (client literal-info environment))
+
+(defmethod load-literal-info (client (info cfunction) env)
+  (declare (ignore client env))
+  (cfunction-info info))
+(defmethod load-literal-info (client (info ltv-info) env)
+  (eval (ltv-info-form info) env client))
+(defmethod load-literal-info (client (info constant-info) env)
+  (declare (ignore client env))
+  (constant-info-value info))
+;;; By default we expect the runtime to use CL:FDEFINITION.
+(defmethod load-literal-info (client (info fdefinition-info) env)
+  (declare (ignore client env))
+  (fdefinition-info-name info))
+
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects.
-(defun link-load (cmodule)
+(defun link-load (cmodule env)
   (let* ((bytecode (link cmodule))
          (cmodule-literals (cmodule-literals cmodule))
          (literal-length (length cmodule-literals))
@@ -1548,32 +1616,25 @@
          (bytecode-module
            (m:make-bytecode-module
             :bytecode bytecode
-            :literals literals)))
+            :literals literals))
+         (client *client*))
     ;; Create the real function objects.
-    (dotimes (i (length (cmodule-cfunctions cmodule)))
-      (let ((cfunction (aref (cmodule-cfunctions cmodule) i)))
-        (setf (cfunction-info cfunction)
-              (m:make-bytecode-function
-               bytecode-module
-               (cfunction-nlocals cfunction)
-               (length (cfunction-closed cfunction))
-               (annotation-module-position (cfunction-entry-point cfunction))
-               (cfunction-final-size cfunction)))))
+    (loop for cfunction across (cmodule-cfunctions cmodule)
+          do (setf (cfunction-info cfunction)
+                   (m:make-bytecode-function
+                    bytecode-module
+                    (cfunction-nlocals cfunction)
+                    (length (cfunction-closed cfunction))
+                    (annotation-module-position
+                     (cfunction-entry-point cfunction))
+                    (cfunction-final-size cfunction))))
     ;; Now replace the cfunctions in the cmodule literal vector with
     ;; real bytecode functions.
     ;; Also replace the load-time-value infos with the evaluated forms.
-    (dotimes (index literal-length)
-      (setf (aref literals index)
-            (let ((literal (aref cmodule-literals index)))
-              (typecase literal
-                (cfunction (cfunction-info literal))
-                (ltv-info 
-                 ;; FIXME: This uses a global environment of NIL rather
-                 ;; than whatever was passed to the compiler.
-                 (eval (ltv-info-form literal)))
-                (t literal))))))
+    (map-into literals (lambda (info) (load-literal-info client info env))
+              cmodule-literals))
   (values))
 
-(defun link-function (cfunction)
-  (link-load (cfunction-cmodule cfunction))
+(defun link-function (cfunction env)
+  (link-load (cfunction-cmodule cfunction) env)
   (cfunction-info cfunction))

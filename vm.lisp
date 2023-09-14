@@ -13,7 +13,11 @@
   (frame-pointer 0 :type (and unsigned-byte fixnum))
   (args 0 :type (and unsigned-byte fixnum))
   (arg-count 0 :type (and unsigned-byte fixnum))
-  (pc 0 :type (and unsigned-byte fixnum)))
+  (pc 0 :type (and unsigned-byte fixnum))
+  ;; A function used for FDEFINITION instructions.
+  ;; It takes exactly one argument - whatever the compiler put in the literals
+  ;; for FDEFINITIONs - and must return the function referenced.
+  (fdefinition-resolver #'cl:fdefinition :type function))
 
 (defvar *vm*)
 
@@ -51,11 +55,13 @@
         (setf (vm-pc vm) old-pc))
       (values-list (vm-values vm)))))
 
-(defun initialize-vm (stack-size)
+(defun initialize-vm (stack-size
+                      &optional (fdefinition-resolver #'cl:fdefinition))
   (setf *vm*
         (make-vm :stack (make-array stack-size)
                  :frame-pointer 0
-                 :stack-top 0))
+                 :stack-top 0
+                 :fdefinition-resolver fdefinition-resolver))
   (values))
 
 (declaim (inline signed))
@@ -74,15 +80,14 @@
 (defstruct (sbind-dynenv (:include dynenv)
                          (:constructor make-sbind-dynenv ())))
 
-(defvar *dynenv* nil)
-
 (defun vm (bytecode closure constants frame-size)
   (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
            (type (simple-array t (*)) closure constants)
            (type (unsigned-byte 16) frame-size)
            (optimize speed))
   (let* ((vm *vm*)
-         (stack (vm-stack *vm*)))
+         (stack (vm-stack vm))
+         (fdef (vm-fdefinition-resolver vm)))
     (declare (type (simple-array t (*)) stack))
     (symbol-macrolet ((ip (vm-pc vm))
                       (sp (vm-stack-top vm))
@@ -328,9 +333,8 @@
                     (setf sp (stack (+ bp (next-code))))
                     (incf ip))
                    ((#.m:entry)
-                    (let ((*dynenv* *dynenv*))
                       (tagbody
-                         (setf *dynenv*
+                         (setf (stack (+ bp (next-code)))
                                (make-entry-dynenv
                                 (let ((old-sp sp)
                                       (old-bp bp))
@@ -341,10 +345,9 @@
                                     (setf sp old-sp
                                           bp old-bp)
                                     (go loop)))))
-                         (setf (stack (+ bp (next-code))) *dynenv*)
                          (incf ip)
                        loop
-                         (vm bytecode closure constants frame-size))))
+                         (vm bytecode closure constants frame-size)))
                    ((#.m:catch-8)
                     (let ((target (+ ip (next-code-signed) 1))
                           (tag (spop))
@@ -384,10 +387,9 @@
                     (incf ip)
                     (return))
                    ((#.m:special-bind)
-                    (let ((*dynenv* (make-sbind-dynenv)))
-                      (progv (list (constant (next-code))) (list (spop))
-                        (incf ip)
-                        (vm bytecode closure constants frame-size))))
+                    (progv (list (constant (next-code))) (list (spop))
+                      (incf ip)
+                      (vm bytecode closure constants frame-size)))
                    ((#.m:symbol-value)
                     (spush (symbol-value (constant (next-code))))
                     (incf ip))
@@ -395,8 +397,7 @@
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
                    ((#.m:progv)
-                    (let ((*dynenv* (make-sbind-dynenv))
-                          (values (spop)))
+                    (let ((values (spop)))
                       (progv (spop) values
                         (incf ip)
                         (vm bytecode closure constants frame-size))))
@@ -436,7 +437,8 @@
                         (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
                                                    0 mvals)))))
                     (incf ip))
-                   ((#.m:fdefinition) (spush (fdefinition (constant (next-code)))) (incf ip))
+                   ((#.m:fdefinition)
+                    (spush (funcall fdef (constant (next-code)))) (incf ip))
                    ((#.m:nil) (spush nil) (incf ip))
                    ((#.m:eq) (spush (eq (spop) (spop))) (incf ip))
                    ((#.m:pop) (setf (vm-values vm) (list (spop))) (incf ip))
