@@ -677,7 +677,8 @@
   (let* ((nobjs (count-if (lambda (i) (typep i 'creator)) instructions))
          ;; Next highest power of two bytes, roughly
          (*index-bytes* (ash 1 (1- (ceiling (integer-length nobjs) 8))))
-         (ninsts (length instructions)))
+         ;; 1+ for the init-object-array.
+         (ninsts (1+ (length instructions))))
     (assign-indices instructions)
     (dbgprint "Instructions:~{~&~a~}" instructions)
     (write-magic stream)

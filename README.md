@@ -24,7 +24,7 @@ Now you can compile code with `cvm.compile:compile` and disassemble it with `cvm
 
 ```lisp
 (defvar *f* (cvm.compile:compile '(lambda (x) (let ((y 5)) (print y) #'(lambda () (+ y x))))))
-(cvm.machine:disassemble *) ; =>
+(cvm.machine:disassemble *f*) ; =>
 ---module---
   check-arg-count-= 1
   bind-required-args 1
