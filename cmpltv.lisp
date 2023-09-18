@@ -262,7 +262,7 @@
 (defvar *coalesce*)
 
 ;;; Another EQL hash table for out-of-band objects that are also "coalesced".
-;;; Currently this is just modules.
+;;; So far this means cfunctions, modules, fcells, and vcells.
 ;;; This a separate variable because perverse code could use an out-of-band
 ;;; object in band (e.g. compiling a literal module) and we don't want to
 ;;; confuse those things.
