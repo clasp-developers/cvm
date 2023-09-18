@@ -375,7 +375,7 @@
           (t (assemble context m:mv-call-receive-fixed receiving)))))
 
 (defun emit-special-bind (context symbol)
-  (assemble context m:special-bind (literal-index symbol context)))
+  (assemble context m:special-bind (value-cell-index symbol context)))
 
 (defun emit-unbind (context count)
   (dotimes (_ count)
@@ -700,16 +700,14 @@
                            form env context)
   (declare (ignore env))
   (unless (eql (context-receiving context) 0)
-    (assemble context m:symbol-value (literal-index form context)
-      (value-cell-index form context))
+    (assemble context m:symbol-value (value-cell-index form context))
     (when (eql (context-receiving context) 't)
       (assemble context m:pop))))
 
 (defmethod compile-symbol ((info null) form env context)
   (warn "Unknown variable ~a: treating as special" form)
   (unless (eql (context-receiving context) 0)
-    (assemble context m:symbol-value (literal-index form context)
-      (value-cell-index form context))
+    (assemble context m:symbol-value (value-cell-index form context))
     (when (eql (context-receiving context) 't)
       (assemble context m:pop))))
 
@@ -951,7 +949,6 @@
       ;; called for effect, i.e. to keep frame size correct
       (bind-vars (list var) env context))
     (assemble-maybe-long context m:symbol-value-set
-                         (literal-index var context)
                          (value-cell-index var context))
     (unless (eql (context-receiving context) 0)
       (assemble-maybe-long context m:ref index)

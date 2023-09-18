@@ -15,7 +15,7 @@ Load the `cvm` ASDF system.
 Before compiling or evaluating code, you should probably set the client in order to inform Trucler how to get global definitions. On SBCL you can use the host environment as follows:
 
 ```lisp
-(setf cvm.compile:*client* (make-instance 'trucler-native-sbcl:client))
+(setf cvm.machine:*client* (make-instance 'trucler-native-sbcl:client))
 ```
 
 The procedure on CCL is analogous. Or, you can use some other trucler client and environment, such as Trucler's reference implementation.
@@ -38,12 +38,6 @@ Now you can compile code with `cvm.compile:compile` and disassemble it with `cvm
   make-closure '#<CVM.MACHINE:BYTECODE-FUNCTION {100C2D803B}>
   pop
   return
-  check-arg-count-<= 0
-  fdefinition '+
-  closure 0
-  closure 1
-  call 2
-  return
 ; No value
 ```
 
@@ -59,19 +53,21 @@ You can get a running trace of the machine state by binding `cvm.vm:*trace*` to 
 
 ```lisp
 (let ((cvm.machine:*trace* t)) (funcall *f* 3)) ; =>
-((CVM.MACHINE:CHECK-ARG-COUNT-= NIL (:OPERAND 1)) 10 12 #(3 5) #())
-((CVM.MACHINE:BIND-REQUIRED-ARGS NIL (:OPERAND 1)) 10 12 #(3 5) #())
-((CVM.MACHINE:CONST NIL (:CONSTANT 0)) 10 12 #(3 5) #())
-((CVM.MACHINE:SET NIL (:OPERAND 1)) 10 13 #(3 5) #(5))
-((CVM.MACHINE:FDEFINITION NIL (:CONSTANT 1)) 10 12 #(3 5) #())
-((CVM.MACHINE:REF NIL (:OPERAND 1)) 10 13 #(3 5) #(#<FUNCTION PRINT>))
-((CVM.MACHINE:CALL NIL (:OPERAND 1)) 10 14 #(3 5) #(#<FUNCTION PRINT> 5))
+
+((CHECK-ARG-COUNT-= COMMON-LISP:NIL (:OPERAND 1)) 4 6 #(5 0) #())
+((BIND-REQUIRED-ARGS COMMON-LISP:NIL (:OPERAND 1)) 4 6 #(5 0) #())
+((CONST COMMON-LISP:NIL (:CONSTANT 0)) 4 6 #(3 0) #())
+((SET COMMON-LISP:NIL (:OPERAND 1)) 4 7 #(3 0) #(5))
+((FDEFINITION COMMON-LISP:NIL (:CONSTANT 1)) 4 6 #(3 5) #())
+((REF COMMON-LISP:NIL (:OPERAND 1)) 4 7 #(3 5) #(#<FUNCTION PRINT>))
+((CALL COMMON-LISP:NIL (:OPERAND 1)) 4 8 #(3 5) #(#<FUNCTION PRINT> 5))
 5
-((CVM.MACHINE:REF NIL (:OPERAND 1)) 10 12 #(3 5) #())
-((CVM.MACHINE:REF NIL (:OPERAND 0)) 10 13 #(3 5) #(5))
-((CVM.MACHINE:MAKE-CLOSURE NIL (:CONSTANT 3)) 10 14 #(3 5) #(5 3))
-((CVM.MACHINE:POP NIL) 10 13 #(3 5) #(#<CVM.MACHINE:BYTECODE-CLOSURE {100C2D80CB}>))
-((CVM.MACHINE:RETURN NIL) 10 12 #(3 5) #())
+((REF COMMON-LISP:NIL (:OPERAND 1)) 4 6 #(3 5) #())
+((REF COMMON-LISP:NIL (:OPERAND 0)) 4 7 #(3 5) #(5))
+((MAKE-CLOSURE COMMON-LISP:NIL (:CONSTANT 3)) 4 8 #(3 5) #(5 3))
+((POP COMMON-LISP:NIL) 4 7 #(3 5) #(#<BYTECODE-CLOSURE {1002F681CB}>))
+((RETURN COMMON-LISP:NIL) 4 6 #(3 5) #())
+
 #<CVM.MACHINE:BYTECODE-CLOSURE {100C2D80CB}>
 ```
 

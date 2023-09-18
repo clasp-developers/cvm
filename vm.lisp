@@ -135,7 +135,7 @@
                 do (fresh-line *trace-output*)
                    (let ((frame-end (+ bp frame-size))
                          ; skip package prefixes on inst names.
-                         (*package* (find-package "CVM/MACHINE")))
+                         (*package* (find-package "CVM.MACHINE")))
                      (prin1 (list (m:disassemble-instruction bytecode ip)
                                   bp
                                   sp
@@ -387,11 +387,9 @@
                       (vm bytecode closure constants frame-size)))
                    ((#.m:symbol-value)
                     (spush (symbol-value (constant (next-code))))
-                    (constant (next-code)) ; unused
                     (incf ip))
                    ((#.m:symbol-value-set)
                     (setf (symbol-value (constant (next-code))) (spop))
-                    (constant (next-code)) ; unused
                     (incf ip))
                    ((#.m:progv)
                     (let ((values (spop)))

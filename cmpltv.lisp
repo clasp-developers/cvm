@@ -165,10 +165,12 @@
 (defclass fcell-lookup (creator)
   ((%name :initarg :name :reader name :type creator)))
 
-;;; Look up the "cell" for a global variable binding, that the VM's
-;;; (SET-)SYMBOL-VALUE instructions can use.
+;;; Look up the "cell" for special variable binding. This is used by the
+;;; SPECIAL-BIND, SYMBOL-VALUE, and SYMBOL-VALUE-SET VM instructions
+;;; as a lookup key for the binding, as well as for establishing new
+;;; local bindings.
 ;;; The nature of this cell is implementation-dependent.
-;;; In a simple implementation, the "cell" can just be the symbol name,
+;;; In a simple implementation, the "cell" can just be the symbol itself,
 ;;; and the SYMBOL-VALUE instruction just does CL:SYMBOL-VALUE, etc.
 (defclass vcell-lookup (creator)
   ((%name :initarg :name :reader name :type creator)))
@@ -666,7 +668,7 @@
 (defun write-magic (stream) (write-b32 +magic+ stream))
 
 (defparameter *major-version* 0)
-(defparameter *minor-version* 10)
+(defparameter *minor-version* 11)
 
 (defun write-version (stream)
   (write-b16 *major-version* stream)
