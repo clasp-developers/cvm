@@ -34,8 +34,7 @@
                          (:constructor %make-sbind-dynenv (symbol cell)))
   symbol cell)
 
-;;; For uniformity, we put a Clostrum-style cell into these structs even though
-;;; it's not really necessary.
+;;; For uniformity, we put a Clostrum-style cell into these structs.
 (defun make-sbind-dynenv (symbol value)
   (%make-sbind-dynenv symbol (cons value *unbound*)))
 
@@ -427,18 +426,18 @@
                     (pop (vm-dynenv-stack vm))
                     (incf ip))
                    ((#.m:special-bind)
-                    (let ((de (make-sbind-dynenv (constant (next-code))
-                                                 (spop))))
-                      (push de (vm-dynenv-stack vm))
-                      (incf ip)))
+                    (let ((de (make-sbind-dynenv
+                               (car (constant (next-code))) (spop))))
+                      (push de (vm-dynenv-stack vm)))
+                    (incf ip))
                    ((#.m:symbol-value)
-                    (spush (%symbol-value (constant (next-code))
-                                          (constant (next-code))))
+                    (let ((vcell (constant (next-code))))
+                      (spush (%symbol-value (car vcell) (cdr vcell))))
                     (incf ip))
                    ((#.m:symbol-value-set)
-                    (setf (%symbol-value (constant (next-code))
-                                         (constant (next-code)))
-                          (spop))
+                    (let ((vcell (constant (next-code))))
+                      (setf (%symbol-value (car vcell) (cdr vcell))
+                            (spop)))
                     (incf ip))
                    #+(or)
                    ((#.m:progv)
