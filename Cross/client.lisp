@@ -9,19 +9,16 @@
 
 (defmethod cmp:load-literal-info ((client client) (info cmp:fdefinition-info)
                                   env)
-  (clostrum-sys:operator-cell client env
+  ;; env is a compilation environment, but for this we need the
+  ;; evaluation environment that env is a child of.
+  (clostrum-sys:operator-cell client
+                              (clostrum:evaluation-environment client env)
                               (cmp:fdefinition-info-name info)))
 
 (defmethod cmp:load-literal-info ((client client) (info cmp:value-cell-info)
                                   env)
-  ;; A CONS where the CAR is the symbol name (for local bindings)
-  ;; and the CDR is the global cell.
   (let ((name (cmp:value-cell-info-name info)))
-    (cons name (clostrum-sys:variable-cell client env name))))
-
-;;; should be in a clostrum-trucler system
-
-(defmethod trucler:describe-variable ((client client) env name)
-  (clostrum:variable-description client env name))
-(defmethod trucler:describe-function ((client client) env name)
-  (clostrum:function-description client env name))
+    (cons name
+          (clostrum-sys:variable-cell client
+                                      (clostrum:evaluation-environment client env)
+                                      name))))
