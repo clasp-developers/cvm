@@ -1354,4 +1354,5 @@
                            :if-exists :supersede
                            :if-does-not-exist :create
                            :element-type '(unsigned-byte 8))
-        (apply #'compile-stream in out keys)))))
+        (apply #'compile-stream in out keys)))
+    output-file))
