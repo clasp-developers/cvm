@@ -351,16 +351,19 @@
                                    (t
                                     (error "BUG! This can't happen!"))))
                           (let ((key (stack (1- arg-index))))
-                            (if (eq key :allow-other-keys)
-                                (setf allow-other-keys-p (stack arg-index))
-                                (loop for key-index from key-literal-start
-                                        below key-literal-end
-                                      for offset of-type (unsigned-byte 16)
-                                      from key-frame-start
-                                      do (when (eq (constant key-index) key)
-                                           (setf (stack offset) (stack arg-index))
-                                           (return))
-                                      finally (push key unknown-keys))))))
+                            (when (eq key :allow-other-keys)
+                              (setf allow-other-keys-p (stack arg-index)))
+                            (loop for key-index from key-literal-start
+                                    below key-literal-end
+                                  for offset of-type (unsigned-byte 16)
+                                  from key-frame-start
+                                  do (when (eq (constant key-index) key)
+                                       (setf (stack offset) (stack arg-index))
+                                       (return))
+                                  finally (unless (or allow-other-keys-p
+                                                      ;; aok is always allowed
+                                                      (eq key :allow-other-keys))
+                                            (push key unknown-keys))))))
                       (when (and (not (or (logbitp 7 key-count-info)
                                           allow-other-keys-p))
                                  unknown-keys)
