@@ -1469,7 +1469,7 @@
         ;; Generate aux and the body as a let*.
         ;; We repeat the special declarations so that let* will know the auxs
         ;; are special, and so that any free special declarations are processed.
-        (compile-let* aux `((special ,@specials)) body new-env context)
+        (compile-let* aux `((declare (special ,@specials))) body new-env context)
         (emit-unbind context special-binding-count)))))
 
 ;;; Compile an optional/key item and return the resulting environment
