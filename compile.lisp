@@ -921,10 +921,13 @@
 (defmethod compile-special ((operator (eql 'flet)) form env context)
   (destructuring-bind (definitions . body) (rest form)
     (loop for (name lambda-list . body) in definitions
-          do (compile-lambda-expression
-              `(lambda ,lambda-list
-                 (block ,(fun-name-block-name name) (locally ,@body)))
-              env context))
+          do (multiple-value-bind (body decls)
+                 (alexandria:parse-body body :documentation t)
+               (compile-lambda-expression
+                `(lambda ,lambda-list
+                   ,@decls
+                   (block ,(fun-name-block-name name) ,@body))
+                env context)))
     (emit-bind context (length definitions) (context-frame-end context))
     (multiple-value-call #'compile-locally body
       (bind-fvars (mapcar #'car definitions) env context))))
@@ -936,7 +939,13 @@
       (let* ((module (context-module context))
              (closures
                (loop for (name lambda-list . body) in definitions
-                     for fun = (compile-lambda lambda-list body new-env
+                     for bname = (fun-name-block-name name)
+                     for rbody
+                       = (multiple-value-bind (body decls)
+                             (alexandria:parse-body body
+                                                    :documentation t)
+                           `(,@decls (block ,bname ,@body)))
+                     for fun = (compile-lambda lambda-list rbody new-env
                                                module)
                      for literal-index = (cfunction-literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
