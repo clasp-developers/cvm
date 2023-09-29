@@ -6,7 +6,7 @@
   :maintainer "Bike <aeshtaer@gmail.com>"
   :version "0.5.0"
   :depends-on (:closer-mop ; machine
-               :alexandria :trucler :trivial-cltl2 ; compiler
+               :alexandria :trucler :ecclesia ; compiler
                :ieee-floats) ; compile-file
   :components ((:file "machine")
                (:file "structures" :depends-on ("machine"))

@@ -1214,7 +1214,7 @@
            (loop with env = (lexenv-for-macrolet env)
                  for (name lambda-list . body) in bindings
                  for macro-lexpr
-                   = (trivial-cltl2:parse-macro name lambda-list body)
+                   = (ecclesia:parse-macro name lambda-list body env)
                  for info = (make-local-macro name (compile macro-lexpr env))
                  collect (cons name info))))
     (compile-locally body (make-lexical-environment
