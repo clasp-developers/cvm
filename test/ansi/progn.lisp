@@ -22,7 +22,7 @@
 
 (deftest progn.4
   (let ((x 0))
-    (values (progn (incf x) x) x))
+    (values (progn (s:incf x) x) x))
   1 1)
 
 (deftest progn.5 (progn (values)))
@@ -57,14 +57,14 @@
 (deftest progn.9
   (macrolet
       ((%m (z) z))
-    (progn (expand-in-current-env (%m :good))))
+    (progn (s:expand-in-current-env (%m :good))))
   :good)
 
 (deftest progn.10
   (macrolet
       ((%m (z) z))
-    (progn (expand-in-current-env (%m :bad))
-           (expand-in-current-env (%m :good))))
+    (progn (s:expand-in-current-env (%m :bad))
+           (s:expand-in-current-env (%m :good))))
   :good)
 
 

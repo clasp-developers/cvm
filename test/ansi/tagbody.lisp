@@ -159,7 +159,7 @@
                    (return-from done 'good)
                    around
                    (go ,t2)))))
-    (5am:is (eql 'good (eval form)))))
+    (5am:is (eql 'good (ceval form)))))
 
 ;;; Check that macros are not expanded before finding tags
 ;;; Test for issue TAGBODY-TAG-EXPANSION
@@ -183,5 +183,5 @@
 (deftest tagbody.18
   (macrolet ((%m (z) z))
     (tagbody
-      (expand-in-current-env (%m :foo))))
+      (s:expand-in-current-env (%m :foo))))
   nil)

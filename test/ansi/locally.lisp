@@ -45,5 +45,5 @@
 
 (deftest locally.8
   (macrolet ((%m (z) z))
-    (locally (expand-in-current-env (%m :good))))
+    (locally (s:expand-in-current-env (%m :good))))
   :good)

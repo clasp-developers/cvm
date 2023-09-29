@@ -85,5 +85,5 @@
 (deftest symbol-macrolet.9
   (macrolet
       ((%m (z) z))
-    (symbol-macrolet () (expand-in-current-env (%m :good))))
+    (symbol-macrolet () (s:expand-in-current-env (%m :good))))
   :good)

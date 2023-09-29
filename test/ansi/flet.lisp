@@ -60,8 +60,7 @@
 ;;; The function is not visible inside itself
 (deftest flet.7
   (flet ((%f (x) (+ x 5)))
-    (flet ((%f (y) (cond ((eql y 20) 30)
-                         (t (%f 20)))))
+    (flet ((%f (y) (if (eql y 20) 30 (%f 20))))
       (%f 15)))
   25)
 
@@ -116,15 +115,15 @@
 ;;; Definition of a (setf ...) function
 
 (deftest flet.17
-  (flet (((setf %f) (x y) (setf (car y) x)))
+  (flet (((setf %f) (x y) (s:setf (car y) x)))
     (let ((z (list 1 2)))
-      (setf (%f z) 'a)
+      (s:setf (%f z) 'a)
       z))
   (a 2))
 
 ;;; Body is an implicit progn
 (deftest flet.18
-  (flet ((%f (x) (incf x) (+ x x)))
+  (flet ((%f (x) (s:incf x) (+ x x)))
     (%f 10))
   22)
 
@@ -540,7 +539,7 @@
     (flet ((%f (i)
              #'(lambda (arg)
                  (declare (ignore arg))
-                 (incf *x* i))))
+                 (s:incf *x* i))))
       (values
        (mapcar (%f 1) '(a b c))
        (mapcar (%f 2) '(a b c)))))
@@ -551,12 +550,12 @@
 
 (deftest flet.70
   (macrolet ((%m (z) z))
-    (flet () (expand-in-current-env (%m :good))))
+    (flet () (s:expand-in-current-env (%m :good))))
   :good)
 
 (deftest flet.71
   (macrolet ((%m (z) z))
-    (flet ((%f () (expand-in-current-env (%m :good))))
+    (flet ((%f () (s:expand-in-current-env (%m :good))))
       (%f)))
   :good)
 

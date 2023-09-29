@@ -37,7 +37,7 @@
    (loop for d in '(speed space safety debug compilation-speed)
          nconc (loop for n from 0 to 3
                      for form = `(locally (declare (optimize (,d ,n))) t)
-                     for val = (eval form)
+                     for val = (ceval form)
                      unless (eql val t)
                        collect (list d n val)))))
 
@@ -48,7 +48,7 @@
                      for form = `(lambda ()
                                    (declare (optimize (,d ,n)))
                                    t)
-                     for val = (funcall (compile nil form))
+                     for val = (funcall (ccompile nil form))
                      unless (eql val t)
                        collect (list d n val)))))
 

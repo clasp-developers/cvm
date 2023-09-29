@@ -58,7 +58,7 @@
 
 (deftest lambda.13
   ((lambda (&optional (x 'a x-p) (y 'b y-p) (z 'c z-p))
-     (list* x y z (mapcar #'notnot (list x-p y-p z-p)))) 1 nil)
+     (list* x y z (mapcar #'s:notnot (list x-p y-p z-p)))) 1 nil)
   (1 nil c t t nil))
 
 (deftest lambda.14
@@ -94,7 +94,7 @@
   (10 11))
 
 (deftest lambda.21
-  (flet ((%f () (locally (declare (special *x*)) (incf *x*))))
+  (flet ((%f () (locally (declare (special *x*)) (s:incf *x*))))
     ((lambda (*x*)
        (declare (special *x*))
        (%f)
@@ -156,23 +156,23 @@
   (:w 5 :allow-other-keys t :x 10))
 
 (deftest lambda.34
-  ((lambda (&key (a 1 a-p) (b 2 b-p) (c 3 c-p)) (list a (notnot a-p)
-                                                      b (notnot b-p)
-                                                      c (notnot c-p)))
+  ((lambda (&key (a 1 a-p) (b 2 b-p) (c 3 c-p)) (list a (s:notnot a-p)
+                                                      b (s:notnot b-p)
+                                                      c (s:notnot c-p)))
    :c 5 :a 0)
   (0 t 2 nil 5 t))
 
 (deftest lambda.35
-  ((lambda (&key (a 1 a-p) (b 2 b-p) (c 3 c-p)) (list a (notnot a-p)
-                                                      b (notnot b-p)
-                                                      c (notnot c-p)))
+  ((lambda (&key (a 1 a-p) (b 2 b-p) (c 3 c-p)) (list a (s:notnot a-p)
+                                                      b (s:notnot b-p)
+                                                      c (s:notnot c-p)))
    :c 5 :a nil :a 17 :c 100)
   (nil t 2 nil 5 t))
 
 (deftest lambda.36
-  ((lambda (&key (a 1 a-p) (b 2 b-p) (c 3 c-p)) (list a (notnot a-p)
-                                                      b (notnot b-p)
-                                                      c (notnot c-p)))
+  ((lambda (&key (a 1 a-p) (b 2 b-p) (c 3 c-p)) (list a (s:notnot a-p)
+                                                      b (s:notnot b-p)
+                                                      c (s:notnot c-p)))
    :c 5 :a 0 :allow-other-keys t 'b 100)
   (0 t 2 nil 5 t))
 
@@ -189,20 +189,20 @@
 (deftest lambda.39
   (let ((a-p :bad))
     (declare (ignorable a-p))
-    ((lambda (&key (a nil a-p) (b a-p)) (list a (notnot a-p) (notnot b)))))
+    ((lambda (&key (a nil a-p) (b a-p)) (list a (s:notnot a-p) (s:notnot b)))))
   (nil nil nil))
 
 (deftest lambda.40
   (let ((a-p :bad))
     (declare (ignorable a-p))
-    ((lambda (&key (a nil a-p) (b a-p)) (list a (notnot a-p) (notnot b)))
+    ((lambda (&key (a nil a-p) (b a-p)) (list a (s:notnot a-p) (s:notnot b)))
      :a 1))
   (1 t t))
 
 (deftest lambda.41
   (let ((a-p :bad))
     (declare (ignorable a-p))
-    ((lambda (&key (a nil a-p) (b a-p)) (list a (notnot a-p) (notnot b)))
+    ((lambda (&key (a nil a-p) (b a-p)) (list a (s:notnot a-p) (s:notnot b)))
      :a nil))
   (nil t t))
 
@@ -279,25 +279,23 @@
       ((lambda (&aux (y x)) (declare (special x)) y))))
   :good)
 
-(deftest lambda.55
-  (let* ((doc "LMB55")
-         (fn (eval `#'(lambda () ,doc nil)))
-         (cfn (compile nil fn)))
-    (values
-     (or (documentation fn t) doc)
-     (or (documentation cfn t) doc)))
-  "LMB55"
-  "LMB55")
+(5am:test lambda.55
+  (5am:is (equal '("LMB55" "LMB55")
+                 (let* ((doc "LMB55")
+                        (fn (ceval `#'(lambda () ,doc nil)))
+                        (cfn (ccompile nil fn)))
+                   (list
+                    (or (documentation fn t) doc)
+                    (or (documentation cfn t) doc))))))
 
-(deftest lambda.56
-  (let* ((doc "LMB56")
-         (fn (eval `#'(lambda () ,doc nil)))
-         (cfn (compile nil fn)))
-    (values
-     (or (documentation fn 'function) doc)
-     (or (documentation cfn 'function) doc)))
-  "LMB56"
-  "LMB56")
+(5am:test lambda.56
+  (5am:is (equal '("LMB56" "LMB56")
+                 (let* ((doc "LMB56")
+                        (fn (ceval `#'(lambda () ,doc nil)))
+                        (cfn (ccompile nil fn)))
+                   (list
+                    (or (documentation fn 'function) doc)
+                    (or (documentation cfn 'function) doc))))))
 
 ;;; Uninterned symbols as lambda variables
 
@@ -353,7 +351,7 @@
 
 #+(or)
 (deftest lambda.macro.1
-  (notnot (macro-function 'lambda))
+  (s:notnot (macro-function 'lambda))
   t)
 
 #+(or)

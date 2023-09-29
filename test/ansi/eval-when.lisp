@@ -135,12 +135,12 @@
 
 (deftest eval-when.17
   (let ((x :bad))
-    (values (eval-when (eval) (setq x :good)) x))
+    (values (eval-when (cl:eval) (setq x :good)) x))
   :good :good)
 
 ;;; Macros are expanded in the appropriate environment
 
 (deftest eval-when.18
   (macrolet ((%m (z) z))
-    (eval-when (:execute) (expand-in-current-env (%m :good))))
+    (eval-when (:execute) (s:expand-in-current-env (%m :good))))
   :good)

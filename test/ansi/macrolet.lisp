@@ -20,8 +20,8 @@
     (macrolet ((%m (x) `(car ,x)))
       (let ((y (list 1 2)))
         (values
-         (setf (%m y) 6)
-         (setf (%m z) 'a)
+         (s:setf (%m y) 6)
+         (s:setf (%m z) 'a)
          y z))))
   6 a (6 2) (a 4))
 
@@ -33,8 +33,8 @@
         (let ((y (list 1 2)))
           (values
            (%m y) (%m z)
-           (setf (%m y) 6)
-           (setf (%m z) 'a)
+           (s:setf (%m y) 6)
+           (s:setf (%m z) 'a)
            y z)))))
   1 3 6 a (6 2) (a 4))
 
@@ -125,7 +125,7 @@
 (deftest macrolet.13
   (symbol-macrolet ((a b))
     (macrolet ((foo (x &environment env)
-                 (let ((y (macroexpand x env)))
+                 (let ((y (s:macroexpand x env)))
                    (if (eq y 'a) 1 2))))
       (foo a)))
   2)
@@ -133,7 +133,7 @@
 (deftest macrolet.14
   (symbol-macrolet ((a b))
     (macrolet ((foo (x &environment env)
-                 (let ((y (macroexpand-1 x env)))
+                 (let ((y (s:macroexpand-1 x env)))
                    (if (eq y 'a) 1 2))))
       (foo a)))
   2)
@@ -362,7 +362,7 @@
 
 (deftest macrolet.38
   (macrolet ((foo () 1))
-    (macrolet ((%f (&optional (x (macroexpand '(foo) env)) &environment env)
+    (macrolet ((%f (&optional (x (s:macroexpand '(foo) env)) &environment env)
                  x))
       (%f)))
   1)
@@ -397,36 +397,36 @@
     (declare (special *x-in-macrolet.43*))
     (let ((*f* #'(lambda () *x-in-macrolet.43*)))
       (declare (special *f*))
-      (5am:is-false (eval `(macrolet ((%m (*x-in-macrolet.43*)
-                                        (declare (special *f*))
-                                        (funcall *f*)))
-                             (%m t)))))))
+      (5am:is-false (ceval `(macrolet ((%m (*x-in-macrolet.43*)
+                                         (declare (special *f*))
+                                         (funcall *f*)))
+                              (%m t)))))))
 
 (5am:test macrolet.44
   (let ((*x-in-macrolet.44* nil))
     (declare (special *x-in-macrolet.44*))
     (let ((*f* #'(lambda () *x-in-macrolet.44*)))
       (declare (special *f*))
-      (5am:is (eql t (eval `(macrolet ((%m (*x-in-macrolet.44*)
-                                         (declare (special *f* *x-in-macrolet.44*))
-                                         (funcall *f*)))
-                              (%m t))))))))
+      (5am:is (eql t (ceval `(macrolet ((%m (*x-in-macrolet.44*)
+                                          (declare (special *f* *x-in-macrolet.44*))
+                                          (funcall *f*)))
+                               (%m t))))))))
 
 (5am:test macrolet.45
   (let ((*x-in-macrolet.45* nil))
     (declare (special *x-in-macrolet.45*))
     (let ((*f* #'(lambda () *x-in-macrolet.45*)))
       (declare (special *f*))
-      (5am:is (eql t (eval `(macrolet ((%m ((*x-in-macrolet.45*))
-                                         (declare (special *f* *x-in-macrolet.45*))
-                                         (funcall *f*)))
-                              (%m (t)))))))))
+      (5am:is (eql t (ceval `(macrolet ((%m ((*x-in-macrolet.45*))
+                                          (declare (special *f* *x-in-macrolet.45*))
+                                          (funcall *f*)))
+                               (%m (t)))))))))
 
 ;;; Macros are expanded in the appropriate environment
 
 (deftest macrolet.46
   (macrolet ((%m (z) z))
-    (macrolet () (expand-in-current-env (%m :good))))
+    (macrolet () (s:expand-in-current-env (%m :good))))
   :good)
 
 ;;; Free declarations in macrolet

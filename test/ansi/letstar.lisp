@@ -92,7 +92,7 @@
                      (dolist (v vars)
                        (setq sumexpr `(+ ,v ,sumexpr)))
                      sumexpr)))
-         (val (eval expr)))
+         (val (ceval expr)))
     (5am:is (eql (/ (* n (1+ n)) 2) val))))
 
 ;;; Test that all non-variables exported from COMMON-LISP can be bound
@@ -127,7 +127,7 @@
 
 (5am:test let*.17a
   (5am:is (eql :good (funcall
-                      (compile
+                      (ccompile
                        nil
                        '(lambda ()
                          (let ((x :bad))
@@ -169,17 +169,17 @@
 
 (deftest let*.21
   (macrolet ((%m (z) z))
-    (let* () (expand-in-current-env (%m :good))))
+    (let* () (s:expand-in-current-env (%m :good))))
   :good)
 
 (deftest let*.22
   (macrolet ((%m (z) z))
-    (let* ((x (expand-in-current-env (%m 1)))) (+ x x x)))
+    (let* ((x (s:expand-in-current-env (%m 1)))) (+ x x x)))
   3)
 
 (deftest let*.23
   (macrolet ((%m (z) z))
-    (let* ((x (expand-in-current-env (%m 1)))
-           (y (expand-in-current-env (%m 2))))
+    (let* ((x (s:expand-in-current-env (%m 1)))
+           (y (s:expand-in-current-env (%m 2))))
       (+ x y)))
   3)

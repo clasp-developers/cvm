@@ -25,11 +25,11 @@
 (deftest multiple-value-call.4
   (macrolet
       ((%m (z) z))
-    (multiple-value-call (expand-in-current-env (%m #'list)) (values 1 2)))
+    (multiple-value-call (s:expand-in-current-env (%m #'list)) (values 1 2)))
   (1 2))
 
 (deftest multiple-value-call.5
   (macrolet
       ((%m (z) z))
-    (multiple-value-call 'list (expand-in-current-env (%m (values 1 2)))))
+    (multiple-value-call 'list (s:expand-in-current-env (%m (values 1 2)))))
   (1 2))

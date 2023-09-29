@@ -26,7 +26,7 @@
 (deftest multiple-value-prog1.5
   (let ((x 0) (y 0))
     (multiple-value-prog1 (values x y)
-      (incf x) (incf y 2)))
+      (s:incf x) (s:incf y 2)))
   0 0)
 
 (deftest multiple-value-prog1.6
@@ -34,7 +34,7 @@
     (multiple-value-call
      #'list
      (multiple-value-prog1 (values x y)
-       (incf x) (incf y 2))
+       (s:incf x) (s:incf y 2))
      x y))
   (0 0 1 2))
 
@@ -42,9 +42,9 @@
   (let ((x 0) (y 0))
     (multiple-value-call
      #'list
-     (multiple-value-prog1 (values (incf x) y)
-       (incf x x)
-       (incf y 10))
+     (multiple-value-prog1 (values (s:incf x) y)
+       (s:incf x x)
+       (s:incf y 10))
      x y))
   (1 0 2 10))
 
@@ -68,7 +68,7 @@
     (values
      (block foo
        (multiple-value-prog1
-        (values (incf x) (incf y 2))
+        (values (s:incf x) (s:incf y 2))
         (return-from foo 'a)))
      x y))
   a 1 2)
@@ -91,11 +91,11 @@
 (deftest multiple-value-prog1.11
   (macrolet
       ((%m (z) z))
-    (multiple-value-prog1 (expand-in-current-env (%m :good))))
+    (multiple-value-prog1 (s:expand-in-current-env (%m :good))))
   :good)
 
 (deftest multiple-value-prog1.12
   (macrolet
       ((%m (z) z))
-    (multiple-value-prog1 :good (expand-in-current-env (%m :foo))))
+    (multiple-value-prog1 :good (s:expand-in-current-env (%m :foo))))
   :good)

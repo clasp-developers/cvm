@@ -21,11 +21,12 @@
   :depends-on (:cvm :fiveam)
   :components
   ((:module "test"
-    :components ((:file "package")
-                 (:file "suites" :depends-on ("package"))
-                 (:file "rt" :depends-on ("package"))
+    :components ((:file "packages")
+                 (:file "suites" :depends-on ("packages"))
+                 (:file "rt" :depends-on ("packages"))
+                 (:file "native-sham" :depends-on ("packages"))
                  (:module "ansi"
-                  :depends-on ("suites" "rt" "package")
+                  :depends-on ("suites" "rt" "packages")
                   ;; These can be loaded in any order.
                   :components (;; eval-and-compile
                                (:file "compile")

@@ -20,7 +20,7 @@
 
 (5am:test eval.3
   (5am:is-true (let ((s "abcd"))
-                 (eql (eval s) s))))
+                 (eql (ceval s) s))))
 
 #+(or)
 (deftest eval.4
@@ -32,7 +32,7 @@
   0)
 
 (5am:test eval.6
-  (5am:is (eql 1 (funcall #'eval 1))))
+  (5am:is (eql 1 (funcall #'ceval 1))))
 
 #+(or)
 (deftest eval.order.1
@@ -43,7 +43,7 @@
 ;;; Error cases
 
 (5am:test eval.error.1
-  (5am:signals program-error (eval)))
+  (5am:signals program-error (ceval)))
 
 #+(or)
 (deftest eval.error.2
@@ -51,7 +51,7 @@
   t)
 
 (5am:test eval.error.3
-  (5am:signals undefined-function (eval (list (gensym)))))
+  (5am:signals undefined-function (ceval (list (gensym)))))
 
 (5am:test eval.error.4
-  (5am:signals unbound-variable (eval (gensym))))
+  (5am:signals unbound-variable (ceval (gensym))))

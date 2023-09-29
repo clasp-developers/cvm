@@ -71,7 +71,7 @@
 
 (deftest type.6
   (let ((x 2))
-    (let ((y (+ (decf x) 2)))
+    (let ((y (+ (s:decf x) 2)))
       (declare (type (integer 0 1) x))
       (values x y)))
   1 3)

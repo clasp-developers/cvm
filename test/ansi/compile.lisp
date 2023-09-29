@@ -48,31 +48,31 @@
   (5am:is-false
    (let ((x (list 'a 'b))
          (y (list 'a 'b)))
-     (funcall (compile nil `(lambda () (eq ',x ',y)))))))
+     (funcall (ccompile nil `(lambda () (eq ',x ',y)))))))
 
 (5am:test compile.4
   (5am:is-false
    (let ((x (copy-seq "abc"))
          (y (copy-seq "abc")))
-     (funcall (compile nil `(lambda () (eq ,x ,y)))))))
+     (funcall (ccompile nil `(lambda () (eq ,x ,y)))))))
 
 (5am:test compile.5
   (5am:is-true
    (let ((x (copy-seq "abc")))
-     (funcall (compile nil `(lambda () (eq ,x ,x)))))))
+     (funcall (ccompile nil `(lambda () (eq ,x ,x)))))))
 
 (5am:test compile.6
   (5am:is-true
    (let ((x (copy-seq "abc")))
-     (funcall (compile nil `(lambda () (eq ',x ',x)))))))
+     (funcall (ccompile nil `(lambda () (eq ',x ',x)))))))
 
 (5am:test compile.7
   (let ((x (copy-seq "abc")))
-    (5am:is (eq x (funcall (compile nil `(lambda () ,x)))))))
+    (5am:is (eq x (funcall (ccompile nil `(lambda () ,x)))))))
 
 (5am:test compile.8
   (let ((x (list 'a 'b)))
-    (5am:is (eq x (funcall (compile nil `(lambda () ',x)))))))
+    (5am:is (eq x (funcall (ccompile nil `(lambda () ',x)))))))
 
 #+(or)
 (deftest compile.9

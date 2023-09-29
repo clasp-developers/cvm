@@ -23,5 +23,5 @@
 (deftest return-from.3
   (macrolet
       ((%m (z) z))
-    (block foo (return-from foo (expand-in-current-env (%m :good)))))
+    (block foo (return-from foo (s:expand-in-current-env (%m :good)))))
   :good)

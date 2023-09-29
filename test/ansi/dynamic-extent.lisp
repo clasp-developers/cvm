@@ -101,7 +101,7 @@
                           (declare (notinline coerce))
                           (declare (optimize speed (safety 0)))
                           (equal (coerce a 'list) ',contents))
-           unless (eval form2)
+           unless (ceval form2)
              collect i)))
   nil)
 
@@ -119,13 +119,13 @@
      (every #'(lambda (c) (eql c #\a)) s))))
 
 (deftest dynamic-extent.15
-  (flet (((setf %f) (x y) (setf (car y) x)))
+  (flet (((setf %f) (x y) (s:setf (car y) x)))
     (declare (dynamic-extent #'(setf %f)))
     :good)
   :good)
 
 (deftest dynamic-extent.16
-  (labels (((setf %f) (x y) (setf (car y) x)))
+  (labels (((setf %f) (x y) (s:setf (car y) x)))
     (declare (dynamic-extent #'(setf %f)))
     :good)
   :good)

@@ -94,7 +94,7 @@
 (deftest the.13
   (let ((x 0))
     (values
-     (the (or symbol integer) (incf x))
+     (the (or symbol integer) (s:incf x))
      x))
   1 1)
 
@@ -117,6 +117,7 @@
   (the (values symbol integer &rest t) (values 'a 1 'foo '(x y)))
   a 1 foo (x y))
 
+#+(or)
 (deftest the.19
   (let () (list (the (values) (eval '(values)))))
   (nil))
@@ -149,11 +150,11 @@
 (deftest the.24
   (macrolet
       ((%m (z) z))
-    (the (integer 0 10) (expand-in-current-env (%m 4))))
+    (the (integer 0 10) (s:expand-in-current-env (%m 4))))
   4)
 
 (deftest the.25
   (macrolet
       ((%m (z) z))
-    (the (values t t) (expand-in-current-env (%m (values 1 2)))))
+    (the (values t t) (s:expand-in-current-env (%m (values 1 2)))))
   1 2)

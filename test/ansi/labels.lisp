@@ -61,8 +61,7 @@
 
 ;;; The function is visible inside itself
 (deftest labels.7
-  (labels ((%f (x n) (cond ((eql n 0) x)
-                           (t (%f (+ x n) (1- n))))))
+  (labels ((%f (x n) (if (eql n 0) x (%f (+ x n) (1- n)))))
     (%f 0 10))
   55)
 
@@ -143,15 +142,15 @@
 ;;; Definition of a (setf ...) function
 
 (deftest labels.17
-  (labels (((setf %f) (x y) (setf (car y) x)))
+  (labels (((setf %f) (x y) (s:setf (car y) x)))
     (let ((z (list 1 2)))
-      (setf (%f z) 'a)
+      (s:setf (%f z) 'a)
       z))
   (a 2))
 
 ;;; Body is an implicit progn
 (deftest labels.18
-  (labels ((%f (x) (incf x) (+ x x)))
+  (labels ((%f (x) (s:incf x) (+ x x)))
     (%f 10))
   22)
 
@@ -395,12 +394,12 @@
 
 (deftest labels.48
   (macrolet ((%m (z) z))
-    (labels () (expand-in-current-env (%m :good))))
+    (labels () (s:expand-in-current-env (%m :good))))
   :good)
 
 (deftest labels.49
   (macrolet ((%m (z) z))
-    (labels ((%f () (expand-in-current-env (%m :good))))
+    (labels ((%f () (s:expand-in-current-env (%m :good))))
       (%f)))
   :good)
 
