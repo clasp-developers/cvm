@@ -6,6 +6,48 @@
 
 (in-package #:cvm.vm)
 
+;;; nabbed from clasp
+(define-condition wrong-number-of-arguments (program-error)
+  ((%called-function :initform nil :initarg :called-function
+                     :reader called-function)
+   (%given-nargs :initarg :given-nargs :reader given-nargs)
+   (%min-nargs :initarg :min-nargs :reader min-nargs :initform nil)
+   (%max-nargs :initarg :max-nargs :reader max-nargs :initform nil))
+  (:report (lambda (condition stream)
+             (let* ((min (min-nargs condition))
+                    (max (max-nargs condition))
+                    ;; FIXME: get an actual name if possible
+                    (dname nil))
+               (format stream "~@[Calling ~a - ~]Got ~d arguments, but expected ~@?"
+                       dname (given-nargs condition)
+                       (cond ((null max)  "at least ~d")
+                             ((null min)  "at most ~*~d")
+                             ;; I think "exactly 0" is better than "at most 0", thus duplication
+                             ((= min max) "exactly ~d")
+                             ((zerop min) "at most ~*~d")
+                             (t           "between ~d and ~d"))
+                       min max)))))
+
+(define-condition odd-keywords (program-error)
+  ((%called-function :initarg :called-function :reader called-function
+                     :initform nil))
+  (:report (lambda (condition stream)
+             (format stream "Odd number of keyword arguments~:[~; for ~s~]."
+                     (called-function condition)
+                     ;; FIXME: again, get an actual name somehow.
+                     nil))))
+
+(define-condition unrecognized-keyword-argument (program-error)
+  ((%called-function :initarg :called-function :reader called-function
+                     :initform nil)
+   (%unrecognized-keywords :initarg :unrecognized-keywords
+                           :reader unrecognized-keywords))
+  (:report (lambda (condition stream)
+             (format stream "Unrecognized keyword arguments ~S~:[~; for ~S~]."
+                     (unrecognized-keywords condition)
+                     (called-function condition) ; FIXME: name
+                     nil))))
+
 (defstruct vm
   (values nil :type list)
   (stack #() :type simple-vector)
@@ -221,20 +263,23 @@
                    ((#.m:check-arg-count-<=)
                     (let ((n (next-code)))
                       (unless (<= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need at most ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :max-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count->=)
                     (let ((n (next-code)))
                       (unless (>= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need at least ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :min-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count-=)
                     (let ((n (next-code)))
                       (unless (= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need exactly ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :min-nargs n :max-nargs n)))
                     (incf ip))
                    ((#.m:jump-if-supplied-8)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
@@ -292,7 +337,7 @@
                            (key-literal-start (next-code))
                            (key-literal-end (+ key-literal-start key-count))
                            (key-frame-start (+ bp (next-code)))
-                           (unknown-key-p nil)
+                           (unknown-keys nil)
                            (allow-other-keys-p nil))
                       ;; Initialize all key values to #<unbound-marker>
                       (loop for index from key-frame-start below (+ key-frame-start key-count)
@@ -302,7 +347,7 @@
                             ((< arg-index more-start)
                              (cond ((= arg-index (1- more-start)))
                                    ((= arg-index (- more-start 2))
-                                    (error "Passed odd number of &KEY args!"))
+                                    (error 'odd-keywords))
                                    (t
                                     (error "BUG! This can't happen!"))))
                           (let ((key (stack (1- arg-index))))
@@ -315,11 +360,12 @@
                                       do (when (eq (constant key-index) key)
                                            (setf (stack offset) (stack arg-index))
                                            (return))
-                                      finally (setf unknown-key-p key))))))
+                                      finally (push key unknown-keys))))))
                       (when (and (not (or (logbitp 7 key-count-info)
                                           allow-other-keys-p))
-                                 unknown-key-p)
-                        (error "Unknown key arg ~a!" unknown-key-p)))
+                                 unknown-keys)
+                        (error 'unrecognized-keyword-argument
+                               :unrecognized-keywords unknown-keys)))
                     (incf ip))
                    ((#.m:save-sp)
                     (setf (stack (+ bp (next-code))) sp)
