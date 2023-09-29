@@ -821,23 +821,20 @@
 
 ;;; Add VARS as specials in ENV.
 (defun add-specials (vars env)
-  (do* ((evars (vars env))
-        (ivars vars (rest ivars))
-        (new-vars
-         evars
-         (let* ((var (first ivars))
-                (desc (trucler:describe-variable m:*client* env var))
-                (specialp (typep desc 'trucler:special-variable-description)))
-           (if specialp
-               new-vars ; already present
-               (acons var (make-instance
-                              'trucler:local-special-variable-description
-                            :name var)
-                      new-vars)))))
-       ((endp ivars)
-        (if (eq new-vars evars) ; nothing added
-            env           
-            (make-lexical-environment env :vars new-vars)))))
+  (let* ((existing (vars env))
+         (new-vars existing))
+    (loop for var in vars
+          for desc = (trucler:describe-variable m:*client* env var)
+          for specialp
+            = (typep desc 'trucler:special-variable-description)
+          unless specialp ; already covered
+            do (push (cons var (make-instance
+                                   'trucler:local-special-variable-description
+                                 :name var))
+                     new-vars))
+    (if (eq new-vars existing) ; nothing added
+        env
+        (make-lexical-environment env :vars new-vars))))
 
 (defun extract-specials (declarations)
   (let ((specials '()))
