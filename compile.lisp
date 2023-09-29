@@ -505,7 +505,7 @@
 
 (defmethod trucler:describe-function
     (client (env lexical-environment) name)
-  (or (cdr (assoc name (funs env)))
+  (or (cdr (assoc name (funs env) :test #'equal))
       (trucler:describe-variable client
                                  (global-environment env) name)))
 
@@ -521,7 +521,7 @@
   (or (cdr (assoc name (vars env)))
       (trucler:describe-variable m:*client* (global-environment env) name)))
 (defun fun-info (name env)
-  (or (cdr (assoc name (funs env)))
+  (or (cdr (assoc name (funs env) :test #'equal))
       (trucler:describe-function m:*client* (global-environment env) name)))
 
 ;; never actually called
