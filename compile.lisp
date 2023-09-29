@@ -1260,9 +1260,17 @@
      (compile-form `(fdefinition ,form) env (new-context context :receiving 1)))
     (t
      (let* ((fsym (gensym "FUNCTION-DESIGNATOR"))
-            (form `(etypecase ,fsym
-                     (function ,fsym)
-                     (symbol (fdefinition ,fsym)))))
+            ;; Try to avoid using macros (etypecase) for the sake of
+            ;; compatibility with a native client. For example, SBCL's
+            ;; COND cannot be macroexpanded in our environments.
+            ;; TODO: Newer VM version makes this a VM operation.
+            (form `(let ((,fsym ,form))
+                     (if (functionp ,fsym)
+                         ,fsym
+                         (if (symbolp ,fsym)
+                             (fdefinition ,fsym)
+                             (error 'type-error :datum ,fsym
+                                    :expected-type '(or symbol function)))))))
        (compile-form form env (new-context context :receiving 1))))))
 
 (defmethod compile-special ((op (eql 'multiple-value-call)) form env context)
