@@ -492,6 +492,30 @@
 ;;; environments are necessarily ours (they include bytecode-specific
 ;;; information, etc.)
 ;;; But we do fall back to it when we hit the global environment.
+;;; And we define the methods, to be nice to macros, so maybe we
+;;; should use it internally after all.
+;;; TODO: Once trucler actually implements augmentation we should
+;;; maybe use that and not have our own environments at all.
+
+(defmethod trucler:describe-variable
+    (client (env lexical-environment) name)
+  (or (cdr (assoc name (vars env)))
+      (trucler:describe-variable client
+                                 (global-environment env) name)))
+
+(defmethod trucler:describe-function
+    (client (env lexical-environment) name)
+  (or (cdr (assoc name (funs env)))
+      (trucler:describe-variable client
+                                 (global-environment env) name)))
+
+(defmethod trucler:describe-block
+    (client (env lexical-environment) name)
+  (cdr (assoc name (blocks env))))
+
+(defmethod trucler:describe-tag
+    (client (env lexical-environment) name)
+  (cdr (assoc name (tags env))))
 
 (defun var-info (name env)
   (or (cdr (assoc name (vars env)))
