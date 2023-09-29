@@ -1321,7 +1321,7 @@
 ;;; corresponding suppliedp var for each optional/key.
 (defun compile-with-lambda-list (lambda-list body env context)
   (multiple-value-bind (body decls)
-      (alexandria:parse-body body)
+      (alexandria:parse-body body :documentation t)
     (multiple-value-bind (required optionals rest keys aok-p aux key-p)
         (alexandria:parse-ordinary-lambda-list lambda-list)
       (let* ((function (context-function context))
