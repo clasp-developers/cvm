@@ -57,7 +57,7 @@
 (deftest macrolet.5
   (let ((x nil))
     (macrolet ((%m ((&whole w arg))
-                 (list 'progn (list 'setq (list 'quote w)) arg)
+                 (list 'progn (list 'setq 'x (list 'quote w)) arg)
                  #+(or)
                  `(progn (setq x (quote ,w))
                          ,arg)))
@@ -111,7 +111,7 @@
 (deftest macrolet.10
   (let ((x nil))
     (macrolet ((%m (b &rest a)
-                 (list 'setq x (list 'quote a))
+                 (list 'setq 'x (list 'quote a))
                  #+(or)
                  `(setq x (quote ,a))))
       (values (%m a1 a2) x)))
