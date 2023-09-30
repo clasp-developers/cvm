@@ -1353,7 +1353,9 @@
              (max-count (+ min-count optional-count))
              (key-count (length keys))
              (more-p (or rest key-p))
-             new-env (context context)
+             new-env ; will be the body environment
+             default-env ; environment for compiling default forms
+             (context context)
              (specials (extract-specials decls))
              (special-binding-count 0)
              ;; An alist from optional and key variables to their local indices.
@@ -1384,6 +1386,9 @@
                   (t
                    (maybe-emit-encage (var-info var new-env) context))))
           (setq new-env (add-specials (intersection specials required) new-env)))
+        ;; set the default env to have all the requireds bound,
+        ;; but don't put in the optionals (yet).
+        (setq default-env new-env)
         (unless (zerop optional-count)
           ;; Generate code to bind the provided optional args; unprovided args will
           ;; be initialized with the unbound marker.
@@ -1461,11 +1466,31 @@
                                                  index
                                                  supplied-var next-optional-label
                                                  optional-special-p supplied-special-p
-                                                 context new-env))
+                                                 context new-env
+                                                 default-env))
+                ;; set the default env for later bindings.
+                (let* ((ovar (cons optional-var
+                                   (var-info optional-var new-env)))
+                       (svar (when supplied-var
+                               (cons supplied-var
+                                     (var-info supplied-var new-env))))
+                       (newvars
+                         (if svar (list svar ovar) (list ovar))))
+                  (setf default-env
+                        (make-lexical-environment
+                         default-env
+                         :vars (append newvars (vars default-env)))))
                 (when optional-special-p (incf special-binding-count))
                 (when supplied-special-p (incf special-binding-count))))))
         ;; Generate defaulting code for key args, and special-bind them if necessary.
         (when key-p
+          ;; Bind the rest parameter in the default env, if existent.
+          (when rest
+            (let ((rvar (cons rest (var-info rest new-env)))
+                  (old (vars default-env)))
+              (setf default-env
+                    (make-lexical-environment
+                     default-env :vars (cons rvar old)))))
           (do ((keys keys (rest keys))
                (key-label (make-label) next-key-label)
                (next-key-label (make-label) (make-label)))
@@ -1485,7 +1510,20 @@
                       (compile-optional/key-item key-var defaulting-form index
                                                  supplied-var next-key-label
                                                  key-special-p supplied-special-p
-                                                 context new-env))
+                                                 context new-env
+                                                 default-env))
+                ;; set the default env for later bindings.
+                (let* ((ovar (cons key-var
+                                   (var-info key-var new-env)))
+                       (svar (when supplied-var
+                               (cons supplied-var
+                                     (var-info supplied-var new-env))))
+                       (newvars
+                         (if svar (list svar ovar) (list ovar))))
+                  (setf default-env
+                        (make-lexical-environment
+                         default-env
+                         :vars (append newvars (vars default-env)))))
                 (when key-special-p (incf special-binding-count))
                 (when supplied-special-p (incf special-binding-count))))))
         ;; Generate aux and the body as a let*.
@@ -1497,7 +1535,7 @@
 ;;; Compile an optional/key item and return the resulting environment
 ;;; and context.
 (defun compile-optional/key-item (var defaulting-form var-index supplied-var next-label
-                                  var-specialp supplied-specialp context env)
+                                  var-specialp supplied-specialp context env default-env)
   (flet ((default (suppliedp specialp var info)
            (cond (suppliedp
                   (cond (specialp
@@ -1506,7 +1544,12 @@
                         (t
                          (maybe-emit-encage info context))))
                  (t
-                  (compile-form defaulting-form env
+                  ;; We compile in default-env but also context.
+                  ;; The context already has space allocated for all
+                  ;; the later lexical parameters, which have already
+                  ;; been bound. Thus, we ensure that no bindings
+                  ;; in the default form clobber later parameters.
+                  (compile-form defaulting-form default-env
                                 (new-context context :receiving 1))
                   (cond (specialp
                          (emit-special-bind context var))
