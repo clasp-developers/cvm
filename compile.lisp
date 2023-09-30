@@ -665,7 +665,10 @@
 
 ;;; As CL:COMPILE, but doesn't mess with function bindings.
 (defun compile (lambda-expression &optional env (m:*client* m:*client*))
-  (link-function (compile-into (make-cmodule) lambda-expression env) env))
+  (link-function (compile-into (make-cmodule) lambda-expression env)
+                 (if (lexical-environment-p env)
+                     (global-environment env)
+                     env)))
 
 ;;; As CL:EVAL.
 (defun eval (form &optional env (m:*client* m:*client*))
@@ -1689,16 +1692,13 @@
     ;; Now replace the cfunctions in the cmodule literal vector with
     ;; real bytecode functions.
     ;; Also replace the load-time-value infos with the evaluated forms.
-    (let ((genv
-            ;; Obviously anything we're linking is global.
-            (if (lexical-environment-p env)
-                (global-environment env)
-                env)))
-      (map-into literals
-                (lambda (info) (load-literal-info client info genv))
-                cmodule-literals)))
+    (map-into literals
+              (lambda (info) (load-literal-info client info env))
+              cmodule-literals))
   (values))
 
+;;; Given a cfunction, link constants and return an actual function.
+;;; ENV must be a global environment.
 (defun link-function (cfunction env)
   (link-load (cfunction-cmodule cfunction) env)
   (cfunction-info cfunction))
