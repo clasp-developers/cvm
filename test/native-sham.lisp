@@ -106,8 +106,8 @@
                ;; because there might be a global setf expander
                ;; that overrides the macroexpansion.
                (%get-setf-expansion (s:macroexpand-1 place env) env))
-              (t ;; defer to host
-               (cl:get-setf-expansion place nil)))))))
+              (t ; (for now) we have no setf expanders, so
+               (default-call-setf-expansion head rest)))))))
 
 (defmacro s:multiple-value-bind (vars valform &body body)
   (if (= (length vars) 1)
@@ -119,18 +119,17 @@
                                 ,@body)
            ,valform))))
 
-(defmacro setf-1 (place value &environment env)
-  (multiple-value-bind (temps forms news write read)
-      (%get-setf-expansion place env)
-    (declare (ignore read))
-    `(let* (,@(mapcar #'list temps forms))
-       (multiple-value-bind (,@news) ,value
-         ,write))))
-
-(defmacro s:setf (&rest pairs)
-  `(progn
-     ,@(loop for (place value) on pairs by #'cddr
-             collect `(setf-1 ,place ,value))))
+(defmacro s:setf (&rest pairs &environment env)
+  (flet ((expand-setf-1 (place value)
+           (multiple-value-bind (temps forms news write read)
+               (%get-setf-expansion place env)
+             (declare (ignore read))
+             `(let* (,@(mapcar #'list temps forms))
+                (multiple-value-bind (,@news) ,value
+                  ,write)))))
+    `(progn
+       ,@(loop for (place value) on pairs by #'cddr
+               collect (expand-setf-1 place value)))))
 
 ;;; Used extensively in tests as side effects.
 (defmacro s:incf (place &optional (delta 1) &environment env)
