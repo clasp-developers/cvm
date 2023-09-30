@@ -1,6 +1,7 @@
 (defpackage #:cvm.compile-file
   (:use #:cl)
-  (:local-nicknames (#:cmp #:cvm.compile))
+  (:local-nicknames (#:cmp #:cvm.compile)
+                    (#:arg #:cvm.argparse))
   (:shadow #:compile-file #:macroexpand-1 #:macroexpand)
   (:export #:with-constants
            #:ensure-constant #:add-constant #:find-constant-index)
@@ -1267,9 +1268,10 @@
     (dolist (binding bindings)
       (let* ((name (car binding)) (lambda-list (cadr binding))
              (body (cddr binding))
-             (eform (ecclesia:parse-macro name lambda-list body env))
              (aenv (cmp:lexenv-for-macrolet env))
-             (expander (cmp:compile eform aenv))
+             (eform (arg:parse-macro name lambda-list body aenv
+                                     #'cmp:compile))
+             (expander (cl:compile nil eform))
              (info (cmp:make-local-macro name expander)))
         (push (cons name info) macros)))
     (bytecode-compile-toplevel-locally

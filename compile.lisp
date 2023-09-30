@@ -1,6 +1,7 @@
 (defpackage #:cvm.compile
   (:use #:cl)
-  (:local-nicknames (#:m #:cvm.machine))
+  (:local-nicknames (#:m #:cvm.machine)
+                    (#:arg #:cvm.argparse))
   (:shadow #:compile #:eval #:constantp)
   (:export #:compile-into #:compile #:eval)
   ;; Compiler guts - used in cmpltv
@@ -1247,8 +1248,12 @@
            (loop with env = (lexenv-for-macrolet env)
                  for (name lambda-list . body) in bindings
                  for macro-lexpr
-                   = (ecclesia:parse-macro name lambda-list body env)
-                 for info = (make-local-macro name (compile macro-lexpr env))
+                   = (arg:parse-macro name lambda-list body env
+                                      #'compile)
+                 ;; see comment in parse-macro for explanation
+                 ;; as to how we're using the host here
+                 for macrof = (cl:compile nil macro-lexpr)
+                 for info = (make-local-macro name macrof)
                  collect (cons name info))))
     (compile-locally body (make-lexical-environment
                            env :funs (append macros (funs env)))

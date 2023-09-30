@@ -2,7 +2,8 @@
   (:use #:cl)
   (:export #:argument-error
            #:wrong-number-of-arguments #:odd-keywords
-           #:unrecognized-keyword-argument))
+           #:unrecognized-keyword-argument)
+  (:export #:parse-macro))
 
 (in-package #:cvm.argparse)
 
