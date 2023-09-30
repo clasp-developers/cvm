@@ -7,7 +7,8 @@
   ;; Compiler guts - used in cmpltv
   (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
            #:make-lexical-environment #:make-local-macro #:make-symbol-macro
-           #:coerce-to-lexenv #:funs #:vars)
+           #:coerce-to-lexenv #:funs #:vars
+           #:compute-macroexpander)
   (:export #:var-info #:fun-info #:expand #:symbol-macro-expansion)
   (:export #:load-literal-info)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
@@ -1242,17 +1243,24 @@
                  collect pair)
    :tags nil :blocks nil))
 
+;;; Given the arguments to parse-macro, return a macroexpander,
+;;; i.e. an actual function. The environment must already be
+;;; stripped by lexenv-for-macrolet (so that this can be done once
+;;; for multiple definitions).
+;;; Also used in cmpltv.
+(defun compute-macroexpander (name lambda-list body env)
+  ;; see comment in parse-macro for explanation
+  ;; as to how we're using the host here
+  (cl:compile nil (arg:parse-macro name lambda-list body env
+                                   #'compile)))
+
 (defmethod compile-special ((op (eql 'macrolet)) form env context)
   (let* ((bindings (second form)) (body (cddr form))
          (macros
            (loop with env = (lexenv-for-macrolet env)
                  for (name lambda-list . body) in bindings
-                 for macro-lexpr
-                   = (arg:parse-macro name lambda-list body env
-                                      #'compile)
-                 ;; see comment in parse-macro for explanation
-                 ;; as to how we're using the host here
-                 for macrof = (cl:compile nil macro-lexpr)
+                 for macrof = (compute-macroexpander
+                               name lambda-list body env)
                  for info = (make-local-macro name macrof)
                  collect (cons name info))))
     (compile-locally body (make-lexical-environment

@@ -1264,14 +1264,13 @@
       (bytecode-compile-toplevel-progn body new-env))))
 
 (defun bytecode-compile-toplevel-macrolet (bindings body env)
-  (let ((macros nil))
+  (let ((macros nil)
+        (aenv (cmp:lexenv-for-macrolet env)))
     (dolist (binding bindings)
       (let* ((name (car binding)) (lambda-list (cadr binding))
              (body (cddr binding))
-             (aenv (cmp:lexenv-for-macrolet env))
-             (eform (arg:parse-macro name lambda-list body aenv
-                                     #'cmp:compile))
-             (expander (cl:compile nil eform))
+             (expander (cmp:compute-macroexpander
+                        name lambda-list body aenv))
              (info (cmp:make-local-macro name expander)))
         (push (cons name info) macros)))
     (bytecode-compile-toplevel-locally
