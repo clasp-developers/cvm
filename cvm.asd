@@ -9,11 +9,13 @@
                :alexandria :trucler :ecclesia ; compiler
                :ieee-floats) ; compile-file
   :components ((:file "machine")
+               (:file "arg-conditions")
                (:file "structures" :depends-on ("machine"))
                (:file "disassemble" :depends-on ("structures" "machine"))
                (:file "compile" :depends-on ("structures" "machine"))
                (:file "cmpltv" :depends-on ("compile"))
-               (:file "vm" :depends-on ("disassemble" "structures" "machine"))))
+               (:file "vm" :depends-on ("arg-conditions" "disassemble"
+                                        "structures" "machine"))))
 
 (asdf:defsystem #:cvm/test
   :author ("Bike <aeshtaer@gmail.com>")

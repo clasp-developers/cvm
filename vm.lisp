@@ -1,52 +1,11 @@
 (defpackage #:cvm.vm
   (:use #:cl)
-  (:local-nicknames (#:m #:cvm.machine))
+  (:local-nicknames (#:m #:cvm.machine)
+                    (#:arg #:cvm.argparse))
   (:export #:initialize-vm)
   (:export #:*trace*))
 
 (in-package #:cvm.vm)
-
-;;; nabbed from clasp
-(define-condition wrong-number-of-arguments (program-error)
-  ((%called-function :initform nil :initarg :called-function
-                     :reader called-function)
-   (%given-nargs :initarg :given-nargs :reader given-nargs)
-   (%min-nargs :initarg :min-nargs :reader min-nargs :initform nil)
-   (%max-nargs :initarg :max-nargs :reader max-nargs :initform nil))
-  (:report (lambda (condition stream)
-             (let* ((min (min-nargs condition))
-                    (max (max-nargs condition))
-                    ;; FIXME: get an actual name if possible
-                    (dname nil))
-               (format stream "~@[Calling ~a - ~]Got ~d arguments, but expected ~@?"
-                       dname (given-nargs condition)
-                       (cond ((null max)  "at least ~d")
-                             ((null min)  "at most ~*~d")
-                             ;; I think "exactly 0" is better than "at most 0", thus duplication
-                             ((= min max) "exactly ~d")
-                             ((zerop min) "at most ~*~d")
-                             (t           "between ~d and ~d"))
-                       min max)))))
-
-(define-condition odd-keywords (program-error)
-  ((%called-function :initarg :called-function :reader called-function
-                     :initform nil))
-  (:report (lambda (condition stream)
-             (format stream "Odd number of keyword arguments~:[~; for ~s~]."
-                     (called-function condition)
-                     ;; FIXME: again, get an actual name somehow.
-                     nil))))
-
-(define-condition unrecognized-keyword-argument (program-error)
-  ((%called-function :initarg :called-function :reader called-function
-                     :initform nil)
-   (%unrecognized-keywords :initarg :unrecognized-keywords
-                           :reader unrecognized-keywords))
-  (:report (lambda (condition stream)
-             (format stream "Unrecognized keyword arguments ~S~:[~; for ~S~]."
-                     (unrecognized-keywords condition)
-                     (called-function condition) ; FIXME: name
-                     nil))))
 
 (defstruct vm
   (values nil :type list)
@@ -263,21 +222,21 @@
                    ((#.m:check-arg-count-<=)
                     (let ((n (next-code)))
                       (unless (<= (vm-arg-count vm) n)
-                        (error 'wrong-number-of-arguments
+                        (error 'arg:wrong-number-of-arguments
                                :given-nargs (vm-arg-count vm)
                                :max-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count->=)
                     (let ((n (next-code)))
                       (unless (>= (vm-arg-count vm) n)
-                        (error 'wrong-number-of-arguments
+                        (error 'arg:wrong-number-of-arguments
                                :given-nargs (vm-arg-count vm)
                                :min-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count-=)
                     (let ((n (next-code)))
                       (unless (= (vm-arg-count vm) n)
-                        (error 'wrong-number-of-arguments
+                        (error 'arg:wrong-number-of-arguments
                                :given-nargs (vm-arg-count vm)
                                :min-nargs n :max-nargs n)))
                     (incf ip))
@@ -347,7 +306,7 @@
                             ((< arg-index more-start)
                              (cond ((= arg-index (1- more-start)))
                                    ((= arg-index (- more-start 2))
-                                    (error 'odd-keywords))
+                                    (error 'arg:odd-keywords))
                                    (t
                                     (error "BUG! This can't happen!"))))
                           (let ((key (stack (1- arg-index))))
@@ -367,7 +326,7 @@
                       (when (and (not (or (logbitp 7 key-count-info)
                                           allow-other-keys-p))
                                  unknown-keys)
-                        (error 'unrecognized-keyword-argument
+                        (error 'arg:unrecognized-keyword-argument
                                :unrecognized-keywords unknown-keys)))
                     (incf ip))
                    ((#.m:save-sp)
