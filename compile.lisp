@@ -583,9 +583,6 @@
 (defun constantp (symbol env)
   (typep (var-info symbol env) 'trucler:constant-variable-description))
 
-(defun specialp (symbol env)
-  (typep (var-info symbol env) 'trucler:special-variable-description))
-
 (defun globally-special-p (symbol env)
   (typep (var-info symbol env) 'trucler:global-special-variable-description))
 
@@ -1378,7 +1375,8 @@
           (dolist (var required)
             ;; We account for special declarations in outer environments/globally
             ;; by checking the original environment - not our new one - for info.
-            (cond ((or (member var specials) (specialp var env))
+            (cond ((or (member var specials)
+                       (globally-special-p var env))
                    (let ((info (var-info var new-env)))
                      (assemble-maybe-long context m:ref (frame-offset info))
                      (emit-special-bind context var))
@@ -1402,21 +1400,14 @@
             ;; Add everything to opt-key-indices.
             (dolist (var optvars)
               (push (cons var (frame-offset (var-info var new-env)))
-                    opt-key-indices))
-            ;; Re-mark anything that's special in the outer context as such,
-            ;; so that default initforms properly treat them as special.
-            (let ((specials
-                    (remove-if-not
-                     (lambda (sym) (specialp sym env))
-                     optvars)))
-              (when specials
-                (setq new-env (add-specials specials new-env))))))
+                    opt-key-indices))))
         (when rest
           (assemble-maybe-long context m:listify-rest-args max-count)
           (assemble-maybe-long context m:set (context-frame-end context))
           (setf (values new-env context)
                 (bind-vars (list rest) new-env context))
-          (cond ((or (member rest specials) (specialp rest env))
+          (cond ((or (member rest specials)
+                     (globally-special-p rest env))
                  (assemble-maybe-long
                   context m:ref (frame-offset (var-info rest new-env)))
                  (emit-special-bind context rest)
@@ -1438,11 +1429,7 @@
                   (bind-vars keyvars new-env context))
             (dolist (var keyvars)
               (let ((info (var-info var new-env)))
-                (push (cons var (frame-offset info)) opt-key-indices)))
-            (let ((specials (remove-if-not (lambda (sym) (specialp sym env))
-                                           keyvars)))
-              (when specials
-                (setq new-env (add-specials specials new-env))))))
+                (push (cons var (frame-offset info)) opt-key-indices)))))
         ;; Generate defaulting code for optional args, and special-bind them
         ;; if necessary.
         (unless (zerop optional-count)
@@ -1455,12 +1442,12 @@
             (destructuring-bind (optional-var defaulting-form supplied-var)
                 (first optionals)
               (let ((optional-special-p (or (member optional-var specials)
-                                            (specialp optional-var env)))
+                                            (globally-special-p optional-var env)))
                     (index (cdr (assoc optional-var opt-key-indices)))
                     (supplied-special-p
                       (and supplied-var
                            (or (member supplied-var specials)
-                               (specialp supplied-var env)))))
+                               (globally-special-p supplied-var env)))))
                 (setf (values new-env context)
                       (compile-optional/key-item optional-var defaulting-form
                                                  index
@@ -1501,11 +1488,11 @@
               (declare (ignore key-name))
               (let ((index (cdr (assoc key-var opt-key-indices)))
                     (key-special-p (or (member key-var specials)
-                                       (specialp key-var env)))
+                                       (globally-special-p key-var env)))
                     (supplied-special-p
                       (and supplied-var
                            (or (member supplied-var specials)
-                               (specialp supplied-var env)))))
+                               (globally-special-p supplied-var env)))))
                 (setf (values new-env context)
                       (compile-optional/key-item key-var defaulting-form index
                                                  supplied-var next-key-label
