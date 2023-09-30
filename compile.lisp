@@ -714,6 +714,7 @@
           (t
            (setf (closed-over-p info) t)
            (assemble context m:closure (closure-index info context))))
+    (maybe-emit-cell-ref info context)
     (when (eql (context-receiving context) 't)
       (assemble context m:pop))))
 
