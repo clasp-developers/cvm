@@ -1,7 +1,7 @@
 (defpackage #:cvm.test.sham
   (:use)
   (:export #:expand-in-current-env #:notnot)
-  (:export #:macroexpand-1 #:macroexpand)
+  (:export #:macroexpand-1 #:macroexpand #:eval)
   (:export #:multiple-value-bind #:setf #:incf #:decf
            #:prog1 #:when #:unless #:return #:prog))
 

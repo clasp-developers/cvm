@@ -428,35 +428,38 @@
     (%x))
   t)
 
-(5am:test macrolet.43
+(deftest macrolet.43
   (let ((*x-in-macrolet.43* nil))
     (declare (special *x-in-macrolet.43*))
     (let ((*f* #'(lambda () *x-in-macrolet.43*)))
       (declare (special *f*))
-      (5am:is-false (ceval `(macrolet ((%m (*x-in-macrolet.43*)
-                                         (declare (special *f*))
-                                         (funcall *f*)))
-                              (%m t)))))))
+      (s:eval '(macrolet ((%m (*x-in-macrolet.43*)
+                           (declare (special *f*))
+                           (funcall *f*)))
+                (%m t)))))
+  nil)
 
-(5am:test macrolet.44
+(deftest macrolet.44
   (let ((*x-in-macrolet.44* nil))
     (declare (special *x-in-macrolet.44*))
     (let ((*f* #'(lambda () *x-in-macrolet.44*)))
       (declare (special *f*))
-      (5am:is (eql t (ceval `(macrolet ((%m (*x-in-macrolet.44*)
-                                          (declare (special *f* *x-in-macrolet.44*))
-                                          (funcall *f*)))
-                               (%m t))))))))
+      (s:eval '(macrolet ((%m (*x-in-macrolet.44*)
+                            (declare (special *f* *x-in-macrolet.44*))
+                            (funcall *f*)))
+                 (%m t)))))
+  t)
 
-(5am:test macrolet.45
+(deftest macrolet.45
   (let ((*x-in-macrolet.45* nil))
     (declare (special *x-in-macrolet.45*))
     (let ((*f* #'(lambda () *x-in-macrolet.45*)))
       (declare (special *f*))
-      (5am:is (eql t (ceval `(macrolet ((%m ((*x-in-macrolet.45*))
-                                          (declare (special *f* *x-in-macrolet.45*))
-                                          (funcall *f*)))
-                               (%m (t)))))))))
+      (s:eval '(macrolet ((%m ((*x-in-macrolet.45*))
+                            (declare (special *f* *x-in-macrolet.45*))
+                            (funcall *f*)))
+                 (%m (t))))))
+  t)
 
 ;;; Macros are expanded in the appropriate environment
 

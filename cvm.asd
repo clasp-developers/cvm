@@ -28,7 +28,7 @@
     :components ((:file "packages")
                  (:file "suites" :depends-on ("packages"))
                  (:file "rt" :depends-on ("packages"))
-                 (:file "native-sham" :depends-on ("packages"))
+                 (:file "native-sham" :depends-on ("rt" "packages"))
                  (:module "ansi"
                   :depends-on ("suites" "rt" "packages")
                   ;; These can be loaded in any order.

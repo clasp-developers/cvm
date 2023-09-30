@@ -49,6 +49,9 @@
                  (setq ever-expanded t form expansion)
                  (return (values form ever-expanded))))))
 
+;;; used in e.g. MACROLET.43
+(setf (fdefinition 's:eval) #'ceval)
+
 ;;; Macro used in tests of environments in system macros
 ;;; This was inspired by a bug in ACL 8.0 beta where CONSTANTP
 ;;; was being called in some system macros without the proper
