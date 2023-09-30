@@ -67,6 +67,15 @@
     ;; progn to invalidate declarations
     `(let ((,temp ,result)) (progn ,@body) ,temp)))
 
+(defmacro s:return (&optional value) `(return-from nil ,value))
+
+(defmacro s:prog ((&rest bindings) &body body)
+  (multiple-value-bind (body decls) (alexandria:parse-body body)
+    `(block nil
+       (let (,@bindings)
+         ,@decls
+         (tagbody ,@body)))))
+
 ;;; SETF is also quite common.
 (defun default-symbol-setf-expansion (symbol)
   (let ((new (gensym "NEW")))

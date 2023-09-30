@@ -41,10 +41,11 @@ tagbody: ()
 
 ;;; define functions that can be just copied from the host
 (defun define-aliases (client environment)
-  (loop for op in '(list length vector consp cons car cdr null not
+  (loop for op in '(list list* length vector make-array make-string
+                    consp cons car cdr null not
                     ;; coerce only ok because no test does
                     ;; (coerce foo 'function)
-                    1+ 1- + = - values make-array coerce make-string
+                    1+ 1- + = - floor values functionp coerce
                     values-list eq eql equal equalp
                     error)
         for f = (fdefinition op)
@@ -59,6 +60,18 @@ tagbody: ()
         for f = (fdefinition op)
         do (setf (clostrum:fdefinition client environment op) f
                  (clostrum:fdefinition client environment cl) f)))
+
+(defun define-env-access (client environment)
+  ;; fdefinition is used implicitly by multiple-value-call.
+  (flet ((%fdefinition (name)
+           (clostrum:fdefinition client environment name))
+         (%symbol-function (name)
+           (check-type name symbol)
+           (clostrum:fdefinition client environment name)))
+    (setf (clostrum:fdefinition client environment 'fdefinition)
+          #'%fdefinition
+          (clostrum:fdefinition client environment 'symbol-function)
+          #'%symbol-function)))
 
 ;;; functions that can be copied except we ban the env-specific parts
 (defun define-stricter-aliases (client environment)
@@ -83,10 +96,10 @@ tagbody: ()
         do (setf (clostrum:macro-function client environment mac) f))
   (loop for mac in '(s:multiple-value-bind
                      s:setf s:incf s:decf
-                     s:when s:unless s:prog1)
+                     s:when s:unless s:prog1 s:prog s:return)
         for cl in    '(multiple-value-bind
                        setf   incf   decf
-                       when   unless   prog1)
+                       when   unless   prog1   prog   return)
         for f = (macro-function mac)
         do (setf (clostrum:macro-function client environment mac) f
                  (clostrum:macro-function client environment cl) f)))
@@ -95,6 +108,7 @@ tagbody: ()
   (define-specials client environment)
   (define-aliases client environment)
   (define-sham-aliases client environment)
+  (define-env-access client environment)
   (define-stricter-aliases client environment)
   (define-constants client environment)
   (define-macros client environment))

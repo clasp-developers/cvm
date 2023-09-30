@@ -3,7 +3,7 @@
   (:export #:expand-in-current-env #:notnot)
   (:export #:macroexpand-1 #:macroexpand)
   (:export #:multiple-value-bind #:setf #:incf #:decf
-           #:prog1 #:when #:unless))
+           #:prog1 #:when #:unless #:return #:prog))
 
 (defpackage #:cvm.test
   (:use #:cl)
