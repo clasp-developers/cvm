@@ -2,7 +2,8 @@
   (:use)
   (:export #:expand-in-current-env #:notnot)
   (:export #:macroexpand-1 #:macroexpand)
-  (:export #:multiple-value-bind #:setf #:incf #:decf))
+  (:export #:multiple-value-bind #:setf #:incf #:decf
+           #:prog1 #:when #:unless))
 
 (defpackage #:cvm.test
   (:use #:cl)

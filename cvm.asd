@@ -55,3 +55,15 @@
                                (:file "progn")
                                (:file "return-from")
                                (:file "tagbody")))))))
+
+(asdf:defsystem #:cvm/test/cross
+  :author ("Bike <aeshtaer@gmail.com>")
+  :maintainer "Bike <aeshtaer@gmail.com>"
+  :depends-on (:cvm/test :cvm-cross :clostrum)
+  :components
+  ((:module "test"
+    :components ((:module "cross"
+                  :components ((:file "packages")
+                               (:file "sham" :depends-on ("packages"))
+                               (:file "rt" :depends-on ("sham"
+                                                        "packages"))))))))

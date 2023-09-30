@@ -56,6 +56,17 @@
 (defmacro s:expand-in-current-env (macro-form &environment env)
   (s:macroexpand macro-form env))
 
+;;; used indirectly in ecclesia:parse-macro results
+(defmacro s:when (test &body forms)
+  `(if ,test (progn ,@forms) nil))
+(defmacro s:unless (test &body forms)
+  `(if ,test nil (progn ,@forms)))
+
+(defmacro s:prog1 (result &body body)
+  (let ((temp (gensym)))
+    ;; progn to invalidate declarations
+    `(let ((,temp ,result)) (progn ,@body) ,temp)))
+
 ;;; SETF is also quite common.
 (defun default-symbol-setf-expansion (symbol)
   (let ((new (gensym "NEW")))

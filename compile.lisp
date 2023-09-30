@@ -1689,8 +1689,14 @@
     ;; Now replace the cfunctions in the cmodule literal vector with
     ;; real bytecode functions.
     ;; Also replace the load-time-value infos with the evaluated forms.
-    (map-into literals (lambda (info) (load-literal-info client info env))
-              cmodule-literals))
+    (let ((genv
+            ;; Obviously anything we're linking is global.
+            (if (lexical-environment-p env)
+                (global-environment env)
+                env)))
+      (map-into literals
+                (lambda (info) (load-literal-info client info genv))
+                cmodule-literals)))
   (values))
 
 (defun link-function (cfunction env)
