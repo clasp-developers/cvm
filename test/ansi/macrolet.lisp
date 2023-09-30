@@ -8,16 +8,20 @@
 (5am:def-suite macrolet :in data-and-control-flow)
 (5am:in-suite macrolet)
 
+;;;; WARNING: Do not use backquote in any code that will be passed
+;;;; to CVM. It is read implementation-specifically, and these tests
+;;;; are designed to run in limited first-class environments.
+
 (deftest macrolet.1
   (let ((z (list 3 4)))
-    (macrolet ((%m (x) `(car ,x)))
+    (macrolet ((%m (x) (list 'car x)))
       (let ((y (list 1 2)))
         (values (%m y) (%m z)))))
   1 3)
 
 (deftest macrolet.2
   (let ((z (list 3 4)))
-    (macrolet ((%m (x) `(car ,x)))
+    (macrolet ((%m (x) (list 'car x)))
       (let ((y (list 1 2)))
         (values
          (s:setf (%m y) 6)
@@ -27,9 +31,9 @@
 
 ;;; Inner definitions shadow outer ones
 (deftest macrolet.3
-  (macrolet ((%m (w) `(cadr ,w)))
+  (macrolet ((%m (w) (list 'cadr w)))
     (let ((z (list 3 4)))
-      (macrolet ((%m (x) `(car ,x)))
+      (macrolet ((%m (x) (list 'car x)))
         (let ((y (list 1 2)))
           (values
            (%m y) (%m z)
@@ -42,6 +46,8 @@
 (deftest macrolet.4
   (let ((x nil))
     (macrolet ((%m (&whole w arg)
+                 (list 'progn (list 'setq 'x (list 'quote w)) arg)
+                 #+(or)
                  `(progn (setq x (quote ,w))
                          ,arg)))
       (values (%m 1) x)))
@@ -51,6 +57,8 @@
 (deftest macrolet.5
   (let ((x nil))
     (macrolet ((%m ((&whole w arg))
+                 (list 'progn (list 'setq (list 'quote w)) arg)
+                 #+(or)
                  `(progn (setq x (quote ,w))
                          ,arg)))
       (values (%m (1)) x)))
@@ -70,7 +78,9 @@
 (deftest macrolet.7
   (let ((x nil))
     (macrolet ((%m ((&key a b))
-                   `(setq x (quote ,a))))
+                 (list 'setq 'x (list 'quote a))
+                 #+(or)
+                 `(setq x (quote ,a))))
       (values (%m (:a foo)) x
               (%m (:b bar)) x)))
   foo foo nil nil)
@@ -79,6 +89,8 @@
 (deftest macrolet.8
   (let ((x nil))
     (macrolet ((%m ((&key (a 10) b))
+                 (list 'setq 'x (list 'quote a))
+                 #+(or)
                  `(setq x (quote ,a))))
       (values (%m (:a foo)) x
               (%m (:b bar)) x)))
@@ -99,6 +111,8 @@
 (deftest macrolet.10
   (let ((x nil))
     (macrolet ((%m (b &rest a)
+                 (list 'setq x (list 'quote a))
+                 #+(or)
                  `(setq x (quote ,a))))
       (values (%m a1 a2) x)))
   (a2) (a2))
@@ -107,6 +121,8 @@
 (deftest macrolet.11
   (let ((x nil))
     (macrolet ((%m ((b &rest a))
+                 (list 'setq 'x (list 'quote a))
+                 #+(or)
                  `(setq x (quote ,a))))
       (values (%m (a1 a2)) x)))
   (a2) (a2))
@@ -115,6 +131,8 @@
 (deftest macrolet.12
   (let ((x nil))
     (macrolet ((%m (&whole w b &rest a)
+                 (list 'setq 'x (list 'quote (list a w)))
+                 #+(or)
                  `(setq x (quote ,(list a w)))))
       (values (%m a1 a2) x)))
   ((a2) (%m a1 a2))
@@ -164,13 +182,17 @@
   (nil t))
 
 (deftest macrolet.19
-  (macrolet ((%m (x &optional y) `(quote (,x ,y))))
+  (macrolet ((%m (x &optional y)
+               (list 'quote (list x y))
+               #+(or) `(quote (,x ,y))))
     (values (%m 1) (%m 2 3)))
   (1 nil)
   (2 3))
 
 (deftest macrolet.20
-  (macrolet ((%m (x &optional (y 'a)) `(quote (,x ,y))))
+  (macrolet ((%m (x &optional (y 'a))
+               (list 'quote (list x y))
+               #+(or) `(quote (,x ,y))))
     (values (%m 1) (%m 2 3)))
   (1 a)
   (2 3))
@@ -179,13 +201,17 @@
 ;;; is required to be T (not just true) if the parameter is present.
 ;;; See section 3.4.4.1.2
 (deftest macrolet.21
-  (macrolet ((%m (x &optional (y 'a y-p)) `(quote (,x ,y ,y-p))))
+  (macrolet ((%m (x &optional (y 'a y-p))
+               (list 'quote (list x y y-p))
+               #+(or) `(quote (,x ,y ,y-p))))
     (values (%m 1) (%m 2 3)))
   (1 a nil)
   (2 3 t))
 
 (deftest macrolet.22
-  (macrolet ((%m (x &optional ((y z) '(2 3))) `(quote (,x ,y ,z))))
+  (macrolet ((%m (x &optional ((y z) '(2 3)))
+               (list 'quote (list x y z))
+               #+(or) `(quote (,x ,y ,z))))
     (values
      (%m a)
      (%m a (b c))))
@@ -194,7 +220,8 @@
 
 (deftest macrolet.22a
   (macrolet ((%m (x &optional ((y z) '(2 3) y-z-p))
-                 `(quote (,x ,y ,z ,y-z-p))))
+               (list 'quote (list x y z y-z-p))
+               #+(or)`(quote (,x ,y ,z ,y-z-p))))
     (values
      (%m a)
      (%m a (b c))))
@@ -202,7 +229,7 @@
   (a b c t))
 
 (deftest macrolet.23
-  (macrolet ((%m (&rest y) `(quote ,y)))
+  (macrolet ((%m (&rest y) (list 'quote y) #+(or) `(quote ,y)))
     (%m 1 2 3))
   (1 2 3))
 
@@ -210,12 +237,16 @@
 ;;; 'a destructuring pattern that matches the rest of the list.'
 
 (deftest macrolet.24
-  (macrolet ((%m (&rest (x y z)) `(quote (,x ,y ,z))))
+  (macrolet ((%m (&rest (x y z))
+               (list 'quote (list x y z))
+               #+(or) `(quote (,x ,y ,z))))
     (%m 1 2 3))
   (1 2 3))
 
 (deftest macrolet.25
-  (macrolet ((%m (&body (x y z)) `(quote (,x ,y ,z))))
+  (macrolet ((%m (&body (x y z))
+               (list 'quote (list x y z))
+               #+(or) `(quote (,x ,y ,z))))
     (%m 1 2 3))
   (1 2 3))
 
@@ -266,7 +297,9 @@
   (10 nil))
 
 (deftest macrolet.30
-  (macrolet ((%m ((&key a) &key (b a)) `(quote (,a ,b))))
+  (macrolet ((%m ((&key a) &key (b a))
+               (list 'quote (list a b))
+               #+(or) `(quote (,a ,b))))
     (values (%m ())
             (%m (:a 1))
             (%m () :b 2)
@@ -284,7 +317,8 @@
 
 (deftest macrolet.31
   (macrolet ((%m (&key ((:a (b c)) '(3 4) a-p))
-                 `(quote (,(notnot a-p) ,c ,b))))
+               (list 'quote (list (s:notnot a-p) c b))
+               #+(or) `(quote (,(s:notnot a-p) ,c ,b))))
     (values (%m :a (1 2))
             (%m :a (1 2) :a (10 11))
             (%m)))
@@ -345,7 +379,9 @@
 
 ;;; &whole is followed by a destructuring pattern (see 3.4.4.1.2)
 (deftest macrolet.36
-  (macrolet ((%m (&whole (m a b) c d) `(quote (,m ,a ,b ,c ,d))))
+  (macrolet ((%m (&whole (m a b) c d)
+               (list 'quote (list m a b c d))
+               #+(or) `(quote (,m ,a ,b ,c ,d))))
     (%m 1 2))
   (%m 1 2 1 2))
 
