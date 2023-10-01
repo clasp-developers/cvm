@@ -26,7 +26,7 @@
   #+sbcl (sb-ext:exit :code code))
 
 (defun test ()
-  (cvm.cross.vm:initialize-vm 20000)
+  (cvm.cross.vm:initialize-vm 20000 cvm.test.cross:*client*)
   (let* ((rte (make-instance 'clostrum-basic:run-time-environment))
          (ce (make-instance 'clostrum-basic:compilation-environment
                :parent rte)))

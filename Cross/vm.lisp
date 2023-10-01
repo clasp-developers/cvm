@@ -16,7 +16,8 @@
   (args 0 :type (and unsigned-byte fixnum))
   (arg-count 0 :type (and unsigned-byte fixnum))
   (pc 0 :type (and unsigned-byte fixnum))
-  (dynenv-stack nil :type list))
+  (dynenv-stack nil :type list)
+  (client (error "missing arg")))
 
 (defvar *vm*)
 (declaim (type vm *vm*))
@@ -74,11 +75,12 @@
         (setf (vm-pc vm) old-pc))
       (values-list (vm-values vm)))))
 
-(defun initialize-vm (stack-size)
+(defun initialize-vm (stack-size &optional (client m:*client*))
   (setf *vm*
         (make-vm :stack (make-array stack-size)
                  :frame-pointer 0
-                 :stack-top 0))
+                 :stack-top 0
+                 :client client))
   (values))
 
 (declaim (inline signed))
@@ -249,7 +251,7 @@
                    ((#.m:make-closure)
                     (spush (let ((template (constant (next-code))))
                              (m:make-bytecode-closure
-                              m:*client*
+                              (vm-client vm)
                               template
                               (coerce (gather
                                        (m:bytecode-function-environment-size template))
@@ -258,7 +260,7 @@
                    ((#.m:make-uninitialized-closure)
                     (spush (let ((template (constant (next-code))))
                              (m:make-bytecode-closure
-                              m:*client*
+                              (vm-client vm)
                               template
                               (make-array
                                (m:bytecode-function-environment-size template)))))
