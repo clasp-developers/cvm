@@ -4,7 +4,7 @@
                     (#:arg #:cvm.argparse))
   (:export #:initialize-vm)
   (:export #:*trace*)
-  (:export #:symbol-cell))
+  (:export #:make-variable-access-closures))
 
 (in-package #:cvm.cross.vm)
 
@@ -33,8 +33,18 @@
                          (:constructor make-entry-dynenv (tag)))
   (tag (error "missing arg")))
 (defstruct (sbind-dynenv (:include dynenv)
-                         (:constructor %make-sbind-dynenv (symbol cell)))
-  symbol cell)
+                         (:constructor %make-sbind-dynenv
+                             (global-cell cell)))
+  ;; global-cell is the symbol's global Clostrum value cell,
+  ;; whereas cell is local a local binding cell.
+  ;; We bind etc. using global cells as keys, rather than symbol
+  ;; names, so that the same symbol can have distinct local bindings
+  ;; in distinct global environments.
+  global-cell cell)
+(defstruct (progv-dynenv (:include dynenv)
+                         (:constructor %make-progv-dynenv (mapping)))
+  ;; Alist from global cells to local cells.
+  mapping)
 (defstruct (catch-dynenv (:include dynenv)
                          (:constructor make-catch-dynenv
                              (tag dest-tag dest)))
@@ -47,8 +57,17 @@
   (dest (error "missing arg")))
 
 ;;; For uniformity, we put a Clostrum-style cell into these structs.
-(defun make-sbind-dynenv (symbol value)
-  (%make-sbind-dynenv symbol (cons value *unbound*)))
+(defun make-sbind-dynenv (global-cell value)
+  (%make-sbind-dynenv global-cell (cons value *unbound*)))
+(defun make-progv-dynenv (global-cells values)
+  ;; Per CLHS:
+  ;; If we have too few values, the remaining symbols are unbound.
+  ;; If we have too many, the excess are ignored.
+  (loop for global-cell in global-cells
+        for value = (if (null values) *unbound* (pop values))
+        for cell = (cons value *unbound*)
+        collect (cons global-cell cell) into mapping
+        finally (return (%make-progv-dynenv mapping))))
 
 (defun bytecode-call (template closure-env args)
   (declare (optimize speed)
@@ -97,27 +116,40 @@
 (defun signed (x size)
   (logior x (- (mask-field (byte 1 (1- size)) x))))
 
-(defun %find-sbind-dynenv (symbol stack)
-  (dolist (de stack)
-    (when (eq symbol (sbind-dynenv-symbol de))
-      (return de))))
-
-(defun symbol-cell (symbol global-cell)
-  (let* ((de (%find-sbind-dynenv symbol (vm-dynenv-stack *vm*))))
-    (if de
-        (sbind-dynenv-cell de)
-        global-cell)))
+(defun symbol-cell (global-cell)
+  (loop for de in (vm-dynenv-stack *vm*)
+        do (typecase de
+             (sbind-dynenv
+              (when (eq global-cell (sbind-dynenv-global-cell de))
+                (return (sbind-dynenv-cell de))))
+             (progv-dynenv
+              (let ((pair (assoc global-cell
+                                 (progv-dynenv-mapping de))))
+                (when pair
+                  (return (cdr pair))))))
+        finally (return global-cell)))
 
 (defun %symbol-value (symbol global-cell)
-  (let* ((cell (symbol-cell symbol global-cell))
+  (let* ((cell (symbol-cell global-cell))
          (value (car cell)))
     (if (eq value (cdr cell))
         (error 'unbound-variable :name symbol)
         value)))
 
 (defun (setf %symbol-value) (new symbol global-cell)
-  (let ((cell (symbol-cell symbol global-cell)))
+  (declare (ignore symbol))
+  (let ((cell (symbol-cell global-cell)))
     (setf (car cell) new)))
+
+(defun %boundp (symbol global-cell)
+  (declare (ignore symbol))
+  (let ((cell (symbol-cell global-cell)))
+    (not (eq (car cell) (cdr cell)))))
+
+(defun %makunbound (symbol global-cell)
+  (let ((cell (symbol-cell global-cell)))
+    (setf (car cell) (cdr cell)))
+  symbol)
 
 ;;; Unwind to the VM frame represented by rtag at ip new-ip,
 ;;; set the de stack to the given de stack, and execute cleanups
@@ -474,7 +506,7 @@
                     (incf ip))
                    ((#.m:special-bind)
                     (let ((de (make-sbind-dynenv
-                               (car (constant (next-code))) (spop))))
+                               (cdr (constant (next-code))) (spop))))
                       (push de (vm-dynenv-stack vm)))
                     (incf ip))
                    ((#.m:symbol-value)
@@ -486,13 +518,20 @@
                       (setf (%symbol-value (car vcell) (cdr vcell))
                             (spop)))
                     (incf ip))
-                   #+(or)
                    ((#.m:progv)
-                    (let ((values (spop)))
-                      (progv (spop) values
-                        (incf ip)
-                        (vm bytecode closure constants frame-size))))
+                    (let* ((env (constant (next-code)))
+                           (values (spop)) (varnames (spop))
+                           (global-cells
+                             (loop with client = (vm-client vm)
+                                   for symbol in varnames
+                                   collect (clostrum-sys:variable-cell
+                                            client env symbol)))
+                           (de
+                             (make-progv-dynenv global-cells values)))
+                      (push de (vm-dynenv-stack vm)))
+                    (incf ip))
                    ((#.m:unbind)
+                    ;; NOTE: used for both special-bind and progv
                     (pop (vm-dynenv-stack vm))
                     (incf ip))
                    ((#.m:push-values)
@@ -565,3 +604,19 @@
                                         (fun m:bytecode-function))
   (lambda (&rest args)
     (bytecode-call fun #() args)))
+
+;;; Given a client and environment, return closures that implement,
+;;; respectively, CL:SYMBOL-VALUE, (SETF CL:SYMBOL-VALUE),
+;;; CL:BOUNDP, and CL:MAKUNBOUND.
+(defun make-variable-access-closures (client environment)
+  (labels ((cell (symbol)
+             (clostrum-sys:variable-cell client environment symbol))
+           (#1=#:symbol-value (symbol)
+             (%symbol-value symbol (cell symbol)))
+           ((setf #1#) (value symbol)
+             (setf (%symbol-value symbol (cell symbol)) value))
+           (#2=#:boundp (symbol)
+             (%boundp symbol (cell symbol)))
+           (#3=#:makunbound (symbol)
+             (%makunbound symbol (cell symbol))))
+    (values #'#1# #'(setf #1#) #'#2# #'#3#)))

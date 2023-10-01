@@ -408,11 +408,13 @@
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
                    ((#.m:progv)
+                    (incf ip) ; ignore environment
                     (let ((values (spop)))
                       (progv (spop) values
                         (incf ip)
                         (vm bytecode closure constants frame-size))))
                    ((#.m:unbind)
+                    ;; NOTE: used for both progv and special-bind
                     (incf ip)
                     (return))
                    ((#.m:push-values)

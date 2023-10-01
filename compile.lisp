@@ -1190,7 +1190,7 @@
   (destructuring-bind (symbols values . body) (rest form)
     (compile-form symbols env (new-context context :receiving 1))
     (compile-form values env (new-context context :receiving 1))
-    (assemble context m:progv)
+    (assemble-maybe-long context m:progv (env-index context))
     (compile-progn body env context)
     (emit-unbind context 1)))
 

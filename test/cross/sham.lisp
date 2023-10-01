@@ -69,7 +69,6 @@ tagbody: ()
                  (clostrum:fdefinition client environment cl) f)))
 
 (defun define-env-access (client environment)
-  ;; fdefinition is used implicitly by multiple-value-call.
   (flet ((%fdefinition (name)
            (clostrum:fdefinition client environment name))
          (%symbol-function (name)
@@ -78,7 +77,18 @@ tagbody: ()
     (setf (clostrum:fdefinition client environment 'fdefinition)
           #'%fdefinition
           (clostrum:fdefinition client environment 'symbol-function)
-          #'%symbol-function)))
+          #'%symbol-function))
+  (multiple-value-bind (symbol-value setf-symbol-value
+                        boundp makunbound)
+      (cvm.cross.vm:make-variable-access-closures client environment)
+    (setf (clostrum:fdefinition client environment 'symbol-value)
+          symbol-value
+          (clostrum:fdefinition client environment '(setf symbol-value))
+          setf-symbol-value
+          (clostrum:fdefinition client environment 'boundp)
+          boundp
+          (clostrum:fdefinition client environment 'makunbound)
+          makunbound)))
 
 ;;; functions that can be copied except we ban the env-specific parts
 (defun define-stricter-aliases (client environment)
