@@ -22,8 +22,9 @@ After the last instruction is executed, the FASL has been fully loaded. Any rema
 
 ## 0.13 (pending)
 
-* `fdesignator` changed to have an environment parameter for first-class environment purposes.
+* `fdesignator` and `progv` changed to have an environment parameter for first-class environment purposes.
 * `environment` fasl op to get the loader environment for `fdesignator`.
+* New instructions `protect` and `cleanup` for implementing `cl:unwind-protect`.
 
 ## 0.12
 
