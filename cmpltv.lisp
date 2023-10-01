@@ -161,7 +161,7 @@
 ;;; Look up the "cell" for a function binding - something that the VM's
 ;;; FDEFINITION instruction can get an actual function out of.
 ;;; The nature of this cell is implementation-dependent.
-;;; In a simple implementation, the "cell" can just be the function name,
+;;; In a one-environment implementation, the "cell" can just be the function name,
 ;;; and the FDEFINITION instruction just does CL:FDEFINITION.
 (defclass fcell-lookup (creator)
   ((%name :initarg :name :reader name :type creator)))
@@ -171,10 +171,16 @@
 ;;; as a lookup key for the binding, as well as for establishing new
 ;;; local bindings.
 ;;; The nature of this cell is implementation-dependent.
-;;; In a simple implementation, the "cell" can just be the symbol itself,
+;;; In a one-environment implementation, the "cell" can just be the symbol itself,
 ;;; and the SYMBOL-VALUE instruction just does CL:SYMBOL-VALUE, etc.
 (defclass vcell-lookup (creator)
   ((%name :initarg :name :reader name :type creator)))
+
+;;; Look up the global environment the FASL was loaded in.
+;;; In a one-environment implementation this can just return NIL,
+;;; as the VM won't need any references to other environments.
+(defclass environment-lookup (creator)
+  ())
 
 (defclass general-creator (vcreator)
   (;; Reference to a function designator to call to allocate the object,
@@ -273,6 +279,9 @@
 (defvar *fcell-coalesce*)
 ;;; And variable cells.
 (defvar *vcell-coalesce*)
+;;; Since there's only ever at most one environment cell, it's just
+;;; stored directly in this variable rather than a table.
+(defvar *environment-coalesce*)
 
 ;; Look up a value in the existing instructions.
 ;; On success returns the creator, otherwise NIL.
@@ -290,6 +299,8 @@
 (defun find-fcell (name) (values (gethash name *fcell-coalesce*)))
 (defun find-vcell (name) (values (gethash name *vcell-coalesce*)))
 
+(defun find-environment () *environment-coalesce*)
+
 ;;; List of instructions to be executed by the loader.
 ;;; In reverse.
 (defvar *instructions*)
@@ -306,7 +317,8 @@
          (*coalesce* (make-hash-table))
          (*oob-coalesce* (make-hash-table))
          (*fcell-coalesce* (make-hash-table :test #'equal))
-         (*vcell-coalesce* (make-hash-table)))
+         (*vcell-coalesce* (make-hash-table))
+         (*environment-coalesce* nil))
      ,@body))
 
 (defun find-constant (value)
@@ -337,6 +349,9 @@
 (defun add-vcell (key instruction)
   (setf (gethash key *vcell-coalesce*) instruction)
   (add-instruction instruction))
+
+(defun add-environment (instruction)
+  (setf *environment-coalesce* instruction))
 
 (defgeneric add-constant (value))
 
@@ -662,7 +677,8 @@
     (fcell 96 find nameind)
     (vcell 97 vind nameind)
     (find-class 98 sind cnind)
-    (init-object-array 99 ub64)        
+    (init-object-array 99 ub64)
+    (environment 100)
     (attribute 255 name nbytes . data)))
 
 ;;; STREAM is a ub8 stream.
@@ -1024,6 +1040,10 @@
   (write-index inst stream)
   (write-index (name inst) stream))
 
+(defmethod encode ((inst environment-lookup) stream)
+  (write-mnemonic 'environment stream)
+  (write-index inst stream))
+
 (defmethod encode ((inst general-creator) stream)
   (write-mnemonic 'funcall-create stream)
   (write-index inst stream)
@@ -1167,6 +1187,10 @@
 
 (defmethod ensure-module-literal ((info cmp:value-cell-info))
   (ensure-vcell (cmp:value-cell-info-name info)))
+
+(defmethod ensure-module-literal ((info cmp:env-info))
+  (or (find-environment)
+      (add-environment (make-instance 'environment-lookup))))
 
 (defun add-module (value)
   ;; Add the module first to prevent recursion.

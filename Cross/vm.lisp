@@ -509,6 +509,18 @@
                    ((#.m:push) (spush (first (vm-values vm))) (incf ip))
                    ((#.m:dup)
                     (let ((v (spop))) (spush v) (spush v)) (incf ip))
+                   ((#.m:fdesignator)
+                    (let ((desig (spop)))
+                      (spush
+                       (etypecase desig
+                         ;; have to advance the IP for the env
+                         ;; when we don't use it.
+                         (function (incf ip) desig)
+                         (symbol
+                          (clostrum:fdefinition
+                           (vm-client vm) (constant (next-code))
+                           desig)))))
+                    (incf ip))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const

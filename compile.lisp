@@ -15,6 +15,7 @@
   (:export #:fdefinition-info #:fdefinition-info-name)
   (:export #:value-cell-info #:value-cell-info-name)
   (:export #:constant-info #:constant-info-value)
+  (:export #:env-info)
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
            #:cfunction-closed #:cfunction-entry-point #:cfunction-name
@@ -79,6 +80,12 @@
 ;;; For example, the linker may want to make it a cell.
 (defstruct (value-cell-info (:constructor make-value-cell-info (name)))
   name)
+
+;;; This info represents the loader environment. It is used for a few
+;;; instructions that need to perform runtime name lookups.
+;;; Any constants vector has at most one of these, since everything is
+;;; after all being loaded into the same environment.
+(defstruct (env-info (:constructor make-env-info ())))
 
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
@@ -156,6 +163,11 @@
 ;;; We don't bother coalescing load-time-value forms so this is trivial.
 (defun ltv-index (ltv-info context)
   (vector-push-extend ltv-info (cmodule-literals (context-module context))))
+
+(defun env-index (context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (position-if (lambda (lit) (typep lit 'env-info)) literals)
+        (vector-push-extend (make-env-info) literals))))
 
 (defun closure-index (info context)
   (let ((closed (cfunction-closed (context-function context))))
@@ -1267,21 +1279,13 @@
     ((cons (eql lambda))
      (compile-lambda-expression form env context))
     ((cons (eql quote) (cons symbol null)) ; 'foo
-     (compile-form `(fdefinition ,form) env (new-context context :receiving 1)))
+     ;; This is like compile-function-lookup but we ignore any local
+     ;; environments. We also don't signal any unknown function
+     ;; warnings as this is a very runtime sort of lookup.
+     (emit-fdefinition context (fdefinition-index (second form) context)))
     (t
-     (let* ((fsym (gensym "FUNCTION-DESIGNATOR"))
-            ;; Try to avoid using macros (etypecase) for the sake of
-            ;; compatibility with a native client. For example, SBCL's
-            ;; COND cannot be macroexpanded in our environments.
-            ;; TODO: Newer VM version makes this a VM operation.
-            (form `(let ((,fsym ,form))
-                     (if (functionp ,fsym)
-                         ,fsym
-                         (if (symbolp ,fsym)
-                             (fdefinition ,fsym)
-                             (error 'type-error :datum ,fsym
-                                    :expected-type '(or symbol function)))))))
-       (compile-form form env (new-context context :receiving 1))))))
+     (compile-form form env (new-context context :receiving 1))
+     (assemble-maybe-long context m:fdesignator (env-index context)))))
 
 (defmethod compile-special ((op (eql 'multiple-value-call)) form env context)
   (let ((function-form (second form)) (forms (cddr form)))
@@ -1698,6 +1702,11 @@
 (defmethod load-literal-info (client (info value-cell-info) env)
   (declare (ignore client env))
   (value-cell-info-name info))
+;;; By default the VM just ignores the environment and uses the
+;;; native global environment.
+(defmethod load-literal-info (client (info env-info) env)
+  (declare (ignore client))
+  env)
 
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects.

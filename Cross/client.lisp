@@ -22,3 +22,7 @@
           (clostrum-sys:variable-cell client
                                       (clostrum:evaluation-environment client env)
                                       name))))
+
+(defmethod cmp:load-literal-info ((client client) (info cmp:env-info)
+                                  env)
+  (clostrum:evaluation-environment client env))

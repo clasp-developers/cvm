@@ -446,6 +446,16 @@
                    ((#.m:push) (spush (first (vm-values vm))) (incf ip))
                    ((#.m:dup)
                     (let ((v (spop))) (spush v) (spush v)) (incf ip))
+                   ((#.m:fdesignator)
+                    ;; we ignore the environment but still need to
+                    ;; advance the IP.
+                    (incf ip)
+                    (let ((fdesig (spop)))
+                      (spush
+                       (etypecase fdesig
+                         (function fdesig)
+                         (symbol (fdefinition fdesig)))))
+                    (incf ip))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const
