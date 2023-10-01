@@ -501,7 +501,7 @@
                         (t (mapcar #'spush (subseq (multiple-value-list (mv-call))
                                                    0 mvals)))))
                     (incf ip))
-                   ((#.m:fdefinition)
+                   ((#.m:fdefinition #.m:called-fdefinition)
                     (spush (car (constant (next-code)))) (incf ip))
                    ((#.m:nil) (spush nil) (incf ip))
                    ((#.m:eq) (spush (eq (spop) (spop))) (incf ip))

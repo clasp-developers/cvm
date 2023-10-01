@@ -128,4 +128,5 @@
     (push 56)
     (pop 57)
     (dup 58)
+    (called-fdefinition 60)
     (long 255)))
