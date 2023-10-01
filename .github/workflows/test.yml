@@ -58,9 +58,9 @@ jobs:
     - name: Run native client tests
       if: matrix.mode == 'native'
       run: |
-        sbcl --load "${{ github.workspace }}/cvm/test/script.lisp"
+        sbcl --non-interactive --load "${{ github.workspace }}/cvm/test/script.lisp"
 
     - name: Run cross client tests
       if: matrix.mode == 'cross'
       run: |
-        sbcl --load "${{ github.workspace }}/cvm/test/cross/script.lisp"
+        sbcl --non-interactive --load "${{ github.workspace }}/cvm/test/cross/script.lisp"
