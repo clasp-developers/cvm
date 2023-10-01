@@ -1,0 +1,66 @@
+name: Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.host }} / ${{ matrix.mode }}
+
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        host:
+        - sbcl # non-sbcl hosts would require more changes below
+        mode:
+        - native
+        - cross
+
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Install SBCL
+      if: matrix.host == 'sbcl'
+      run: |
+        sudo apt-get update
+        sudo apt install -y sbcl
+
+    - name: Install Quicklisp
+      run: |
+        curl -kLO https://beta.quicklisp.org/quicklisp.lisp
+        sbcl --non-interactive --load quicklisp.lisp --eval "(quicklisp-quickstart:install)" --eval "(ql-util:without-prompting (ql:add-to-init-file))"
+    
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        path: cvm
+
+# Clostrum is not in Quicklisp as of now, so get it from github.
+
+    - name: Checkout Clostrum
+      uses: actions/checkout@v4
+      with:
+        repository: s-expressionists/Clostrum
+        path: Clostrum
+
+    - name: Configure ASDF to find everything
+      run: |
+        mkdir -p $HOME/.config/common-lisp/source-registry.conf.d
+        echo "(:TREE #P\"${{ github.workspace }}/\")" > $HOME/.config/common-lisp/source-registry.conf.d/cvm.conf
+
+    - name: Run native client tests
+      if: matrix.mode == 'native'
+      run: |
+        sbcl --load "${{ github.workspace }}/cvm/test/script.lisp"
+
+    - name: Run cross client tests
+      if: matrix.mode == 'cross'
+      run: |
+        sbcl --load "${{ github.workspace }}/cvm/test/cross/script.lisp"
