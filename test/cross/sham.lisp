@@ -112,10 +112,10 @@ tagbody: ()
         for f = (macro-function mac)
         do (setf (clostrum:macro-function client environment mac) f))
   (loop for mac in '(s:multiple-value-bind
-                     s:setf s:incf s:decf
+                     s:setf s:incf s:decf s:push
                      s:when s:unless s:prog1 s:prog s:return)
         for cl in    '(multiple-value-bind
-                       setf   incf   decf
+                       setf   incf   decf   push
                        when   unless   prog1   prog   return)
         for f = (macro-function mac)
         do (setf (clostrum:macro-function client environment mac) f

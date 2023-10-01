@@ -1117,6 +1117,8 @@
                 (emit-unbind context 1))
                ((eql :catch)
                 (assemble context m:catch-close))
+               ((eql :protect) ; unwind protect
+                (assemble context m:cleanup))
                (trucler:lexical-variable-description
                 (maybe-emit-entry-close context entry))))
            ;; Exit.
@@ -1193,6 +1195,20 @@
     (assemble-maybe-long context m:progv (env-index context))
     (compile-progn body env context)
     (emit-unbind context 1)))
+
+(defmethod compile-special ((op (eql 'unwind-protect))
+                            form env context)
+  (destructuring-bind (protected . cleanup) (rest form)
+    ;; Build a cleanup thunk.
+    ;; This will often/usually be a closure, which is why we
+    ;; can't just give M:PROTECT a constant argument.
+    ;; PROGN is to signal proper errors with DECLARE.
+    (compile-lambda-expression `(lambda () (progn ,@cleanup))
+                               env context)
+    (assemble context m:protect)
+    (compile-form protected env
+                  (new-context context :dynenv '(:protect)))
+    (assemble context m:cleanup)))
 
 (defmethod compile-special ((op (eql 'quote)) form env context)
   (compile-literal (second form) env context))

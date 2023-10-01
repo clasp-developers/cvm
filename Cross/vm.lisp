@@ -55,6 +55,11 @@
   (dest-tag (error "missing arg"))
   ;; the new IP to jump to
   (dest (error "missing arg")))
+;;; unwind-protect
+(defstruct (protection-dynenv (:include dynenv)
+                              (:constructor make-protection-dynenv
+                                  (cleanup)))
+  (cleanup (error "missing arg") :type function))
 
 ;;; For uniformity, we put a Clostrum-style cell into these structs.
 (defun make-sbind-dynenv (global-cell value)
@@ -154,10 +159,31 @@
 ;;; Unwind to the VM frame represented by rtag at ip new-ip,
 ;;; set the de stack to the given de stack, and execute cleanups
 ;;; along the way.
-;;; ...except we use deep binding and don't implement UNWIND-PROTECT,
-;;; so there's nothing to clean up right now.
 (defun unwind-to (vm rtag new-ip new-de-stack)
-  (setf (vm-dynenv-stack vm) new-de-stack)
+  ;; Pop off dynenvs until we reach the destination.
+  ;; Note that we have to actually pop the de-stack rather than
+  ;; use a local variable or whatever, so that any cleanup thunks
+  ;; are executed in the correct dynamic environment.
+  ;; Also note that per CLHS 5.2 point 1, it is illegal for a cleanup
+  ;; to escape to a point between it and the ultimate destination -
+  ;; here, that would be some entry or catch between the de-stack and
+  ;; the new-de-stack. But we don't have to go through the extra
+  ;; effort of enforcing this by signaling an error, so we don't.
+  ;; This is like the failed X3J13 EXIT-EXTENT:MEDIUM.
+  ;; If we did want to signal an error, the obvious procedure would
+  ;; be to go through and mark any intervening exits invalid by
+  ;; setting some slot in them, and then checking that slot when
+  ;; initiating a nonlocal exit.
+  ;; (Simply changing the de-stack to new-de-stack would not work
+  ;;  because then e.g. all special bindings would be undone.)
+  (loop until (eq (vm-dynenv-stack vm) new-de-stack)
+        do (let ((de (pop (vm-dynenv-stack vm))))
+             (typecase de
+               (protection-dynenv
+                ;; Preserve values
+                (let ((values (vm-values vm)))
+                  (funcall (protection-dynenv-cleanup de))
+                  (setf (vm-values vm) values))))))
   (throw rtag new-ip))
 
 (define-condition out-of-extent-unwind (control-error)
@@ -582,6 +608,20 @@
                           (clostrum:fdefinition
                            (vm-client vm) (constant (next-code))
                            desig)))))
+                    (incf ip))
+                   ((#.m:protect)
+                    (let* ((cleanup-thunk (spop))
+                           (de (make-protection-dynenv cleanup-thunk)))
+                      (push de (vm-dynenv-stack vm)))
+                    (incf ip))
+                   ((#.m:cleanup)
+                    (let ((de (pop (vm-dynenv-stack vm)))
+                          ;; Preserve values,
+                          ;; in case the thunk messes with them.
+                          (values (vm-values vm)))
+                      (setf (vm-stack-top vm) sp)
+                      (funcall (protection-dynenv-cleanup de))
+                      (setf (vm-values vm) values))
                     (incf ip))
                    ((#.m:long)
                     (ecase (next-code)

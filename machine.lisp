@@ -130,4 +130,6 @@
     (dup 58)
     (fdesignator 59)
     (called-fdefinition 60)
+    (protect 61)
+    (cleanup 62)
     (long 255)))

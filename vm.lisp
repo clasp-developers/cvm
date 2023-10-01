@@ -464,6 +464,18 @@
                          (function fdesig)
                          (symbol (fdefinition fdesig)))))
                     (incf ip))
+                   ((#.m:protect)
+                    (let ((cleanup-thunk (spop)))
+                      (declare (type function cleanup-thunk))
+                      (incf ip)
+                      (unwind-protect
+                           (vm bytecode closure constants frame-size)
+                        (let ((values (vm-values vm)))
+                          (funcall cleanup-thunk)
+                          (setf (vm-values vm) values)))))
+                   ((#.m:cleanup)
+                    (incf ip)
+                    (return))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const

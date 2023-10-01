@@ -60,7 +60,8 @@
                                (:file "progn")
                                (:file "progv")
                                (:file "return-from")
-                               (:file "tagbody")))))))
+                               (:file "tagbody")
+                               (:file "unwind-protect")))))))
 
 (asdf:defsystem #:cvm/test/cross
   :author ("Bike <aeshtaer@gmail.com>")

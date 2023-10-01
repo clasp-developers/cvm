@@ -147,3 +147,13 @@
     `(let* (,@(mapcar #'list temps forms))
        (multiple-value-bind (,@news) (- ,read ,delta)
          ,write))))
+
+;;; Used in UNWIND-PROTECT tests as a side effect.
+(defmacro s:push (object place &environment env)
+  (multiple-value-bind (temps forms news write read)
+      (%get-setf-expansion place env)
+    (let ((osym (gensym "OBJECT")))
+      `(let* ((,osym ,object)
+              ,@(mapcar #'list temps forms)
+              (,(first news) (cons ,osym ,read)))
+         ,write))))
