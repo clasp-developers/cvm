@@ -1,6 +1,7 @@
 (defpackage #:cvm.compile-file
   (:use #:cl)
-  (:local-nicknames (#:cmp #:cvm.compile))
+  (:local-nicknames (#:cmp #:cvm.compile)
+                    (#:arg #:cvm.argparse))
   (:shadow #:compile-file #:macroexpand-1 #:macroexpand)
   (:export #:with-constants
            #:ensure-constant #:add-constant #:find-constant-index)
@@ -1263,13 +1264,13 @@
       (bytecode-compile-toplevel-progn body new-env))))
 
 (defun bytecode-compile-toplevel-macrolet (bindings body env)
-  (let ((macros nil))
+  (let ((macros nil)
+        (aenv (cmp:lexenv-for-macrolet env)))
     (dolist (binding bindings)
       (let* ((name (car binding)) (lambda-list (cadr binding))
              (body (cddr binding))
-             (eform (trivial-cltl2:parse-macro name lambda-list body env))
-             (aenv (cmp:lexenv-for-macrolet env))
-             (expander (cmp:compile eform aenv))
+             (expander (cmp:compute-macroexpander
+                        name lambda-list body aenv))
              (info (cmp:make-local-macro name expander)))
         (push (cons name info) macros)))
     (bytecode-compile-toplevel-locally

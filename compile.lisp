@@ -1,12 +1,14 @@
 (defpackage #:cvm.compile
   (:use #:cl)
-  (:local-nicknames (#:m #:cvm.machine))
+  (:local-nicknames (#:m #:cvm.machine)
+                    (#:arg #:cvm.argparse))
   (:shadow #:compile #:eval #:constantp)
   (:export #:compile-into #:compile #:eval)
   ;; Compiler guts - used in cmpltv
   (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
            #:make-lexical-environment #:make-local-macro #:make-symbol-macro
-           #:coerce-to-lexenv #:funs #:vars)
+           #:coerce-to-lexenv #:funs #:vars
+           #:compute-macroexpander)
   (:export #:var-info #:fun-info #:expand #:symbol-macro-expansion)
   (:export #:load-literal-info)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
@@ -492,12 +494,36 @@
 ;;; environments are necessarily ours (they include bytecode-specific
 ;;; information, etc.)
 ;;; But we do fall back to it when we hit the global environment.
+;;; And we define the methods, to be nice to macros, so maybe we
+;;; should use it internally after all.
+;;; TODO: Once trucler actually implements augmentation we should
+;;; maybe use that and not have our own environments at all.
+
+(defmethod trucler:describe-variable
+    (client (env lexical-environment) name)
+  (or (cdr (assoc name (vars env)))
+      (trucler:describe-variable client
+                                 (global-environment env) name)))
+
+(defmethod trucler:describe-function
+    (client (env lexical-environment) name)
+  (or (cdr (assoc name (funs env) :test #'equal))
+      (trucler:describe-variable client
+                                 (global-environment env) name)))
+
+(defmethod trucler:describe-block
+    (client (env lexical-environment) name)
+  (cdr (assoc name (blocks env))))
+
+(defmethod trucler:describe-tag
+    (client (env lexical-environment) name)
+  (cdr (assoc name (tags env))))
 
 (defun var-info (name env)
   (or (cdr (assoc name (vars env)))
       (trucler:describe-variable m:*client* (global-environment env) name)))
 (defun fun-info (name env)
-  (or (cdr (assoc name (funs env)))
+  (or (cdr (assoc name (funs env) :test #'equal))
       (trucler:describe-function m:*client* (global-environment env) name)))
 
 ;; never actually called
@@ -556,9 +582,6 @@
 
 (defun constantp (symbol env)
   (typep (var-info symbol env) 'trucler:constant-variable-description))
-
-(defun specialp (symbol env)
-  (typep (var-info symbol env) 'trucler:special-variable-description))
 
 (defun globally-special-p (symbol env)
   (typep (var-info symbol env) 'trucler:global-special-variable-description))
@@ -641,7 +664,10 @@
 
 ;;; As CL:COMPILE, but doesn't mess with function bindings.
 (defun compile (lambda-expression &optional env (m:*client* m:*client*))
-  (link-function (compile-into (make-cmodule) lambda-expression env) env))
+  (link-function (compile-into (make-cmodule) lambda-expression env)
+                 (if (lexical-environment-p env)
+                     (global-environment env)
+                     env)))
 
 ;;; As CL:EVAL.
 (defun eval (form &optional env (m:*client* m:*client*))
@@ -688,6 +714,7 @@
           (t
            (setf (closed-over-p info) t)
            (assemble context m:closure (closure-index info context))))
+    (maybe-emit-cell-ref info context)
     (when (eql (context-receiving context) 't)
       (assemble context m:pop))))
 
@@ -797,23 +824,20 @@
 
 ;;; Add VARS as specials in ENV.
 (defun add-specials (vars env)
-  (do* ((evars (vars env))
-        (ivars vars (rest ivars))
-        (new-vars
-         evars
-         (let* ((var (first ivars))
-                (desc (trucler:describe-variable m:*client* env var))
-                (specialp (typep desc 'trucler:special-variable-description)))
-           (if specialp
-               new-vars ; already present
-               (acons var (make-instance
-                              'trucler:local-special-variable-description
-                            :name var)
-                      new-vars)))))
-       ((endp ivars)
-        (if (eq new-vars evars) ; nothing added
-            env           
-            (make-lexical-environment env :vars new-vars)))))
+  (let* ((existing (vars env))
+         (new-vars existing))
+    (loop for var in vars
+          for desc = (trucler:describe-variable m:*client* env var)
+          for specialp
+            = (typep desc 'trucler:special-variable-description)
+          unless specialp ; already covered
+            do (push (cons var (make-instance
+                                   'trucler:local-special-variable-description
+                                 :name var))
+                     new-vars))
+    (if (eq new-vars existing) ; nothing added
+        env
+        (make-lexical-environment env :vars new-vars))))
 
 (defun extract-specials (declarations)
   (let ((specials '()))
@@ -897,10 +921,13 @@
 (defmethod compile-special ((operator (eql 'flet)) form env context)
   (destructuring-bind (definitions . body) (rest form)
     (loop for (name lambda-list . body) in definitions
-          do (compile-lambda-expression
-              `(lambda ,lambda-list
-                 (block ,(fun-name-block-name name) (locally ,@body)))
-              env context))
+          do (multiple-value-bind (body decls)
+                 (alexandria:parse-body body :documentation t)
+               (compile-lambda-expression
+                `(lambda ,lambda-list
+                   ,@decls
+                   (block ,(fun-name-block-name name) ,@body))
+                env context)))
     (emit-bind context (length definitions) (context-frame-end context))
     (multiple-value-call #'compile-locally body
       (bind-fvars (mapcar #'car definitions) env context))))
@@ -912,7 +939,13 @@
       (let* ((module (context-module context))
              (closures
                (loop for (name lambda-list . body) in definitions
-                     for fun = (compile-lambda lambda-list body new-env
+                     for bname = (fun-name-block-name name)
+                     for rbody
+                       = (multiple-value-bind (body decls)
+                             (alexandria:parse-body body
+                                                    :documentation t)
+                           `(,@decls (block ,bname ,@body)))
+                     for fun = (compile-lambda lambda-list rbody new-env
                                                module)
                      for literal-index = (cfunction-literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
@@ -1208,14 +1241,25 @@
                  collect pair)
    :tags nil :blocks nil))
 
+;;; Given the arguments to parse-macro, return a macroexpander,
+;;; i.e. an actual function. The environment must already be
+;;; stripped by lexenv-for-macrolet (so that this can be done once
+;;; for multiple definitions).
+;;; Also used in cmpltv.
+(defun compute-macroexpander (name lambda-list body env)
+  ;; see comment in parse-macro for explanation
+  ;; as to how we're using the host here
+  (cl:compile nil (arg:parse-macro name lambda-list body env
+                                   #'compile)))
+
 (defmethod compile-special ((op (eql 'macrolet)) form env context)
   (let* ((bindings (second form)) (body (cddr form))
          (macros
            (loop with env = (lexenv-for-macrolet env)
                  for (name lambda-list . body) in bindings
-                 for macro-lexpr
-                   = (trivial-cltl2:parse-macro name lambda-list body)
-                 for info = (make-local-macro name (compile macro-lexpr env))
+                 for macrof = (compute-macroexpander
+                               name lambda-list body env)
+                 for info = (make-local-macro name macrof)
                  collect (cons name info))))
     (compile-locally body (make-lexical-environment
                            env :funs (append macros (funs env)))
@@ -1236,9 +1280,17 @@
      (compile-form `(fdefinition ,form) env (new-context context :receiving 1)))
     (t
      (let* ((fsym (gensym "FUNCTION-DESIGNATOR"))
-            (form `(etypecase ,fsym
-                     (function ,fsym)
-                     (symbol (fdefinition ,fsym)))))
+            ;; Try to avoid using macros (etypecase) for the sake of
+            ;; compatibility with a native client. For example, SBCL's
+            ;; COND cannot be macroexpanded in our environments.
+            ;; TODO: Newer VM version makes this a VM operation.
+            (form `(let ((,fsym ,form))
+                     (if (functionp ,fsym)
+                         ,fsym
+                         (if (symbolp ,fsym)
+                             (fdefinition ,fsym)
+                             (error 'type-error :datum ,fsym
+                                    :expected-type '(or symbol function)))))))
        (compile-form form env (new-context context :receiving 1))))))
 
 (defmethod compile-special ((op (eql 'multiple-value-call)) form env context)
@@ -1289,7 +1341,7 @@
 ;;; corresponding suppliedp var for each optional/key.
 (defun compile-with-lambda-list (lambda-list body env context)
   (multiple-value-bind (body decls)
-      (alexandria:parse-body body)
+      (alexandria:parse-body body :documentation t)
     (multiple-value-bind (required optionals rest keys aok-p aux key-p)
         (alexandria:parse-ordinary-lambda-list lambda-list)
       (let* ((function (context-function context))
@@ -1299,7 +1351,9 @@
              (max-count (+ min-count optional-count))
              (key-count (length keys))
              (more-p (or rest key-p))
-             new-env (context context)
+             new-env ; will be the body environment
+             default-env ; environment for compiling default forms
+             (context context)
              (specials (extract-specials decls))
              (special-binding-count 0)
              ;; An alist from optional and key variables to their local indices.
@@ -1322,7 +1376,8 @@
           (dolist (var required)
             ;; We account for special declarations in outer environments/globally
             ;; by checking the original environment - not our new one - for info.
-            (cond ((or (member var specials) (specialp var env))
+            (cond ((or (member var specials)
+                       (globally-special-p var env))
                    (let ((info (var-info var new-env)))
                      (assemble-maybe-long context m:ref (frame-offset info))
                      (emit-special-bind context var))
@@ -1330,6 +1385,9 @@
                   (t
                    (maybe-emit-encage (var-info var new-env) context))))
           (setq new-env (add-specials (intersection specials required) new-env)))
+        ;; set the default env to have all the requireds bound,
+        ;; but don't put in the optionals (yet).
+        (setq default-env new-env)
         (unless (zerop optional-count)
           ;; Generate code to bind the provided optional args; unprovided args will
           ;; be initialized with the unbound marker.
@@ -1343,21 +1401,14 @@
             ;; Add everything to opt-key-indices.
             (dolist (var optvars)
               (push (cons var (frame-offset (var-info var new-env)))
-                    opt-key-indices))
-            ;; Re-mark anything that's special in the outer context as such,
-            ;; so that default initforms properly treat them as special.
-            (let ((specials
-                    (remove-if-not
-                     (lambda (sym) (specialp sym env))
-                     optvars)))
-              (when specials
-                (setq new-env (add-specials specials new-env))))))
+                    opt-key-indices))))
         (when rest
           (assemble-maybe-long context m:listify-rest-args max-count)
           (assemble-maybe-long context m:set (context-frame-end context))
           (setf (values new-env context)
                 (bind-vars (list rest) new-env context))
-          (cond ((or (member rest specials) (specialp rest env))
+          (cond ((or (member rest specials)
+                     (globally-special-p rest env))
                  (assemble-maybe-long
                   context m:ref (frame-offset (var-info rest new-env)))
                  (emit-special-bind context rest)
@@ -1379,11 +1430,7 @@
                   (bind-vars keyvars new-env context))
             (dolist (var keyvars)
               (let ((info (var-info var new-env)))
-                (push (cons var (frame-offset info)) opt-key-indices)))
-            (let ((specials (remove-if-not (lambda (sym) (specialp sym env))
-                                           keyvars)))
-              (when specials
-                (setq new-env (add-specials specials new-env))))))
+                (push (cons var (frame-offset info)) opt-key-indices)))))
         ;; Generate defaulting code for optional args, and special-bind them
         ;; if necessary.
         (unless (zerop optional-count)
@@ -1396,22 +1443,42 @@
             (destructuring-bind (optional-var defaulting-form supplied-var)
                 (first optionals)
               (let ((optional-special-p (or (member optional-var specials)
-                                            (specialp optional-var env)))
+                                            (globally-special-p optional-var env)))
                     (index (cdr (assoc optional-var opt-key-indices)))
                     (supplied-special-p
                       (and supplied-var
                            (or (member supplied-var specials)
-                               (specialp supplied-var env)))))
+                               (globally-special-p supplied-var env)))))
                 (setf (values new-env context)
                       (compile-optional/key-item optional-var defaulting-form
                                                  index
                                                  supplied-var next-optional-label
                                                  optional-special-p supplied-special-p
-                                                 context new-env))
+                                                 context new-env
+                                                 default-env))
+                ;; set the default env for later bindings.
+                (let* ((ovar (cons optional-var
+                                   (var-info optional-var new-env)))
+                       (svar (when supplied-var
+                               (cons supplied-var
+                                     (var-info supplied-var new-env))))
+                       (newvars
+                         (if svar (list svar ovar) (list ovar))))
+                  (setf default-env
+                        (make-lexical-environment
+                         default-env
+                         :vars (append newvars (vars default-env)))))
                 (when optional-special-p (incf special-binding-count))
                 (when supplied-special-p (incf special-binding-count))))))
         ;; Generate defaulting code for key args, and special-bind them if necessary.
         (when key-p
+          ;; Bind the rest parameter in the default env, if existent.
+          (when rest
+            (let ((rvar (cons rest (var-info rest new-env)))
+                  (old (vars default-env)))
+              (setf default-env
+                    (make-lexical-environment
+                     default-env :vars (cons rvar old)))))
           (do ((keys keys (rest keys))
                (key-label (make-label) next-key-label)
                (next-key-label (make-label) (make-label)))
@@ -1422,28 +1489,41 @@
               (declare (ignore key-name))
               (let ((index (cdr (assoc key-var opt-key-indices)))
                     (key-special-p (or (member key-var specials)
-                                       (specialp key-var env)))
+                                       (globally-special-p key-var env)))
                     (supplied-special-p
                       (and supplied-var
                            (or (member supplied-var specials)
-                               (specialp supplied-var env)))))
+                               (globally-special-p supplied-var env)))))
                 (setf (values new-env context)
                       (compile-optional/key-item key-var defaulting-form index
                                                  supplied-var next-key-label
                                                  key-special-p supplied-special-p
-                                                 context new-env))
+                                                 context new-env
+                                                 default-env))
+                ;; set the default env for later bindings.
+                (let* ((ovar (cons key-var
+                                   (var-info key-var new-env)))
+                       (svar (when supplied-var
+                               (cons supplied-var
+                                     (var-info supplied-var new-env))))
+                       (newvars
+                         (if svar (list svar ovar) (list ovar))))
+                  (setf default-env
+                        (make-lexical-environment
+                         default-env
+                         :vars (append newvars (vars default-env)))))
                 (when key-special-p (incf special-binding-count))
                 (when supplied-special-p (incf special-binding-count))))))
         ;; Generate aux and the body as a let*.
         ;; We repeat the special declarations so that let* will know the auxs
         ;; are special, and so that any free special declarations are processed.
-        (compile-let* aux `((special ,@specials)) body new-env context)
+        (compile-let* aux `((declare (special ,@specials))) body new-env context)
         (emit-unbind context special-binding-count)))))
 
 ;;; Compile an optional/key item and return the resulting environment
 ;;; and context.
 (defun compile-optional/key-item (var defaulting-form var-index supplied-var next-label
-                                  var-specialp supplied-specialp context env)
+                                  var-specialp supplied-specialp context env default-env)
   (flet ((default (suppliedp specialp var info)
            (cond (suppliedp
                   (cond (specialp
@@ -1452,7 +1532,12 @@
                         (t
                          (maybe-emit-encage info context))))
                  (t
-                  (compile-form defaulting-form env
+                  ;; We compile in default-env but also context.
+                  ;; The context already has space allocated for all
+                  ;; the later lexical parameters, which have already
+                  ;; been bound. Thus, we ensure that no bindings
+                  ;; in the default form clobber later parameters.
+                  (compile-form defaulting-form default-env
                                 (new-context context :receiving 1))
                   (cond (specialp
                          (emit-special-bind context var))
@@ -1651,10 +1736,13 @@
     ;; Now replace the cfunctions in the cmodule literal vector with
     ;; real bytecode functions.
     ;; Also replace the load-time-value infos with the evaluated forms.
-    (map-into literals (lambda (info) (load-literal-info client info env))
+    (map-into literals
+              (lambda (info) (load-literal-info client info env))
               cmodule-literals))
   (values))
 
+;;; Given a cfunction, link constants and return an actual function.
+;;; ENV must be a global environment.
 (defun link-function (cfunction env)
   (link-load (cfunction-cmodule cfunction) env)
   (cfunction-info cfunction))

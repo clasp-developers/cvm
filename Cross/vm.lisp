@@ -1,6 +1,7 @@
 (defpackage #:cvm.cross.vm
   (:use #:cl)
-  (:local-nicknames (#:m #:cvm.machine))
+  (:local-nicknames (#:m #:cvm.machine)
+                    (#:arg #:cvm.argparse))
   (:export #:initialize-vm)
   (:export #:*trace*)
   (:export #:symbol-cell))
@@ -106,13 +107,24 @@
   (let ((cell (symbol-cell symbol global-cell)))
     (setf (car cell) new)))
 
-(defvar *dynenv* nil)
+(define-condition out-of-extent-unwind (control-error)
+  ())
+
+(defun exit-to (vm entry-dynenv new-ip)
+  ;; Make sure the entry is still on the DE stack.
+  ;; If it is, reset the DE stack, and throw.
+  ;; Otherwise complain.
+  (let ((old-de-stack (member entry-dynenv (vm-dynenv-stack vm))))
+    (when (null old-de-stack)
+      (error 'out-of-extent-unwind))
+    (setf (vm-dynenv-stack vm) old-de-stack)
+    (throw (entry-dynenv-tag entry-dynenv) new-ip)))
 
 (defun instruction-trace (bytecode stack ip bp sp frame-size)
   (fresh-line *trace-output*)
   (let ((frame-end (+ bp frame-size))
         ;; skip package prefixes on inst names.
-        (*package* (find-package "CVM/MACHINE")))
+        (*package* (find-package "CVM.MACHINE")))
     (prin1 (list (m:disassemble-instruction bytecode ip)
                  bp
                  sp
@@ -184,6 +196,13 @@
            (error "Invalid bytecode: Reached end"))
          (when trace
            (instruction-trace bytecode stack ip bp sp frame-size))
+         ;; The catch is for NLX. Without NLX, a (go loop) at the
+         ;; bottom skips back up to the loop without setting IP.
+         ;; When something NLXs to this frame, we throw the new IP
+         ;; to the tag, set the IP, and then jump up to the loop.
+         ;; We use CATCH instead of BLOCK on the theory that BLOCK
+         ;; will have to allocate each loop, but well, I suspect
+         ;; CATCH will too generally.
          (setf ip
                (catch tag
                  (ecase (code)
@@ -272,20 +291,23 @@
                    ((#.m:check-arg-count-<=)
                     (let ((n (next-code)))
                       (unless (<= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need at most ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'arg:wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :max-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count->=)
                     (let ((n (next-code)))
                       (unless (>= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need at least ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'arg:wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :min-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count-=)
                     (let ((n (next-code)))
                       (unless (= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need exactly ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'arg:wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :min-nargs n :max-nargs n)))
                     (incf ip))
                    ((#.m:jump-if-supplied-8)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
@@ -343,7 +365,7 @@
                            (key-literal-start (next-code))
                            (key-literal-end (+ key-literal-start key-count))
                            (key-frame-start (+ bp (next-code)))
-                           (unknown-key-p nil)
+                           (unknown-keys nil)
                            (allow-other-keys-p nil))
                       ;; Initialize all key values to #<unbound-marker>
                       (loop for index from key-frame-start below (+ key-frame-start key-count)
@@ -353,30 +375,35 @@
                             ((< arg-index more-start)
                              (cond ((= arg-index (1- more-start)))
                                    ((= arg-index (- more-start 2))
-                                    (error "Passed odd number of &KEY args!"))
+                                    (error 'arg:odd-keywords))
                                    (t
                                     (error "BUG! This can't happen!"))))
                           (let ((key (stack (1- arg-index))))
-                            (if (eq key :allow-other-keys)
-                                (setf allow-other-keys-p (stack arg-index))
-                                (loop for key-index from key-literal-start
-                                        below key-literal-end
-                                      for offset of-type (unsigned-byte 16)
-                                      from key-frame-start
-                                      do (when (eq (constant key-index) key)
-                                           (setf (stack offset) (stack arg-index))
-                                           (return))
-                                      finally (setf unknown-key-p key))))))
+                            (when (eq key :allow-other-keys)
+                              (setf allow-other-keys-p (stack arg-index)))
+                            (loop for key-index from key-literal-start
+                                    below key-literal-end
+                                  for offset of-type (unsigned-byte 16)
+                                  from key-frame-start
+                                  do (when (eq (constant key-index) key)
+                                       (setf (stack offset) (stack arg-index))
+                                       (return))
+                                  finally (unless (or allow-other-keys-p
+                                                      (eq key :allow-other-keys))
+                                            (push key unknown-keys))))))
                       (when (and (not (or (logbitp 7 key-count-info)
                                           allow-other-keys-p))
-                                 unknown-key-p)
-                        (error "Unknown key arg ~a!" unknown-key-p)))
+                                 unknown-keys)
+                        (error 'arg:unrecognized-keyword-argument
+                               :unrecognized-keywords unknown-keys)))
                     (incf ip))
                    ((#.m:save-sp)
-                    (setf (stack (+ bp (next-code))) sp)
+                    (setf (stack (+ bp (next-code)))
+                          (list sp (vm-dynenv-stack vm)))
                     (incf ip))
                    ((#.m:restore-sp)
-                    (setf sp (stack (+ bp (next-code))))
+                    (setf (values sp (vm-dynenv-stack vm))
+                          (values-list (stack (+ bp (next-code)))))
                     (incf ip))
                    ((#.m:entry)
                     (let ((de (make-entry-dynenv tag)))
@@ -415,13 +442,13 @@
                     (return))
                    ((#.m:exit-8)
                     (incf ip (next-code-signed))
-                    (throw (entry-dynenv-tag (spop)) ip))
+                    (exit-to vm (spop) ip))
                    ((#.m:exit-16)
                     (incf ip (next-code-signed-16))
-                    (throw (entry-dynenv-tag (spop)) ip))
+                    (exit-to vm (spop) ip))
                    ((#.m:exit-24)
                     (incf ip (next-code-signed-24))
-                    (throw (entry-dynenv-tag (spop)) ip))
+                    (exit-to vm (spop) ip))
                    ((#.m:entry-close)
                     (pop (vm-dynenv-stack vm))
                     (incf ip))
@@ -495,7 +522,8 @@
                       (#.m:const
                        (spush (constant (+ (next-code) (ash (next-code) 8))))
                        (incf ip)))))
-                 (go loop)))))))
+                 (go loop)))
+         (go loop)))))
 
 (defmethod m:compute-instance-function ((client cvm.cross:client)
                                         (closure m:bytecode-closure))

@@ -1,6 +1,7 @@
 (defpackage #:cvm.vm
   (:use #:cl)
-  (:local-nicknames (#:m #:cvm.machine))
+  (:local-nicknames (#:m #:cvm.machine)
+                    (#:arg #:cvm.argparse))
   (:export #:initialize-vm)
   (:export #:*trace*))
 
@@ -221,20 +222,23 @@
                    ((#.m:check-arg-count-<=)
                     (let ((n (next-code)))
                       (unless (<= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need at most ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'arg:wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :max-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count->=)
                     (let ((n (next-code)))
                       (unless (>= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need at least ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'arg:wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :min-nargs n)))
                     (incf ip))
                    ((#.m:check-arg-count-=)
                     (let ((n (next-code)))
                       (unless (= (vm-arg-count vm) n)
-                        (error "Invalid number of arguments: Got ~d, need exactly ~d."
-                               (vm-arg-count vm) n)))
+                        (error 'arg:wrong-number-of-arguments
+                               :given-nargs (vm-arg-count vm)
+                               :min-nargs n :max-nargs n)))
                     (incf ip))
                    ((#.m:jump-if-supplied-8)
                     (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
@@ -292,7 +296,7 @@
                            (key-literal-start (next-code))
                            (key-literal-end (+ key-literal-start key-count))
                            (key-frame-start (+ bp (next-code)))
-                           (unknown-key-p nil)
+                           (unknown-keys nil)
                            (allow-other-keys-p nil))
                       ;; Initialize all key values to #<unbound-marker>
                       (loop for index from key-frame-start below (+ key-frame-start key-count)
@@ -302,24 +306,28 @@
                             ((< arg-index more-start)
                              (cond ((= arg-index (1- more-start)))
                                    ((= arg-index (- more-start 2))
-                                    (error "Passed odd number of &KEY args!"))
+                                    (error 'arg:odd-keywords))
                                    (t
                                     (error "BUG! This can't happen!"))))
                           (let ((key (stack (1- arg-index))))
-                            (if (eq key :allow-other-keys)
-                                (setf allow-other-keys-p (stack arg-index))
-                                (loop for key-index from key-literal-start
-                                        below key-literal-end
-                                      for offset of-type (unsigned-byte 16)
-                                      from key-frame-start
-                                      do (when (eq (constant key-index) key)
-                                           (setf (stack offset) (stack arg-index))
-                                           (return))
-                                      finally (setf unknown-key-p key))))))
+                            (when (eq key :allow-other-keys)
+                              (setf allow-other-keys-p (stack arg-index)))
+                            (loop for key-index from key-literal-start
+                                    below key-literal-end
+                                  for offset of-type (unsigned-byte 16)
+                                  from key-frame-start
+                                  do (when (eq (constant key-index) key)
+                                       (setf (stack offset) (stack arg-index))
+                                       (return))
+                                  finally (unless (or allow-other-keys-p
+                                                      ;; aok is always allowed
+                                                      (eq key :allow-other-keys))
+                                            (push key unknown-keys))))))
                       (when (and (not (or (logbitp 7 key-count-info)
                                           allow-other-keys-p))
-                                 unknown-key-p)
-                        (error "Unknown key arg ~a!" unknown-key-p)))
+                                 unknown-keys)
+                        (error 'arg:unrecognized-keyword-argument
+                               :unrecognized-keywords unknown-keys)))
                     (incf ip))
                    ((#.m:save-sp)
                     (setf (stack (+ bp (next-code))) sp)
