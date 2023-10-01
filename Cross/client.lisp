@@ -1,28 +1,18 @@
 (defpackage #:cvm.cross
   (:use #:cl)
-  (:local-nicknames (#:cmp #:cvm.compile))
+  (:local-nicknames (#:cmp #:cvm.compile)
+                    (#:m #:cvm.machine))
   (:export #:client))
 
 (in-package #:cvm.cross)
 
 (defclass client () ())
 
-(defmethod cmp:load-literal-info ((client client) (info cmp:fdefinition-info)
-                                  env)
-  ;; env is a compilation environment, but for this we need the
-  ;; evaluation environment that env is a child of.
-  (clostrum-sys:operator-cell client
-                              (clostrum:evaluation-environment client env)
-                              (cmp:fdefinition-info-name info)))
-
-(defmethod cmp:load-literal-info ((client client) (info cmp:value-cell-info)
-                                  env)
-  (let ((name (cmp:value-cell-info-name info)))
-    (cons name
-          (clostrum-sys:variable-cell client
-                                      (clostrum:evaluation-environment client env)
-                                      name))))
-
-(defmethod cmp:load-literal-info ((client client) (info cmp:env-info)
-                                  env)
+(defmethod cmp:run-time-environment ((client client) env)
   (clostrum:evaluation-environment client env))
+
+(defmethod m:link-function ((client client) env fname)
+  (clostrum-sys:operator-cell client env fname))
+
+(defmethod m:link-variable ((client client) env name)
+  (cons name (clostrum-sys:variable-cell client env name)))

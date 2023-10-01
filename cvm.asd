@@ -12,12 +12,19 @@
                (:file "arg-conditions")
                (:file "parse-macro" :depends-on ("arg-conditions"))
                (:file "structures" :depends-on ("machine"))
+               (:file "link" :depends-on ("machine"))
                (:file "disassemble" :depends-on ("structures" "machine"))
                (:file "compile" :depends-on ("parse-macro"
                                              "structures" "machine"))
                (:file "cmpltv" :depends-on ("compile"))
                (:file "vm" :depends-on ("arg-conditions" "disassemble"
                                         "structures" "machine"))))
+
+(asdf:defsystem #:cvm/load
+  :author ("Tarn W. Burton <twburton@gmail.com>"
+           "Bike <aeshtaer@gmail.com>")
+  :depends-on (:cvm)
+  :components ((:file "loadltv")))
 
 (asdf:defsystem #:cvm/test
   :author ("Bike <aeshtaer@gmail.com>")
