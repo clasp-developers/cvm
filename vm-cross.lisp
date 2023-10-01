@@ -1,12 +1,25 @@
-(defpackage #:cvm.cross.vm
+(defpackage #:cvm.vm-cross
   (:use #:cl)
   (:local-nicknames (#:m #:cvm.machine)
-                    (#:arg #:cvm.argparse))
+                    (#:arg #:cvm.argparse)
+                    (#:cmp #:cvm.compile))
+  (:export #:client)
   (:export #:initialize-vm)
   (:export #:*trace*)
   (:export #:make-variable-access-closures))
 
-(in-package #:cvm.cross.vm)
+(in-package #:cvm.vm-cross)
+
+(defclass client () ())
+
+(defmethod cmp:run-time-environment ((client client) env)
+  (clostrum:evaluation-environment client env))
+
+(defmethod m:link-function ((client client) env fname)
+  (clostrum-sys:operator-cell client env fname))
+
+(defmethod m:link-variable ((client client) env name)
+  (cons name (clostrum-sys:variable-cell client env name)))
 
 (defstruct vm
   (values nil :type list)
@@ -633,14 +646,14 @@
                  (go loop)))
          (go loop)))))
 
-(defmethod m:compute-instance-function ((client cvm.cross:client)
+(defmethod m:compute-instance-function ((client client)
                                         (closure m:bytecode-closure))
   (let ((template (m:bytecode-closure-template closure))
         (env (m:bytecode-closure-env closure)))
     (lambda (&rest args)
       (bytecode-call template env args))))
 
-(defmethod m:compute-instance-function ((client cvm.cross:client)
+(defmethod m:compute-instance-function ((client client)
                                         (fun m:bytecode-function))
   (lambda (&rest args)
     (bytecode-call fun #() args)))

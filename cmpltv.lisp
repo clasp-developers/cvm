@@ -1,7 +1,6 @@
 (defpackage #:cvm.compile-file
   (:use #:cl)
-  (:local-nicknames (#:cmp #:cvm.compile)
-                    (#:arg #:cvm.argparse))
+  (:local-nicknames (#:cmp #:cvm.compile))
   (:shadow #:compile-file #:macroexpand-1 #:macroexpand)
   (:export #:with-constants
            #:ensure-constant #:add-constant #:find-constant-index)

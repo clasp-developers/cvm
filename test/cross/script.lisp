@@ -2,7 +2,7 @@
 ;;; You can also use it yourself: just load this file. SBCL will quit
 ;;; with exit status based on whether everything passed.
 
-(ql:quickload '(:cvm/test/cross :clostrum-basic))
+(ql:quickload '(:cvm/test/cross :clostrum-basic :clostrum-trucler))
 
 (defpackage #:cvm.test.script
   (:use #:cl))
@@ -26,7 +26,7 @@
   #+sbcl (sb-ext:exit :code code))
 
 (defun test ()
-  (cvm.cross.vm:initialize-vm 20000 cvm.test.cross:*client*)
+  (cvm.vm-cross:initialize-vm 20000 cvm.test.cross:*client*)
   (let* ((rte (make-instance 'clostrum-basic:run-time-environment))
          (ce (make-instance 'clostrum-basic:compilation-environment
                :parent rte)))

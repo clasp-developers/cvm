@@ -80,7 +80,7 @@ tagbody: ()
           #'%symbol-function))
   (multiple-value-bind (symbol-value setf-symbol-value
                         boundp makunbound)
-      (cvm.cross.vm:make-variable-access-closures client environment)
+      (cvm.vm-cross:make-variable-access-closures client environment)
     (setf (clostrum:fdefinition client environment 'symbol-value)
           symbol-value
           (clostrum:fdefinition client environment '(setf symbol-value))
@@ -133,7 +133,7 @@ tagbody: ()
 
 ;;; On top of all that, we need to define a client so that we
 ;;; can define some methods to automatically bind keywords.
-(defclass client (cvm.cross:client) ())
+(defclass client (cvm.vm-cross:client) ())
 
 (defmethod clostrum-sys:variable-cell :around ((client client)
                                                environment symbol)

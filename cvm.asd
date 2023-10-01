@@ -1,35 +1,66 @@
+;;; Lots of systems here so here's a basic guide:
+
 (asdf:defsystem #:cvm
-  :description "Reference implementation of the CVM bytecode system."
+  :description "Basic components of the CVM bytecode system."
   :author ("Charles Zhang"
            "Christian Schafmeister <chris.schaf@verizon.net>"
            "Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
   :version "0.5.0"
-  :depends-on (:closer-mop ; machine
-               :alexandria :trucler :ecclesia ; compiler
-               :ieee-floats) ; compile-file
+  :depends-on (:closer-mop)
   :components ((:file "machine")
                (:file "arg-conditions")
-               (:file "parse-macro" :depends-on ("arg-conditions"))
                (:file "structures" :depends-on ("machine"))
                (:file "link" :depends-on ("machine"))
-               (:file "disassemble" :depends-on ("structures" "machine"))
-               (:file "compile" :depends-on ("parse-macro"
-                                             "structures" "machine"))
-               (:file "cmpltv" :depends-on ("compile"))
-               (:file "vm" :depends-on ("arg-conditions" "disassemble"
-                                        "structures" "machine"))))
+               (:file "disassemble" :depends-on ("structures" "machine"))))
 
-(asdf:defsystem #:cvm/load
+(asdf:defsystem #:cvm/compile
+  :description "Reference implementation compiler for CVM."
+  :author ("Charles Zhang"
+           "Bike <aeshtaer@gmail.com>")
+  :maintainer "Bike <aeshtaer@gmail.com>"
+  :depends-on (:cvm :alexandria :trucler :ecclesia)
+  :components
+  ((:module "compile"
+    :components ((:file "package")
+                 (:file "parse-macro" :depends-on ("package"))
+                 (:file "compile" :depends-on ("parse-macro"
+                                               "package"))))))
+
+(asdf:defsystem #:cvm/compile-file
+  :description "Reference implementation file compiler for CVM."
   :author ("Tarn W. Burton <twburton@gmail.com>"
            "Bike <aeshtaer@gmail.com>")
-  :depends-on (:cvm)
+  :depends-on (:cvm/compile :ieee-floats)
+  :components ((:file "cmpltv")))
+
+(asdf:defsystem #:cvm/load
+  :description "Reference implementation FASL loader for CVM."
+  :author ("Tarn W. Burton <twburton@gmail.com>"
+           "Bike <aeshtaer@gmail.com>")
+  :depends-on (:cvm :ieee-floats)
   :components ((:file "loadltv")))
+
+(asdf:defsystem #:cvm/vm-native
+  :description "CVM VM implementation using host environment."
+  :author ("Charles Zhang"
+           "Bike <aeshtaer@gmail.com>")
+  :maintainer "Bike <aeshtaer@gmail.com>"
+  :depends-on (:cvm)
+  :components ((:file "vm-native")))
+
+(asdf:defsystem #:cvm/vm-cross
+  :description "CVM VM implementation using Clostrum environment."
+  :author ("Charles Zhang"
+           "Bike <aeshtaer@gmail.com>")
+  :maintainer "Bike <aeshtaer@gmail.com>"
+  :depends-on (:cvm :clostrum)
+  :components ((:file "vm-cross")))
 
 (asdf:defsystem #:cvm/test
   :author ("Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm :fiveam)
+  :depends-on (:cvm/compile :fiveam)
   :components
   ((:module "test"
     :components ((:file "packages")
@@ -73,7 +104,7 @@
 (asdf:defsystem #:cvm/test/cross
   :author ("Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm/test :cvm-cross :clostrum)
+  :depends-on (:cvm/test :cvm/vm-cross :clostrum)
   :components
   ((:module "test"
     :components ((:module "cross"
