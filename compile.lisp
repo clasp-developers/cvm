@@ -971,22 +971,16 @@
 
 (defun compile-setq-1-special (var valf env context)
   (compile-form valf env (new-context context :receiving 1))
-  ;; If we need to return the new value, stick it into a new local
-  ;; variable, do the set, then return the lexical variable.
+  ;; If we need to return the new value, dup on the stack.
   ;; We can't just read from the special, since some other thread may
   ;; alter it.
   (let ((index (context-frame-end context)))
     (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:set index)
-      (assemble-maybe-long context m:ref index)
-      ;; called for effect, i.e. to keep frame size correct
-      (bind-vars (list var) env context))
+      (assemble context m:dup))
     (assemble-maybe-long context m:symbol-value-set
                          (value-cell-index var context))
-    (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:ref index)
-      (when (eql (context-receiving context) t)
-        (assemble context m:pop)))))
+    (when (eql (context-receiving context) t)
+      (assemble context m:pop))))
 
 (defmethod compile-setq-1 ((info trucler:special-variable-description)
                            var valf env context)
@@ -1006,9 +1000,7 @@
     (compile-form valf env (new-context context :receiving 1))
     ;; similar concerns to specials above.
     (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:set index)
-      (assemble-maybe-long context m:ref index)
-      (bind-vars (list var) env context))
+      (assemble context m:dup))
     (cond (localp
            (emit-lexical-set info context))
           ;; Don't emit a fixup if we already know we need a cell.
@@ -1016,10 +1008,8 @@
            (assemble-maybe-long context m:closure
                                 (closure-index info context))
            (assemble context m:cell-set)))
-    (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:ref index)
-      (when (eql (context-receiving context) t)
-        (assemble context m:pop)))))
+    (when (eql (context-receiving context) t)
+      (assemble context m:pop))))
 
 (defmethod compile-special ((op (eql 'setq)) form env context)
   (let ((pairs (rest form)))

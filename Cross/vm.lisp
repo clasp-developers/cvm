@@ -505,6 +505,8 @@
                    ((#.m:eq) (spush (eq (spop) (spop))) (incf ip))
                    ((#.m:pop) (setf (vm-values vm) (list (spop))) (incf ip))
                    ((#.m:push) (spush (first (vm-values vm))) (incf ip))
+                   ((#.m:dup)
+                    (let ((v (spop))) (spush v) (spush v)) (incf ip))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const
