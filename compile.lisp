@@ -92,9 +92,9 @@
 (defstruct context
   ;; either an integer, meaning that many values, or T, meaning all
   receiving
-  ;; A list of lexical variable infos and symbols. A symbol means a special
+  ;; A list of lexical variable infos and symbols. :special means a special
   ;; variable binding is in place, while a lexical variable info is the variable
-  ;; for a tagbody or block dynenv.
+  ;; for a tagbody or block dynenv. :catch means a catch.
   ;; Note that the symbol may not be the special variable in question, since
   ;; we don't really need that information.
   ;; Since this is only used for exits, it may not include specials bound by
@@ -986,13 +986,12 @@
   ;; If we need to return the new value, dup on the stack.
   ;; We can't just read from the special, since some other thread may
   ;; alter it.
-  (let ((index (context-frame-end context)))
-    (unless (eql (context-receiving context) 0)
-      (assemble context m:dup))
-    (assemble-maybe-long context m:symbol-value-set
-                         (value-cell-index var context))
-    (when (eql (context-receiving context) t)
-      (assemble context m:pop))))
+  (unless (eql (context-receiving context) 0)
+    (assemble context m:dup))
+  (assemble-maybe-long context m:symbol-value-set
+                       (value-cell-index var context))
+  (when (eql (context-receiving context) t)
+    (assemble context m:pop)))
 
 (defmethod compile-setq-1 ((info trucler:special-variable-description)
                            var valf env context)
@@ -1004,8 +1003,7 @@
 
 (defmethod compile-setq-1 ((info trucler:lexical-variable-description)
                            var valf env context)
-  (let ((localp (eq (lvar-cfunction info) (context-function context)))
-        (index (context-frame-end context)))
+  (let ((localp (eq (lvar-cfunction info) (context-function context))))
     (unless localp
       (setf (closed-over-p info) t))
     (setf (setp info) t)
@@ -1117,6 +1115,10 @@
                 ;; TODO: Doesn't matter now, but if we had an unbind-n
                 ;; instruction we could leverage that here.
                 (emit-unbind context 1))
+               ((eql :catch)
+                (assemble context m:catch-close))
+               ((eql :protect) ; unwind protect
+                (assemble context m:cleanup))
                (trucler:lexical-variable-description
                 (maybe-emit-entry-close context entry))))
            ;; Exit.
@@ -1176,7 +1178,7 @@
         (target (make-label)))
     (compile-form tag env (new-context context :receiving 1))
     (emit-catch context target)
-    (compile-progn body env context)
+    (compile-progn body env (new-context context :dynenv '(:catch)))
     (assemble context m:catch-close)
     (emit-label context target)))
 
@@ -1190,9 +1192,23 @@
   (destructuring-bind (symbols values . body) (rest form)
     (compile-form symbols env (new-context context :receiving 1))
     (compile-form values env (new-context context :receiving 1))
-    (assemble context m:progv)
+    (assemble-maybe-long context m:progv (env-index context))
     (compile-progn body env context)
     (emit-unbind context 1)))
+
+(defmethod compile-special ((op (eql 'unwind-protect))
+                            form env context)
+  (destructuring-bind (protected . cleanup) (rest form)
+    ;; Build a cleanup thunk.
+    ;; This will often/usually be a closure, which is why we
+    ;; can't just give M:PROTECT a constant argument.
+    ;; PROGN is to signal proper errors with DECLARE.
+    (compile-lambda-expression `(lambda () (progn ,@cleanup))
+                               env context)
+    (assemble context m:protect)
+    (compile-form protected env
+                  (new-context context :dynenv '(:protect)))
+    (assemble context m:cleanup)))
 
 (defmethod compile-special ((op (eql 'quote)) form env context)
   (compile-literal (second form) env context))

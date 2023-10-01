@@ -4,7 +4,7 @@
                     (#:arg #:cvm.argparse))
   (:export #:initialize-vm)
   (:export #:*trace*)
-  (:export #:symbol-cell))
+  (:export #:make-variable-access-closures))
 
 (in-package #:cvm.cross.vm)
 
@@ -33,12 +33,46 @@
                          (:constructor make-entry-dynenv (tag)))
   (tag (error "missing arg")))
 (defstruct (sbind-dynenv (:include dynenv)
-                         (:constructor %make-sbind-dynenv (symbol cell)))
-  symbol cell)
+                         (:constructor %make-sbind-dynenv
+                             (global-cell cell)))
+  ;; global-cell is the symbol's global Clostrum value cell,
+  ;; whereas cell is local a local binding cell.
+  ;; We bind etc. using global cells as keys, rather than symbol
+  ;; names, so that the same symbol can have distinct local bindings
+  ;; in distinct global environments.
+  global-cell cell)
+(defstruct (progv-dynenv (:include dynenv)
+                         (:constructor %make-progv-dynenv (mapping)))
+  ;; Alist from global cells to local cells.
+  mapping)
+(defstruct (catch-dynenv (:include dynenv)
+                         (:constructor make-catch-dynenv
+                             (tag dest-tag dest)))
+  ;; the actual catch tag
+  (tag (error "missing arg"))
+  ;; the catch tag established by bytecode-vm, representing the
+  ;; frame to return to
+  (dest-tag (error "missing arg"))
+  ;; the new IP to jump to
+  (dest (error "missing arg")))
+;;; unwind-protect
+(defstruct (protection-dynenv (:include dynenv)
+                              (:constructor make-protection-dynenv
+                                  (cleanup)))
+  (cleanup (error "missing arg") :type function))
 
 ;;; For uniformity, we put a Clostrum-style cell into these structs.
-(defun make-sbind-dynenv (symbol value)
-  (%make-sbind-dynenv symbol (cons value *unbound*)))
+(defun make-sbind-dynenv (global-cell value)
+  (%make-sbind-dynenv global-cell (cons value *unbound*)))
+(defun make-progv-dynenv (global-cells values)
+  ;; Per CLHS:
+  ;; If we have too few values, the remaining symbols are unbound.
+  ;; If we have too many, the excess are ignored.
+  (loop for global-cell in global-cells
+        for value = (if (null values) *unbound* (pop values))
+        for cell = (cons value *unbound*)
+        collect (cons global-cell cell) into mapping
+        finally (return (%make-progv-dynenv mapping))))
 
 (defun bytecode-call (template closure-env args)
   (declare (optimize speed)
@@ -87,27 +121,70 @@
 (defun signed (x size)
   (logior x (- (mask-field (byte 1 (1- size)) x))))
 
-(defun %find-sbind-dynenv (symbol stack)
-  (dolist (de stack)
-    (when (eq symbol (sbind-dynenv-symbol de))
-      (return de))))
-
-(defun symbol-cell (symbol global-cell)
-  (let* ((de (%find-sbind-dynenv symbol (vm-dynenv-stack *vm*))))
-    (if de
-        (sbind-dynenv-cell de)
-        global-cell)))
+(defun symbol-cell (global-cell)
+  (loop for de in (vm-dynenv-stack *vm*)
+        do (typecase de
+             (sbind-dynenv
+              (when (eq global-cell (sbind-dynenv-global-cell de))
+                (return (sbind-dynenv-cell de))))
+             (progv-dynenv
+              (let ((pair (assoc global-cell
+                                 (progv-dynenv-mapping de))))
+                (when pair
+                  (return (cdr pair))))))
+        finally (return global-cell)))
 
 (defun %symbol-value (symbol global-cell)
-  (let* ((cell (symbol-cell symbol global-cell))
+  (let* ((cell (symbol-cell global-cell))
          (value (car cell)))
     (if (eq value (cdr cell))
         (error 'unbound-variable :name symbol)
         value)))
 
 (defun (setf %symbol-value) (new symbol global-cell)
-  (let ((cell (symbol-cell symbol global-cell)))
+  (declare (ignore symbol))
+  (let ((cell (symbol-cell global-cell)))
     (setf (car cell) new)))
+
+(defun %boundp (symbol global-cell)
+  (declare (ignore symbol))
+  (let ((cell (symbol-cell global-cell)))
+    (not (eq (car cell) (cdr cell)))))
+
+(defun %makunbound (symbol global-cell)
+  (let ((cell (symbol-cell global-cell)))
+    (setf (car cell) (cdr cell)))
+  symbol)
+
+;;; Unwind to the VM frame represented by rtag at ip new-ip,
+;;; set the de stack to the given de stack, and execute cleanups
+;;; along the way.
+(defun unwind-to (vm rtag new-ip new-de-stack)
+  ;; Pop off dynenvs until we reach the destination.
+  ;; Note that we have to actually pop the de-stack rather than
+  ;; use a local variable or whatever, so that any cleanup thunks
+  ;; are executed in the correct dynamic environment.
+  ;; Also note that per CLHS 5.2 point 1, it is illegal for a cleanup
+  ;; to escape to a point between it and the ultimate destination -
+  ;; here, that would be some entry or catch between the de-stack and
+  ;; the new-de-stack. But we don't have to go through the extra
+  ;; effort of enforcing this by signaling an error, so we don't.
+  ;; This is like the failed X3J13 EXIT-EXTENT:MEDIUM.
+  ;; If we did want to signal an error, the obvious procedure would
+  ;; be to go through and mark any intervening exits invalid by
+  ;; setting some slot in them, and then checking that slot when
+  ;; initiating a nonlocal exit.
+  ;; (Simply changing the de-stack to new-de-stack would not work
+  ;;  because then e.g. all special bindings would be undone.)
+  (loop until (eq (vm-dynenv-stack vm) new-de-stack)
+        do (let ((de (pop (vm-dynenv-stack vm))))
+             (typecase de
+               (protection-dynenv
+                ;; Preserve values
+                (let ((values (vm-values vm)))
+                  (funcall (protection-dynenv-cleanup de))
+                  (setf (vm-values vm) values))))))
+  (throw rtag new-ip))
 
 (define-condition out-of-extent-unwind (control-error)
   ())
@@ -117,10 +194,26 @@
   ;; If it is, reset the DE stack, and throw.
   ;; Otherwise complain.
   (let ((old-de-stack (member entry-dynenv (vm-dynenv-stack vm))))
-    (when (null old-de-stack)
-      (error 'out-of-extent-unwind))
-    (setf (vm-dynenv-stack vm) old-de-stack)
-    (throw (entry-dynenv-tag entry-dynenv) new-ip)))
+    (if (null old-de-stack)
+        (error 'out-of-extent-unwind)
+        (unwind-to vm (entry-dynenv-tag entry-dynenv) new-ip
+                   old-de-stack))))
+
+(define-condition no-catch-tag (control-error)
+  ((%tag :initarg :tag :reader tag)))
+
+(defun throw-to (vm tag)
+  (let ((catch-de-stack
+          (member-if (lambda (de)
+                       (and (catch-dynenv-p de)
+                            (eq (catch-dynenv-tag de) tag)))
+                     (vm-dynenv-stack vm))))
+    (if (null catch-de-stack)
+        (error 'no-catch-tag :tag tag)
+        (let* ((de (first catch-de-stack))
+               (rtag (catch-dynenv-dest-tag de))
+               (dest (catch-dynenv-dest de)))
+          (unwind-to vm rtag dest (rest catch-de-stack))))))
 
 (defun instruction-trace (bytecode stack ip bp sp frame-size)
   (fresh-line *trace-output*)
@@ -407,36 +500,24 @@
                       (push de (vm-dynenv-stack vm))
                       (setf (stack (+ bp (next-code))) de)
                       (incf ip)))
-                   #+(or)
                    ((#.m:catch-8)
-                    (let ((target (+ ip (next-code-signed) 1))
-                          (tag (spop))
-                          (old-sp sp)
-                          (old-bp bp))
-                      (incf ip)
-                      (catch tag
-                        (vm bytecode closure constants frame-size))
-                      (setf ip target)
-                      (setf sp old-sp)
-                      (setf bp old-bp)))
-                   #+(or)
+                    (let* ((target (+ ip (next-code-signed)))
+                           (dest-tag tag)
+                           (tag (spop))
+                           (de (make-catch-dynenv tag dest-tag target)))
+                      (push de (vm-dynenv-stack vm))
+                      (incf ip 2)))
                    ((#.m:catch-16)
-                    (let ((target (+ ip (next-code-signed-16) 1))
-                          (tag (spop))
-                          (old-sp sp)
-                          (old-bp bp))
-                      (incf ip)
-                      (catch tag
-                        (vm bytecode closure constants frame-size))
-                      (setf ip target)
-                      (setf sp old-sp)
-                      (setf bp old-bp)))
-                   #+(or)
-                   ((#.m:throw) (throw (spop) (values)))
-                   #+(or)
+                    (let* ((target (+ ip (next-code-signed-16)))
+                           (dest-tag tag)
+                           (tag (spop))
+                           (de (make-catch-dynenv tag dest-tag target)))
+                      (push de (vm-dynenv-stack vm))
+                      (incf ip 3)))
+                   ((#.m:throw) (throw-to vm (spop)))
                    ((#.m:catch-close)
-                    (incf ip)
-                    (return))
+                    (pop (vm-dynenv-stack vm))
+                    (incf ip))
                    ((#.m:exit-8)
                     (incf ip (next-code-signed))
                     (exit-to vm (spop) ip))
@@ -451,7 +532,7 @@
                     (incf ip))
                    ((#.m:special-bind)
                     (let ((de (make-sbind-dynenv
-                               (car (constant (next-code))) (spop))))
+                               (cdr (constant (next-code))) (spop))))
                       (push de (vm-dynenv-stack vm)))
                     (incf ip))
                    ((#.m:symbol-value)
@@ -463,13 +544,20 @@
                       (setf (%symbol-value (car vcell) (cdr vcell))
                             (spop)))
                     (incf ip))
-                   #+(or)
                    ((#.m:progv)
-                    (let ((values (spop)))
-                      (progv (spop) values
-                        (incf ip)
-                        (vm bytecode closure constants frame-size))))
+                    (let* ((env (constant (next-code)))
+                           (values (spop)) (varnames (spop))
+                           (global-cells
+                             (loop with client = (vm-client vm)
+                                   for symbol in varnames
+                                   collect (clostrum-sys:variable-cell
+                                            client env symbol)))
+                           (de
+                             (make-progv-dynenv global-cells values)))
+                      (push de (vm-dynenv-stack vm)))
+                    (incf ip))
                    ((#.m:unbind)
+                    ;; NOTE: used for both special-bind and progv
                     (pop (vm-dynenv-stack vm))
                     (incf ip))
                    ((#.m:push-values)
@@ -521,6 +609,20 @@
                            (vm-client vm) (constant (next-code))
                            desig)))))
                     (incf ip))
+                   ((#.m:protect)
+                    (let* ((cleanup-thunk (spop))
+                           (de (make-protection-dynenv cleanup-thunk)))
+                      (push de (vm-dynenv-stack vm)))
+                    (incf ip))
+                   ((#.m:cleanup)
+                    (let ((de (pop (vm-dynenv-stack vm)))
+                          ;; Preserve values,
+                          ;; in case the thunk messes with them.
+                          (values (vm-values vm)))
+                      (setf (vm-stack-top vm) sp)
+                      (funcall (protection-dynenv-cleanup de))
+                      (setf (vm-values vm) values))
+                    (incf ip))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const
@@ -542,3 +644,19 @@
                                         (fun m:bytecode-function))
   (lambda (&rest args)
     (bytecode-call fun #() args)))
+
+;;; Given a client and environment, return closures that implement,
+;;; respectively, CL:SYMBOL-VALUE, (SETF CL:SYMBOL-VALUE),
+;;; CL:BOUNDP, and CL:MAKUNBOUND.
+(defun make-variable-access-closures (client environment)
+  (labels ((cell (symbol)
+             (clostrum-sys:variable-cell client environment symbol))
+           (#1=#:symbol-value (symbol)
+             (%symbol-value symbol (cell symbol)))
+           ((setf #1#) (value symbol)
+             (setf (%symbol-value symbol (cell symbol)) value))
+           (#2=#:boundp (symbol)
+             (%boundp symbol (cell symbol)))
+           (#3=#:makunbound (symbol)
+             (%makunbound symbol (cell symbol))))
+    (values #'#1# #'(setf #1#) #'#2# #'#3#)))

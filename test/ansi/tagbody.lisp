@@ -95,7 +95,6 @@
     result)
   10)
 
-#+(or) ; catch not working yet
 (deftest tagbody.11
   (let (result)
     (tagbody

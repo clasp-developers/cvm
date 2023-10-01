@@ -48,6 +48,7 @@
                                (:file "type")
                                ;; data-and-control-flow
                                (:file "block")
+                               (:file "catch")
                                (:file "flet")
                                (:file "if")
                                (:file "labels")
@@ -57,8 +58,10 @@
                                (:file "multiple-value-call")
                                (:file "multiple-value-prog1")
                                (:file "progn")
+                               (:file "progv")
                                (:file "return-from")
-                               (:file "tagbody")))))))
+                               (:file "tagbody")
+                               (:file "unwind-protect")))))))
 
 (asdf:defsystem #:cvm/test/cross
   :author ("Bike <aeshtaer@gmail.com>")

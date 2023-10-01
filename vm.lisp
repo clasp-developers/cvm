@@ -354,24 +354,30 @@
                        loop
                          (vm bytecode closure constants frame-size)))
                    ((#.m:catch-8)
-                    (let ((target (+ ip (next-code-signed) 1))
+                    (let ((target (+ ip (next-code-signed)))
                           (tag (spop))
                           (old-sp sp)
                           (old-bp bp))
-                      (incf ip)
+                      (incf ip 2)
                       (catch tag
-                        (vm bytecode closure constants frame-size))
+                        (vm bytecode closure constants frame-size)
+                        ;; since catch-close is used for local unwinds
+                        ;; as well as normal exit of the catch block,
+                        ;; don't jump to the end of the catch
+                        ;; unless something actually threw.
+                        (setf target ip))
                       (setf ip target)
                       (setf sp old-sp)
                       (setf bp old-bp)))
                    ((#.m:catch-16)
-                    (let ((target (+ ip (next-code-signed-16) 1))
+                    (let ((target (+ ip (next-code-signed-16)))
                           (tag (spop))
                           (old-sp sp)
                           (old-bp bp))
-                      (incf ip)
+                      (incf ip 3)
                       (catch tag
-                        (vm bytecode closure constants frame-size))
+                        (vm bytecode closure constants frame-size)
+                        (setf target ip))
                       (setf ip target)
                       (setf sp old-sp)
                       (setf bp old-bp)))
@@ -402,11 +408,13 @@
                     (setf (symbol-value (constant (next-code))) (spop))
                     (incf ip))
                    ((#.m:progv)
+                    (incf ip) ; ignore environment
                     (let ((values (spop)))
                       (progv (spop) values
                         (incf ip)
                         (vm bytecode closure constants frame-size))))
                    ((#.m:unbind)
+                    ;; NOTE: used for both progv and special-bind
                     (incf ip)
                     (return))
                    ((#.m:push-values)
@@ -456,6 +464,18 @@
                          (function fdesig)
                          (symbol (fdefinition fdesig)))))
                     (incf ip))
+                   ((#.m:protect)
+                    (let ((cleanup-thunk (spop)))
+                      (declare (type function cleanup-thunk))
+                      (incf ip)
+                      (unwind-protect
+                           (vm bytecode closure constants frame-size)
+                        (let ((values (vm-values vm)))
+                          (funcall cleanup-thunk)
+                          (setf (vm-values vm) values)))))
+                   ((#.m:cleanup)
+                    (incf ip)
+                    (return))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const
