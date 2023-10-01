@@ -15,6 +15,7 @@
   (:export #:fdefinition-info #:fdefinition-info-name)
   (:export #:value-cell-info #:value-cell-info-name)
   (:export #:constant-info #:constant-info-value)
+  (:export #:env-info)
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
            #:cfunction-closed #:cfunction-entry-point #:cfunction-name
@@ -79,6 +80,12 @@
 ;;; For example, the linker may want to make it a cell.
 (defstruct (value-cell-info (:constructor make-value-cell-info (name)))
   name)
+
+;;; This info represents the loader environment. It is used for a few
+;;; instructions that need to perform runtime name lookups.
+;;; Any constants vector has at most one of these, since everything is
+;;; after all being loaded into the same environment.
+(defstruct (env-info (:constructor make-env-info ())))
 
 ;;; The context contains information about what the current form needs
 ;;; to know about what it is enclosed by.
@@ -156,6 +163,11 @@
 ;;; We don't bother coalescing load-time-value forms so this is trivial.
 (defun ltv-index (ltv-info context)
   (vector-push-extend ltv-info (cmodule-literals (context-module context))))
+
+(defun env-index (context)
+  (let ((literals (cmodule-literals (context-module context))))
+    (or (position-if (lambda (lit) (typep lit 'env-info)) literals)
+        (vector-push-extend (make-env-info) literals))))
 
 (defun closure-index (info context)
   (let ((closed (cfunction-closed (context-function context))))
@@ -971,22 +983,16 @@
 
 (defun compile-setq-1-special (var valf env context)
   (compile-form valf env (new-context context :receiving 1))
-  ;; If we need to return the new value, stick it into a new local
-  ;; variable, do the set, then return the lexical variable.
+  ;; If we need to return the new value, dup on the stack.
   ;; We can't just read from the special, since some other thread may
   ;; alter it.
   (let ((index (context-frame-end context)))
     (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:set index)
-      (assemble-maybe-long context m:ref index)
-      ;; called for effect, i.e. to keep frame size correct
-      (bind-vars (list var) env context))
+      (assemble context m:dup))
     (assemble-maybe-long context m:symbol-value-set
                          (value-cell-index var context))
-    (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:ref index)
-      (when (eql (context-receiving context) t)
-        (assemble context m:pop)))))
+    (when (eql (context-receiving context) t)
+      (assemble context m:pop))))
 
 (defmethod compile-setq-1 ((info trucler:special-variable-description)
                            var valf env context)
@@ -1006,9 +1012,7 @@
     (compile-form valf env (new-context context :receiving 1))
     ;; similar concerns to specials above.
     (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:set index)
-      (assemble-maybe-long context m:ref index)
-      (bind-vars (list var) env context))
+      (assemble context m:dup))
     (cond (localp
            (emit-lexical-set info context))
           ;; Don't emit a fixup if we already know we need a cell.
@@ -1016,10 +1020,8 @@
            (assemble-maybe-long context m:closure
                                 (closure-index info context))
            (assemble context m:cell-set)))
-    (unless (eql (context-receiving context) 0)
-      (assemble-maybe-long context m:ref index)
-      (when (eql (context-receiving context) t)
-        (assemble context m:pop)))))
+    (when (eql (context-receiving context) t)
+      (assemble context m:pop))))
 
 (defmethod compile-special ((op (eql 'setq)) form env context)
   (let ((pairs (rest form)))
@@ -1277,21 +1279,13 @@
     ((cons (eql lambda))
      (compile-lambda-expression form env context))
     ((cons (eql quote) (cons symbol null)) ; 'foo
-     (compile-form `(fdefinition ,form) env (new-context context :receiving 1)))
+     ;; This is like compile-function-lookup but we ignore any local
+     ;; environments. We also don't signal any unknown function
+     ;; warnings as this is a very runtime sort of lookup.
+     (emit-fdefinition context (fdefinition-index (second form) context)))
     (t
-     (let* ((fsym (gensym "FUNCTION-DESIGNATOR"))
-            ;; Try to avoid using macros (etypecase) for the sake of
-            ;; compatibility with a native client. For example, SBCL's
-            ;; COND cannot be macroexpanded in our environments.
-            ;; TODO: Newer VM version makes this a VM operation.
-            (form `(let ((,fsym ,form))
-                     (if (functionp ,fsym)
-                         ,fsym
-                         (if (symbolp ,fsym)
-                             (fdefinition ,fsym)
-                             (error 'type-error :datum ,fsym
-                                    :expected-type '(or symbol function)))))))
-       (compile-form form env (new-context context :receiving 1))))))
+     (compile-form form env (new-context context :receiving 1))
+     (assemble-maybe-long context m:fdesignator (env-index context)))))
 
 (defmethod compile-special ((op (eql 'multiple-value-call)) form env context)
   (let ((function-form (second form)) (forms (cddr form)))
@@ -1300,12 +1294,11 @@
         (let ((first (first forms))
               (rest (rest forms)))
           (compile-form first env (new-context context :receiving t))
+          (assemble context m:push-values)
           (when rest
-            (assemble context m:push-values)
             (dolist (form rest)
               (compile-form form env (new-context context :receiving t))
-              (assemble context m:append-values))
-            (assemble context m:pop-values))
+              (assemble context m:append-values)))
           (emit-mv-call context))
         (emit-call context 0))))
 
@@ -1709,6 +1702,11 @@
 (defmethod load-literal-info (client (info value-cell-info) env)
   (declare (ignore client env))
   (value-cell-info-name info))
+;;; By default the VM just ignores the environment and uses the
+;;; native global environment.
+(defmethod load-literal-info (client (info env-info) env)
+  (declare (ignore client))
+  env)
 
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects.

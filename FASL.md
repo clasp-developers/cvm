@@ -20,6 +20,17 @@ After the last instruction is executed, the FASL has been fully loaded. Any rema
 
 # Changelog
 
+## 0.13 (pending)
+
+* `fdesignator` changed to have an environment parameter for first-class environment purposes.
+* `environment` fasl op to get the loader environment for `fdesignator`.
+
+## 0.12
+
+* `mv-call[-receive-{one,fixed}] semantics changed so that arguments are on stack rather than values vector.
+* `called-fdefinition` instruction added for microoptimized function lookup.
+* `fdesignator` instruction added so that `multiple-value-call` can be compiled without other environment support. (NOTE: The 0.12 version of this instruction does not have an environment parameter. The 0.12 version was only used in Clasp and is not represented in this repository's history.)
+
 ## 0.11
 
 * New `vcell` and `fcell` instructions can be used to look up variable and function cells at load time to speed execution, if the implementation supports it. They are also useful for first-class environments.

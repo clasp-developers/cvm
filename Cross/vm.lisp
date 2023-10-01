@@ -16,7 +16,8 @@
   (args 0 :type (and unsigned-byte fixnum))
   (arg-count 0 :type (and unsigned-byte fixnum))
   (pc 0 :type (and unsigned-byte fixnum))
-  (dynenv-stack nil :type list))
+  (dynenv-stack nil :type list)
+  (client (error "missing arg")))
 
 (defvar *vm*)
 (declaim (type vm *vm*))
@@ -74,11 +75,12 @@
         (setf (vm-pc vm) old-pc))
       (values-list (vm-values vm)))))
 
-(defun initialize-vm (stack-size)
+(defun initialize-vm (stack-size &optional (client m:*client*))
   (setf *vm*
         (make-vm :stack (make-array stack-size)
                  :frame-pointer 0
-                 :stack-top 0))
+                 :stack-top 0
+                 :client client))
   (values))
 
 (declaim (inline signed))
@@ -184,9 +186,16 @@
                (declare (type (unsigned-byte 16) n))
                (let ((result nil)) ; put the most recent value on the end
                  (loop repeat n do (push (spop) result))
-                 result)))
+                 result))
+             (call (nargs)
+               (let ((args (gather nargs)) (callee (spop)))
+                 (declare (type function callee))
+                 (setf (vm-stack-top vm) sp)
+                 (apply callee args)))
+             (mv-call () (call (spop))))
       (declare (inline stack (setf stack) spush spop
-                       code next-code constant closure))
+                       code next-code constant closure
+                       call mv-call))
       (prog ((end (length bytecode))
              (trace *trace*)
              ;; KLUDGE: we can't use bp directly since catch uses eq.
@@ -205,35 +214,23 @@
          ;; CATCH will too generally.
          (setf ip
                (catch tag
-                 (ecase (code)
+                 (case (code)
                    ((#.m:ref) (spush (stack (+ bp (next-code))))
                     (incf ip))
                    ((#.m:const) (spush (constant (next-code))) (incf ip))
                    ((#.m:closure) (spush (closure (next-code))) (incf ip))
                    ((#.m:call)
                     (setf (vm-values vm)
-                          (multiple-value-list
-                           (let ((args (gather (next-code)))
-                                 (callee (spop)))
-                             (declare (type function callee))
-                             (setf (vm-stack-top vm) sp)
-                             (apply callee args))))
+                          (multiple-value-list (call (next-code))))
                     (incf ip))
                    ((#.m:call-receive-one)
-                    (spush (let ((args (gather (next-code)))
-                                 (callee (spop)))
-                             (declare (type function callee))
-                             (setf (vm-stack-top vm) sp)
-                             (apply callee args)))
+                    (spush (call (next-code)))
                     (incf ip))
                    ((#.m:call-receive-fixed)
-                    (let ((args (gather (next-code))) (mvals (next-code))
-                          (fun (spop)))
-                      (declare (function fun))
-                      (setf (vm-stack-top vm) sp)
+                    (let ((nargs (next-code)) (mvals (next-code)))
                       (case mvals
-                        ((0) (apply fun args))
-                        (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
+                        ((0) (call nargs))
+                        (t (mapcar #'spush (subseq (multiple-value-list (call nargs))
                                                    0 mvals)))))
                     (incf ip))
                    ((#.m:bind)
@@ -254,7 +251,7 @@
                    ((#.m:make-closure)
                     (spush (let ((template (constant (next-code))))
                              (m:make-bytecode-closure
-                              m:*client*
+                              (vm-client vm)
                               template
                               (coerce (gather
                                        (m:bytecode-function-environment-size template))
@@ -263,7 +260,7 @@
                    ((#.m:make-uninitialized-closure)
                     (spush (let ((template (constant (next-code))))
                              (m:make-bytecode-closure
-                              m:*client*
+                              (vm-client vm)
                               template
                               (make-array
                                (m:bytecode-function-environment-size template)))))
@@ -491,37 +488,46 @@
                     (setf (vm-values vm) (gather (spop)))
                     (incf ip))
                    ((#.m:mv-call)
-                    (setf (vm-stack-top vm) sp
-                          (vm-values vm)
-                          (multiple-value-list
-                           (apply (the function (spop)) (vm-values vm))))
+                    (setf (vm-values vm)
+                          (multiple-value-list (mv-call)))
                     (incf ip))
                    ((#.m:mv-call-receive-one)
-                    (setf (vm-stack-top vm) sp)
-                    (spush (apply (the function (spop)) (vm-values vm)))
+                    (spush (mv-call))
                     (incf ip))
                    ((#.m:mv-call-receive-fixed)
-                    (let ((args (vm-values vm))
-                          (mvals (next-code))
-                          (fun (spop)))
-                      (declare (function fun))
-                      (setf (vm-stack-top vm) sp)
+                    (let ((mvals (next-code)))
                       (case mvals
-                        ((0) (apply fun args))
-                        (t (mapcar #'spush (subseq (multiple-value-list (apply fun args))
+                        ((0) (mv-call))
+                        (t (mapcar #'spush (subseq (multiple-value-list (mv-call))
                                                    0 mvals)))))
                     (incf ip))
-                   ((#.m:fdefinition)
+                   ((#.m:fdefinition #.m:called-fdefinition)
                     (spush (car (constant (next-code)))) (incf ip))
                    ((#.m:nil) (spush nil) (incf ip))
                    ((#.m:eq) (spush (eq (spop) (spop))) (incf ip))
                    ((#.m:pop) (setf (vm-values vm) (list (spop))) (incf ip))
                    ((#.m:push) (spush (first (vm-values vm))) (incf ip))
+                   ((#.m:dup)
+                    (let ((v (spop))) (spush v) (spush v)) (incf ip))
+                   ((#.m:fdesignator)
+                    (let ((desig (spop)))
+                      (spush
+                       (etypecase desig
+                         ;; have to advance the IP for the env
+                         ;; when we don't use it.
+                         (function (incf ip) desig)
+                         (symbol
+                          (clostrum:fdefinition
+                           (vm-client vm) (constant (next-code))
+                           desig)))))
+                    (incf ip))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const
                        (spush (constant (+ (next-code) (ash (next-code) 8))))
-                       (incf ip)))))
+                       (incf ip))))
+                   (otherwise
+                    (error "Unknown opcode #x~x" (code))))
                  (go loop)))
          (go loop)))))
 

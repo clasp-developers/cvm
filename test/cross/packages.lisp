@@ -1,4 +1,4 @@
 (defpackage #:cvm.test.cross
   (:use #:cl)
   (:local-nicknames (#:s #:cvm.test.sham))
-  (:export #:fill-environment #:run #:run!))
+  (:export #:*client* #:fill-environment #:run #:run!))
