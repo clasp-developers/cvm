@@ -35,6 +35,16 @@
 (defstruct (sbind-dynenv (:include dynenv)
                          (:constructor %make-sbind-dynenv (symbol cell)))
   symbol cell)
+(defstruct (catch-dynenv (:include dynenv)
+                         (:constructor make-catch-dynenv
+                             (tag dest-tag dest)))
+  ;; the actual catch tag
+  (tag (error "missing arg"))
+  ;; the catch tag established by bytecode-vm, representing the
+  ;; frame to return to
+  (dest-tag (error "missing arg"))
+  ;; the new IP to jump to
+  (dest (error "missing arg")))
 
 ;;; For uniformity, we put a Clostrum-style cell into these structs.
 (defun make-sbind-dynenv (symbol value)
@@ -109,6 +119,15 @@
   (let ((cell (symbol-cell symbol global-cell)))
     (setf (car cell) new)))
 
+;;; Unwind to the VM frame represented by rtag at ip new-ip,
+;;; set the de stack to the given de stack, and execute cleanups
+;;; along the way.
+;;; ...except we use deep binding and don't implement UNWIND-PROTECT,
+;;; so there's nothing to clean up right now.
+(defun unwind-to (vm rtag new-ip new-de-stack)
+  (setf (vm-dynenv-stack vm) new-de-stack)
+  (throw rtag new-ip))
+
 (define-condition out-of-extent-unwind (control-error)
   ())
 
@@ -117,10 +136,26 @@
   ;; If it is, reset the DE stack, and throw.
   ;; Otherwise complain.
   (let ((old-de-stack (member entry-dynenv (vm-dynenv-stack vm))))
-    (when (null old-de-stack)
-      (error 'out-of-extent-unwind))
-    (setf (vm-dynenv-stack vm) old-de-stack)
-    (throw (entry-dynenv-tag entry-dynenv) new-ip)))
+    (if (null old-de-stack)
+        (error 'out-of-extent-unwind)
+        (unwind-to vm (entry-dynenv-tag entry-dynenv) new-ip
+                   old-de-stack))))
+
+(define-condition no-catch-tag (control-error)
+  ((%tag :initarg :tag :reader tag)))
+
+(defun throw-to (vm tag)
+  (let ((catch-de-stack
+          (member-if (lambda (de)
+                       (and (catch-dynenv-p de)
+                            (eq (catch-dynenv-tag de) tag)))
+                     (vm-dynenv-stack vm))))
+    (if (null catch-de-stack)
+        (error 'no-catch-tag :tag tag)
+        (let* ((de (first catch-de-stack))
+               (rtag (catch-dynenv-dest-tag de))
+               (dest (catch-dynenv-dest de)))
+          (unwind-to vm rtag dest (rest catch-de-stack))))))
 
 (defun instruction-trace (bytecode stack ip bp sp frame-size)
   (fresh-line *trace-output*)
@@ -407,36 +442,24 @@
                       (push de (vm-dynenv-stack vm))
                       (setf (stack (+ bp (next-code))) de)
                       (incf ip)))
-                   #+(or)
                    ((#.m:catch-8)
-                    (let ((target (+ ip (next-code-signed) 1))
-                          (tag (spop))
-                          (old-sp sp)
-                          (old-bp bp))
-                      (incf ip)
-                      (catch tag
-                        (vm bytecode closure constants frame-size))
-                      (setf ip target)
-                      (setf sp old-sp)
-                      (setf bp old-bp)))
-                   #+(or)
+                    (let* ((target (+ ip (next-code-signed)))
+                           (dest-tag tag)
+                           (tag (spop))
+                           (de (make-catch-dynenv tag dest-tag target)))
+                      (push de (vm-dynenv-stack vm))
+                      (incf ip 2)))
                    ((#.m:catch-16)
-                    (let ((target (+ ip (next-code-signed-16) 1))
-                          (tag (spop))
-                          (old-sp sp)
-                          (old-bp bp))
-                      (incf ip)
-                      (catch tag
-                        (vm bytecode closure constants frame-size))
-                      (setf ip target)
-                      (setf sp old-sp)
-                      (setf bp old-bp)))
-                   #+(or)
-                   ((#.m:throw) (throw (spop) (values)))
-                   #+(or)
+                    (let* ((target (+ ip (next-code-signed-16)))
+                           (dest-tag tag)
+                           (tag (spop))
+                           (de (make-catch-dynenv tag dest-tag target)))
+                      (push de (vm-dynenv-stack vm))
+                      (incf ip 3)))
+                   ((#.m:throw) (throw-to vm (spop)))
                    ((#.m:catch-close)
-                    (incf ip)
-                    (return))
+                    (pop (vm-dynenv-stack vm))
+                    (incf ip))
                    ((#.m:exit-8)
                     (incf ip (next-code-signed))
                     (exit-to vm (spop) ip))

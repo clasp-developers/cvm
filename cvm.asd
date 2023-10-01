@@ -48,6 +48,7 @@
                                (:file "type")
                                ;; data-and-control-flow
                                (:file "block")
+                               (:file "catch")
                                (:file "flet")
                                (:file "if")
                                (:file "labels")
