@@ -212,7 +212,7 @@
          ;; CATCH will too generally.
          (setf ip
                (catch tag
-                 (ecase (code)
+                 (case (code)
                    ((#.m:ref) (spush (stack (+ bp (next-code))))
                     (incf ip))
                    ((#.m:const) (spush (constant (next-code))) (incf ip))
@@ -509,7 +509,9 @@
                     (ecase (next-code)
                       (#.m:const
                        (spush (constant (+ (next-code) (ash (next-code) 8))))
-                       (incf ip)))))
+                       (incf ip))))
+                   (otherwise
+                    (error "Unknown opcode #x~x" (code))))
                  (go loop)))
          (go loop)))))
 

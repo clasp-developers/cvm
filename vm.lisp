@@ -151,7 +151,7 @@
                                   ;; We take the max for partial frames.
                                   (subseq stack frame-end (max sp frame-end)))
                             *trace-output*))
-              do (ecase (code)
+              do (case (code)
                    ((#.m:ref) (spush (stack (+ bp (next-code)))) (incf ip))
                    ((#.m:const) (spush (constant (next-code))) (incf ip))
                    ((#.m:closure) (spush (closure (next-code))) (incf ip))
@@ -448,7 +448,9 @@
                     (ecase (next-code)
                       (#.m:const
                        (spush (constant (+ (next-code) (ash (next-code) 8))))
-                       (incf ip))))))))))
+                       (incf ip))))
+                   (otherwise
+                    (error "Unknown opcode #x~x" (code)))))))))
 
 (defmethod m:compute-instance-function ((client trucler-native:client)
                                         (closure m:bytecode-closure))
