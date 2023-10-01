@@ -1300,12 +1300,11 @@
         (let ((first (first forms))
               (rest (rest forms)))
           (compile-form first env (new-context context :receiving t))
+          (assemble context m:push-values)
           (when rest
-            (assemble context m:push-values)
             (dolist (form rest)
               (compile-form form env (new-context context :receiving t))
-              (assemble context m:append-values))
-            (assemble context m:pop-values))
+              (assemble context m:append-values)))
           (emit-mv-call context))
         (emit-call context 0))))
 
