@@ -96,6 +96,7 @@
                   :depends-on ("suites" "rt" "packages")
                   :components ((:file "similarity")
                                (:file "externalize")))
+                 (:file "cleanliness" :depends-on ("suites" "rt" "packages"))
                  (:module "ansi"
                   :depends-on ("suites" "rt" "packages")
                   ;; These can be loaded in any order.

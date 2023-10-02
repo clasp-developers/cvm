@@ -7,11 +7,9 @@ Plus, the local macro definitions have macro lambda lists, which can be quite co
 Traditionally, this all is accomplished with a function called PARSE-MACRO. PARSE-MACRO takes as input the macro definition (lambda-list, body, etc.). It returns a lambda expression. The compiler then evaluates this lambda expression in its environment to get the function.
 This does not work for us. The reason lies in first class global environments. We want to support compilation in _any_ environment. If the environment contains MACROLET, compilation in it should work even if standard functions, macros, or even special operators are not available in that environment, or have different names, etc. Therefore, with the usual PARSE-MACRO approach, the form returned by PARSE-MACRO cannot contain any operators not intrinsic to evaluation, which means all you get is lambda forms - obviously not enough.
 Instead, what we do is use a _host_ function as our macroexpander. The compiler calls PARSE-MACRO and gets back a lambda expression. This lambda expression is then evaluated in a null lexical environment _in the host_ (e.g., by CL:COMPILE or CL:EVAL, rather than anything necessarily CVM related). The resulting function parses the macro arguments _with host code_, and therefore it doesn't matter what environment the compiler is working with.
-Of course, the actual macro body, as well as any default forms in the lambda list, must still be compiled by our compiler in the appropriate environment, rather than by the host. To accomplish this, PARSE-MACRO receives a callback, called COMPILER below. This is a function of two arguments, a lambda expression and a compiler environment. The function must compile the lambda in the environment and return a callable function.
+Of course, the actual macro body, as well as any default forms in the lambda list, must still be compiled by our compiler in the appropriate environment, rather than by the host. To accomplish this, PARSE-MACRO receives a callback, called COMPILER below. This is a function of two arguments and one keyword: a lambda expression, a compiler environment, and a :BLOCK-NAME. The function must compile the lambda in the environment and return a callable function. If :BLOCK-NAME is provided the body will have a block of that name wrapped around it.
 And here's the really funky part: PARSE-MACRO then includes this function as a literal object in the expression it returns. So the expression will have code looking something like `(funcall #<BYTECODE-FUNCTION ...> a b c)`. This lets the host function call our bytecode-compiled function even though they were compiled by completely different means in completely different kinds of environments. Literal functions are quite unusual in code, but since the macroexpander only needs to go through CL:COMPILE or CL:EVAL, and not CL:COMPILE-FILE (as macroexpanders are not dumped), this works out.
 End result: a callable host function that does lambda list processing independently of bytecode anything, but still calls into the bytecode when semantics demand it.
-
-FIXME: Currently PARSE-MACRO still expects CL:BLOCK to be defined standardly.
 |#
 
 ;;; returns four values:
@@ -202,15 +200,10 @@ FIXME: Currently PARSE-MACRO still expects CL:BLOCK to be defined standardly.
       (process-lambda-list
        (ecclesia:parse-macro-lambda-list lambda-list)
        compiler environment 'form 'environment t)
-    (multiple-value-bind (body decls)
-        (alexandria:parse-body body :documentation t)
-      (let ((bodyf (funcall compiler
-                            `(lambda (,@parameters)
-                               ,@decls
-                               (block ,name ,@body))
-                            environment)))
-        `(lambda (form environment)
-           (declare (ignorable environment))
-           (let* (,@bindings)
-             (declare (ignorable ,@ignorables))
-             (funcall ,bodyf ,@arguments)))))))
+    (let ((bodyf (funcall compiler `(lambda (,@parameters) ,@body) environment
+                          :block-name name)))
+      `(lambda (form environment)
+         (declare (ignorable environment))
+         (let* (,@bindings)
+           (declare (ignorable ,@ignorables))
+           (funcall ,bodyf ,@arguments))))))

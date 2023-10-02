@@ -5,26 +5,22 @@
 
 ;;; Make a fresh environment containing only SETQ, QUOTE, *SOURCE*,
 ;;; and *COMPILED*. The file will be compiled there.
-;;; We also need PROGN, because EVAL is dumb.
 (defun make-clean-compilation-environment (object)
   (let* ((rte (make-instance 'clostrum-basic:run-time-environment))
          (ce (make-instance 'clostrum-basic:compilation-environment
                :parent rte)))
     (clostrum:make-special-operator *client* rte 'setq t)
     (clostrum:make-special-operator *client* rte 'quote t)
-    (clostrum:make-special-operator *client* rte 'progn t)
     (clostrum:make-parameter *client* rte '*source* object)
     ;; FIXME: make-variable's value should be optional. Oopsie.
     (clostrum:make-variable *client* rte '*compiled* nil)
     ce))
 
 ;;; Make a fresh environment containing just *COMPILED*.
-;;; We also need PROGN for the stupid EVAL problem. FIXME.
 (defun make-clean-load-environment ()
   (let* ((rte (make-instance 'clostrum-basic:run-time-environment))
          (ce (make-instance 'clostrum-basic:compilation-environment
                :parent rte)))
-    (clostrum:make-special-operator *client* rte 'progn t)
     (clostrum:make-variable *client* rte '*compiled* nil)
     ce))
 

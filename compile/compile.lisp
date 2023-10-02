@@ -642,24 +642,33 @@
 
 ;;; Compile into an existing module. Don't link.
 ;;; Useful for the file compiler, and for the first stage of runtime COMPILE.
-(defun compile-into (module lambda-expression &optional env (m:*client* m:*client*))
+(defun compile-into (module lambda-expression env
+                     &rest keys &key block-name forms-only)
+  (declare (ignore block-name forms-only))
   (check-type lambda-expression lambda-expression)
   (let ((env (coerce-to-lexenv env))
         (lambda-list (cadr lambda-expression))
         (body (cddr lambda-expression)))
-    (compile-lambda lambda-list body env module)))
+    (apply #'compile-lambda lambda-list body env module keys)))
 
-;;; As CL:COMPILE, but doesn't mess with function bindings.
-(defun compile (lambda-expression &optional env (m:*client* m:*client*))
-  (link-function (compile-into (make-cmodule) lambda-expression env)
+(defun compile-link (lambda-expression env &rest keys &key block-name forms-only)
+  (declare (ignore block-name forms-only))
+  (link-function (apply #'compile-into (make-cmodule) lambda-expression env keys)
                  (if (lexical-environment-p env)
                      (global-environment env)
                      env)))
 
+;;; As CL:COMPILE, but doesn't mess with function bindings.
+(defun compile (lambda-expression &optional env (m:*client* m:*client*))
+  (compile-link lambda-expression env))
+
+;;; Evaluate FORMS as a progn without relying on PROGN to be bound.
+(defun eval-progn (forms &optional env (m:*client* m:*client*))
+  (funcall (compile-link `(lambda () ,@forms) env :forms-only t)))
+
 ;;; As CL:EVAL.
 (defun eval (form &optional env (m:*client* m:*client*))
-  ;; PROGN is so that (eval '(declare)) signals an error.
-  (funcall (compile `(lambda () (progn ,form)) env)))
+  (eval-progn `(,form) env))
 
 (defun compile-form (form env context)
   (typecase form
@@ -789,10 +798,12 @@
 ;;; Given a lambda expression, generate code to push it to the stack
 ;;; as you would for #'(lambda ...).
 ;;; CONTEXT's number of return values is ignored.
-(defun compile-lambda-expression (lexpr env context)
+(defun compile-lambda-expression (lexpr env context
+                                  &rest keys &key block-name forms-only)
+  (declare (ignore block-name forms-only))
   (check-type lexpr lambda-expression)
-  (let* ((cfunction (compile-lambda (cadr lexpr) (cddr lexpr)
-                                    env (context-module context)))
+  (let* ((cfunction (apply #'compile-lambda (cadr lexpr) (cddr lexpr)
+                           env (context-module context) keys))
          (closed (cfunction-closed cfunction)))
     (loop for info across closed
           do (reference-lexical-variable info context))
@@ -896,7 +907,8 @@
       (compile-progn body post-binding-env context)
       (emit-unbind context special-binding-count))))
 
-(defun compile-let* (bindings decls body env context)
+(defun compile-let* (bindings decls body env context
+                     &key (block-name nil block-name-p))
   (let ((special-binding-count 0)
         (specials (extract-specials decls))
         (inner-context context))
@@ -915,15 +927,16 @@
                        (bind-vars (list var) env inner-context))
                  (maybe-emit-make-cell (var-info var env) inner-context)
                  (assemble-maybe-long inner-context m:set frame-start))))))
-    (compile-progn body
-                   (if specials
+    (let ((new-env (if specials
                        ;; We do this to make sure special declarations get
                        ;; through even if this form doesn't bind them.
                        ;; This creates duplicate alist entries for anything
                        ;; that _is_ bound here, but that's not a big deal.
                        (add-specials specials env)
-                       env)
-                   inner-context)
+                       env)))
+      (if block-name-p
+          (compile-block block-name body new-env inner-context)
+          (compile-progn body new-env inner-context)))
     (emit-unbind context special-binding-count)))
 
 (defmethod compile-special ((operator (eql 'let*)) form env context)
@@ -934,13 +947,9 @@
 (defmethod compile-special ((operator (eql 'flet)) form env context)
   (destructuring-bind (definitions . body) (rest form)
     (loop for (name lambda-list . body) in definitions
-          do (multiple-value-bind (body decls)
-                 (alexandria:parse-body body :documentation t)
-               (compile-lambda-expression
-                `(lambda ,lambda-list
-                   ,@decls
-                   (block ,(fun-name-block-name name) ,@body))
-                env context)))
+          do (compile-lambda-expression
+              `(lambda ,lambda-list ,@body)
+              env context :block-name (fun-name-block-name name)))
     (emit-bind context (length definitions) (context-frame-end context))
     (multiple-value-call #'compile-locally body
       (bind-fvars (mapcar #'car definitions) env context))))
@@ -953,13 +962,8 @@
              (closures
                (loop for (name lambda-list . body) in definitions
                      for bname = (fun-name-block-name name)
-                     for rbody
-                       = (multiple-value-bind (body decls)
-                             (alexandria:parse-body body
-                                                    :documentation t)
-                           `(,@decls (block ,bname ,@body)))
-                     for fun = (compile-lambda lambda-list rbody new-env
-                                               module)
+                     for fun = (compile-lambda lambda-list body new-env module
+                                               :block-name bname)
                      for literal-index = (cfunction-literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
                        do (emit-const context literal-index)
@@ -1137,9 +1141,8 @@
         (compile-exit (cdr pair) context)
         (error "The GO tag ~a does not exist." (second form)))))
 
-(defmethod compile-special ((op (eql 'block)) form env context)
-  (let ((name (second form)) (body (cddr form))
-        (block-dynenv (gensym "BLOCK-DYNENV")))
+(defun compile-block (name body env context)
+  (let ((block-dynenv (gensym "BLOCK-DYNENV")))
     (multiple-value-bind (env body-context-1)
         (bind-vars (list block-dynenv) env context)
       (let* ((dynenv-info (var-info block-dynenv env))
@@ -1165,6 +1168,9 @@
           (assemble context m:push)
           (emit-label context normal-label))
         (maybe-emit-entry-close context dynenv-info)))))
+
+(defmethod compile-special ((op (eql 'block)) form env context)
+  (compile-block (second form) (cddr form) env context))
 
 (defmethod compile-special ((op (eql 'return-from)) form env context)
   (let ((name (second form)) (value (third form)))
@@ -1203,9 +1209,11 @@
     ;; Build a cleanup thunk.
     ;; This will often/usually be a closure, which is why we
     ;; can't just give M:PROTECT a constant argument.
-    ;; PROGN is to signal proper errors with DECLARE.
-    (compile-lambda-expression `(lambda () (progn ,@cleanup))
-                               env context)
+    ;; The 0 is a dumb KLUDGE to let the cleanup forms be compiled in
+    ;; non-values contexts, which might be more efficient.
+    ;; (We use 0 instead of NIL because NIL may not be bound.)
+    (compile-lambda-expression `(lambda () ,@cleanup 0)
+                               env context :forms-only t)
     (assemble context m:protect)
     (compile-form protected env
                   (new-context context :dynenv '(:protect)))
@@ -1269,7 +1277,8 @@
   ;; see comment in parse-macro for explanation
   ;; as to how we're using the host here
   (cl:compile nil (parse-macro name lambda-list body env
-                               #'compile)))
+                               (lambda (lexpr env &rest keys)
+                                 (apply #'compile-link lexpr env keys)))))
 
 (defmethod compile-special ((op (eql 'macrolet)) form env context)
   (let* ((bindings (second form)) (body (cddr form))
@@ -1349,9 +1358,13 @@
 ;;;
 ;;; 2. Default any unsupplied optional/key values and set the
 ;;; corresponding suppliedp var for each optional/key.
-(defun compile-with-lambda-list (lambda-list body env context)
-  (multiple-value-bind (body decls)
-      (alexandria:parse-body body :documentation t)
+(defun compile-with-lambda-list (lambda-list body env context
+                                 &key forms-only (block-name nil block-name-p))
+  (multiple-value-bind (body decls documentation)
+      (if forms-only
+          (values body nil)
+          (alexandria:parse-body body :documentation t))
+    (declare (ignore documentation)) ; FIXME
     (multiple-value-bind (required optionals rest keys aok-p aux key-p)
         (alexandria:parse-ordinary-lambda-list lambda-list)
       (let* ((function (context-function context))
@@ -1527,7 +1540,11 @@
         ;; Generate aux and the body as a let*.
         ;; We repeat the special declarations so that let* will know the auxs
         ;; are special, and so that any free special declarations are processed.
-        (compile-let* aux `((declare (special ,@specials))) body new-env context)
+        (if block-name-p
+            (compile-let* aux `((declare (special ,@specials))) body
+                          new-env context :block-name block-name)
+            (compile-let* aux `((declare (special ,@specials))) body
+                          new-env context))
         (emit-unbind context special-binding-count)))))
 
 ;;; Compile an optional/key item and return the resulting environment
@@ -1587,13 +1604,21 @@
 
 ;;; Compile the lambda in MODULE, returning the resulting
 ;;; CFUNCTION.
-(defun compile-lambda (lambda-list body env module)
+;;; If BLOCK-NAME is provided, a block with the given name will be provided
+;;; around the body forms. If FORMS-ONLY is true, documentation and declarations
+;;; will be treated as forms.
+;;; These options are provided so that compilation can proceed as if the body
+;;; is wrapped in CL:BLOCK or CL:PROGN (respectively) without requiring that
+;;; those operators actually be available in the compilation environment.
+(defun compile-lambda (lambda-list body env module
+                       &rest keys &key block-name forms-only)
+  (declare (ignore block-name forms-only))
   (let* ((function (make-cfunction module))
          (context (make-context :receiving t :function function))
          (env (make-lexical-environment env)))
     (setf (cfunction-index function)
           (vector-push-extend function (cmodule-cfunctions module)))
-    (compile-with-lambda-list lambda-list body env context)
+    (apply #'compile-with-lambda-list lambda-list body env context keys)
     (assemble context m:return)
     function))
 

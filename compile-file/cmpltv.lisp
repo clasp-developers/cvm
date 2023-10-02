@@ -309,7 +309,7 @@
 ;;; have the effect of evaluating the form in a null lexical environment.
 (defun add-form (form &optional env)
   ;; PROGN so that (declare ...) expressions for example correctly cause errors.
-  (add-function (bytecode-cf-compile-lexpr `(lambda () (progn ,form)) env)))
+  (add-function (bytecode-cf-compile-lexpr `(lambda () ,form) env t)))
 
 (defmethod add-constant ((value cons))
   (let ((cons (add-creator
@@ -629,8 +629,10 @@
 ;;; File compiler
 ;;;   
 
-(defun bytecode-cf-compile-lexpr (lambda-expression environment)
-  (cmp:compile-into (cmp:make-cmodule) lambda-expression environment))
+(defun bytecode-cf-compile-lexpr (lambda-expression environment
+                                  &optional forms-only)
+  (cmp:compile-into (cmp:make-cmodule) lambda-expression environment
+                    :forms-only forms-only))
 
 (defun compile-file-form (form env)
   (add-initializer-form form env))

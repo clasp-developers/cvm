@@ -3,7 +3,7 @@
   (:local-nicknames (#:m #:cvm.machine)
                     (#:arg #:cvm.argparse))
   (:shadow #:compile #:eval #:constantp #:macroexpand-1 #:macroexpand)
-  (:export #:compile-into #:compile #:eval)
+  (:export #:compile-into #:compile #:eval #:eval-progn)
   ;; Compiler guts - used in cmpltv
   (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
            #:make-lexical-environment #:make-local-macro #:make-symbol-macro
