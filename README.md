@@ -12,7 +12,7 @@ Specification is at https://github.com/clasp-developers/clasp/wiki/Virtual-machi
 
 # Quick start
 
-Load the `cvm/compile` and `cvm/vm-native` ASDF systems.
+Load the `cvm` ASDF system. There is a dependency on [Clostrum](https://github.com/s-expressionists/Clostrum), which is not available on Quicklisp, so you'll need to set that up yourself.
 
 Before compiling or evaluating code, you need to set the client in order to inform Trucler how to get global definitions. On SBCL you can use the host environment as follows:
 
@@ -78,7 +78,6 @@ You can get a running trace of the machine state by binding `cvm.vm-native:*trac
 The `cvm/vm-cross` subsystem allows CVM to be used for compiling and running Lisp code in arbitrary first-class environments, in concert with [Clostrum](https://github.com/s-expressionists/Clostrum). Here is an example:
 
 ```lisp
-(ql:quickload '(:cvm/compile :cvm/vm-cross))
 ;;; cvm-cross does not itself load a global environment implementation,
 ;;; since it can be used with any. Here we use clostrum-basic for that.
 ;;; We also need clostrum-trucler to be able to compile relative to
@@ -114,12 +113,13 @@ The `cvm/vm-cross` subsystem allows CVM to be used for compiling and running Lis
 
 CVM defines a variety of subsystems that can be loaded independently. It's set up this way so that you can, for example, load one of the VM definitions and run bytecode compiled elsewhere, without needing to load any of the compiler's multitudinous dependencies.
 
-* `cvm` is the base system. Everything depends on CVM. CVM defines various shared conditions, the MOP magic that lets bytecode functions be run in a host Lisp,the names of instructions, and the disassembler.
+* `cvm/base` is the base system. Everything depends on `cvm/base`. `cvm/base` defines various shared conditions, the MOP magic that lets bytecode functions be run in a host Lisp,the names of instructions, and the disassembler.
 * `cvm/compile` turns Lisp forms into bytecode. You need it in order to compile or evaluate forms. But this alone won't let you run bytecode; you'll need one of the VM systems for that. And Lisp compilation frequently involves evaluation, so you'll probably need to load a VM before you can compile much of anything.
 * `cvm/compile-file` implements the file compiler. It depends on the compiler in `cvm/compile` to do that.
 * `cvm/vm-native` is the "native" implementation of the VM, which is to say that it operates entirely in the host Lisp's normal global environment. This is simple but a bit inflexible.
 * `cvm/vm-cross` is an implementation of the VM that operates relative to a Clostrum environment. This is what you want to do anything first-class-environment-related.
 * `cvm/load` loads FASL files created by `cvm/compile-file`. `cvm/load` and one of the VMs is sufficient to load and run FASLs.
+* For general use and convenience, the `cvm` oversystem just loads everything.
 
 Assuming the compilation and loader environments match (e.g. any function appearing in a macroexpansion is actually available in the load-time environment), there is no problem with compiling code with one VM and loading it with another. Using multiple VMs in the same image also works.
 

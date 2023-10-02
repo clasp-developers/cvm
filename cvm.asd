@@ -1,6 +1,15 @@
-;;; Lots of systems here so here's a basic guide:
-
 (asdf:defsystem #:cvm
+  :description "Reference implementation of the CVM bytecode system."
+  :author ("Charles Zhang"
+           "Christian Schafmeister <chris.schaf@verizon.net>"
+           "Tarn W. Burton <twburton@gmail.com>"
+           "Bike <aeshtaer@gmail.com>")
+  :maintainer "Bike <aeshtaer@gmail.com>"
+  :version "0.5.0"
+  :depends-on (:cvm/base :cvm/compile :cvm/compile-file :cvm/load
+               :cvm/vm-native :cvm/vm-cross))
+
+(asdf:defsystem #:cvm/base
   :description "Basic components of the CVM bytecode system."
   :author ("Charles Zhang"
            "Christian Schafmeister <chris.schaf@verizon.net>"
@@ -19,7 +28,7 @@
   :author ("Charles Zhang"
            "Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm :alexandria :trucler :ecclesia)
+  :depends-on (:cvm/base :alexandria :trucler :ecclesia)
   :components
   ((:module "compile"
     :components ((:file "package")
@@ -48,7 +57,7 @@
   :description "Reference implementation FASL loader for CVM."
   :author ("Tarn W. Burton <twburton@gmail.com>"
            "Bike <aeshtaer@gmail.com>")
-  :depends-on (:cvm :ieee-floats)
+  :depends-on (:cvm/base :ieee-floats)
   :components ((:file "loadltv")))
 
 (asdf:defsystem #:cvm/vm-native
@@ -56,7 +65,7 @@
   :author ("Charles Zhang"
            "Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm)
+  :depends-on (:cvm/base)
   :components ((:file "vm-native")))
 
 (asdf:defsystem #:cvm/vm-cross
@@ -64,7 +73,7 @@
   :author ("Charles Zhang"
            "Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm :clostrum)
+  :depends-on (:cvm/base :clostrum)
   :components ((:file "vm-cross")))
 
 (asdf:defsystem #:cvm/test
