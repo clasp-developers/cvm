@@ -28,6 +28,6 @@
 (defun test ()
   (cvm.vm-native:initialize-vm 20000)
   ;; won't work outside SBCL
-  (exit (cvm.test:run! nil (make-instance 'trucler-native-sbcl:client))))
+  (exit (cvm.test:run-native! (make-instance 'trucler-native-sbcl:client))))
 
 (test)

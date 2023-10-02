@@ -79,13 +79,19 @@
 (asdf:defsystem #:cvm/test
   :author ("Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm/compile :fiveam)
+  :depends-on (:cvm :clostrum-basic :clostrum-trucler :fiveam)
   :components
   ((:module "test"
     :components ((:file "packages")
                  (:file "suites" :depends-on ("packages"))
                  (:file "rt" :depends-on ("packages"))
                  (:file "native-sham" :depends-on ("rt" "packages"))
+                 (:module "cross"
+                  :depends-on ("rt" "native-sham")
+                  :components ((:file "packages")
+                               (:file "sham" :depends-on ("packages"))
+                               (:file "rt" :depends-on ("sham"
+                                                        "packages"))))
                  (:module "ansi"
                   :depends-on ("suites" "rt" "packages")
                   ;; These can be loaded in any order.
@@ -118,16 +124,6 @@
                                (:file "progv")
                                (:file "return-from")
                                (:file "tagbody")
-                               (:file "unwind-protect")))))))
-
-(asdf:defsystem #:cvm/test/cross
-  :author ("Bike <aeshtaer@gmail.com>")
-  :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm/test :cvm/vm-cross :clostrum)
-  :components
-  ((:module "test"
-    :components ((:module "cross"
-                  :components ((:file "packages")
-                               (:file "sham" :depends-on ("packages"))
-                               (:file "rt" :depends-on ("sham"
-                                                        "packages"))))))))
+                               (:file "unwind-protect")))
+                 (:file "run-all"
+                  :depends-on ("ansi" "cross" "rt" "packages"))))))
