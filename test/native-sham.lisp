@@ -24,30 +24,8 @@
 ;;; Force true values to T.
 (defun s:notnot (v) (not (not v)))
 
-(defun s:macroexpand-1 (form &optional env)
-  (typecase form
-    (symbol
-     (let ((info (trucler:describe-variable *client* env form)))
-       (if (typep info 'trucler:symbol-macro-description)
-           (values (cvm.compile:symbol-macro-expansion info form env) t)
-           (values form nil))))
-    (cons
-     (let* ((head (car form))
-            (info (if (symbolp head)
-                      (trucler:describe-function *client* env head)
-                      nil)))
-       (if (typep info 'trucler:macro-description)
-           (values (cvm.compile:expand (trucler:expander info) form env) t)
-           (values form nil))))
-    (t (values form nil))))
-
-(defun s:macroexpand (form &optional env)
-  (loop with ever-expanded = nil
-        do (multiple-value-bind (expansion expandedp)
-               (s:macroexpand-1 form env)
-             (if expandedp
-                 (setq ever-expanded t form expansion)
-                 (return (values form ever-expanded))))))
+(setf (fdefinition 's:macroexpand-1) #'cvm.compile:macroexpand-1
+      (fdefinition 's:macroexpand)   #'cvm.compile:macroexpand)
 
 ;;; used in e.g. MACROLET.43
 (setf (fdefinition 's:eval) #'ceval)

@@ -688,6 +688,32 @@
          (expander (lambda (form env) (declare (ignore form env)) expansion)))
     (expand expander symbol env)))
 
+;;; Not used in this compiler, but useful in various other places.
+(defun macroexpand-1 (form &optional env)
+  (typecase form
+    (symbol
+     (let ((info (trucler:describe-variable m:*client* form env)))
+       (if (typep info 'trucler:symbol-macro-description)
+           (values (symbol-macro-expansion info form env) t)
+           (values form nil))))
+    ((cons symbol)
+     (let* ((head (car form))
+            (info (if (symbolp head)
+                      (trucler:describe-function m:*client* env head)
+                      nil)))
+       (if (typep info 'trucler:macro-description)
+           (values (expand (trucler:expander info) form env) t)
+           (values form nil))))
+    (t (values form nil))))
+
+;;; ditto.
+(defun macroexpand (form &optional env)
+  (loop with ever-expanded = nil
+        do (multiple-value-bind (expansion expandedp) (macroexpand-1 form env)
+             (if expandedp
+                 (setf ever-expanded t form expansion)
+                 (return (values form ever-expanded))))))
+
 (defmethod compile-symbol ((info trucler:symbol-macro-description)
                            form env context)
   (compile-form (symbol-macro-expansion info form env) env context))

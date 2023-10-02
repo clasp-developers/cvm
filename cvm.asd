@@ -32,7 +32,15 @@
   :author ("Tarn W. Burton <twburton@gmail.com>"
            "Bike <aeshtaer@gmail.com>")
   :depends-on (:cvm/compile :ieee-floats)
-  :components ((:file "cmpltv")))
+  :components
+  ((:module "compile-file"
+    :components ((:file "package")
+                 (:file "preliminaries" :depends-on ("package"))
+                 (:file "cmpltv" :depends-on ("preliminaries" "package"))
+                 (:file "encode" :depends-on ("cmpltv" "preliminaries" "package"))
+                 (:file "top-level-forms" :depends-on ("preliminaries" "package"))
+                 (:file "compile-file"
+                  :depends-on ("top-level-forms" "cmpltv" "encode" "package"))))))
 
 (asdf:defsystem #:cvm/load
   :description "Reference implementation FASL loader for CVM."

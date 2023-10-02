@@ -1,35 +1,8 @@
-(defpackage #:cvm.compile-file
-  (:use #:cl)
-  (:local-nicknames (#:cmp #:cvm.compile))
-  (:shadow #:compile-file #:macroexpand-1 #:macroexpand)
-  (:export #:with-constants
-           #:ensure-constant #:add-constant #:find-constant-index)
-  (:export #:instruction #:creator #:vcreator #:effect)
-  (:export #:write-bytecode #:encode)
-  (:export #:compile-stream #:compile-file)
-  ;; introspection
-  (:export #:load-bytecode-stream #:load-bytecode)
-  (:export #:write-fasl #:save-fasl)
-  (:export #:concatenate-fasls #:concatenate-fasl-files))
-
 (in-package #:cvm.compile-file)
 
 ;;; For this first version, I'm going to track permanency but not do anything
 ;;; with it - cutting out transients can be later, since I think it will need
 ;;; more coordination with the compiler.
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;
-;;; Debugging
-;;;
-
-(defvar *debug-compiler* nil)
-
-(defmacro dbgprint (message &rest args)
-  `(when *debug-compiler*
-     (let ((*print-level* 2) (*print-length* 1) (*print-circle* t))
-       (format *error-output* ,(concatenate 'string "~&; " message "~%")
-               ,@args))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
@@ -242,16 +215,6 @@
    ;; FIXME: Do this more cleanly.
    (%name :reader name :type creator)))
 
-#+clasp
-(defclass spi-attr (attribute)
-  ((%name :initarg :name
-          :initform (ensure-constant "clasp:source-pos-info"))
-   (%function :initarg :function :reader spi-attr-function :type creator)
-   (%pathname :initarg :pathname :reader spi-attr-pathname :type creator)
-   (%lineno :initarg :lineno :reader lineno :type (unsigned-byte 64))
-   (%column :initarg :column :reader column :type (unsigned-byte 64))
-   (%filepos :initarg :filepos :reader filepos :type (unsigned-byte 64))))
-
 ;;;
 
 ;;; Return true iff the value is similar to the existing creator.
@@ -373,6 +336,62 @@
     (add-instruction (make-instance 'rplacd-init
                        :cons cons :value (ensure-constant (cdr value))))
     cons))
+
+;;; Arrays are encoded with two codes: One for the packing, and one
+;;; for the element type. The latter is in place so that, hopefully,
+;;; arrays can be dumped portably. These two codes do not necessarily
+;;; coincide: for example a general (T) array full of ub8s could be
+;;; encoded as ub8s but still be loaded as a general array.
+;;; (This is not done right now.)
+;;; FIXME: Not sure how to deal with nonportable element types, such
+;;; as clasp's vec3 arrays, or sbcl's ub7 etc. For now the similarity
+;;; of arrays is weaker than the language standard mandates.
+;;; The portability concern is that, for example, Clasp will have
+;;; array element type of ext:byte8 instead of (unsigned-byte 8). In
+;;; that case we want to dump as (unsigned-byte 8) and Clasp's loader
+;;; will upgrade to ext:byte8 no problem.
+;;; TODO: For version 1, put more thought into these IDs.
+(defvar +array-packing-infos+
+  '((nil                    #b00000000)
+    (base-char              #b10000000)
+    (character              #b11000000)
+    ;;(short-float          #b10100000) ; i.e. binary16
+    (single-float           #b00100000) ; binary32
+    (double-float           #b01100000) ; binary64
+    ;;(long-float           #b11100000) ; binary128?
+    ;;((complex short...)   #b10110000)
+    ((complex single-float) #b00110000)
+    ((complex double-float) #b01110000)
+    ;;((complex long...)    #b11110000)
+    (bit                    #b00000001) ; (2^(code-1)) bits
+    ((unsigned-byte 2)      #b00000010)
+    ((unsigned-byte 4)      #b00000011)
+    ((unsigned-byte 8)      #b00000100)
+    ((unsigned-byte 16)     #b00000101)
+    ((unsigned-byte 32)     #b00000110)
+    ((unsigned-byte 64)     #b00000111)
+    ;;((unsigned-byte 128) ??)
+    ((signed-byte 8)        #b10000100)
+    ((signed-byte 16)       #b10000101)
+    ((signed-byte 32)       #b10000110)
+    ((signed-byte 64)       #b10000111)
+    (t                      #b11111111)))
+
+(defun %uaet-info (uaet)
+  (dolist (info +array-packing-infos+)
+    (when (subtypep uaet (first info))
+      (return-from %uaet-info info)))
+  ;; subtypep not doing so well. default to general.
+  (assoc t +array-packing-infos+))
+
+(defun find-uaet-code (uaet) (second (%uaet-info uaet)))
+
+(defun array-packing-info (array)
+  ;; TODO? As mentioned above, we could pack arrays more efficiently
+  ;; than suggested by their element type. Iterating over every array
+  ;; checking might be a little too slow though?
+  ;; Also wouldn't work for NIL arrays, but who's dumping NIL arrays?
+  (%uaet-info (array-element-type array)))
 
 (defmethod add-constant ((value array))
   (let* ((uaet (array-element-type value))
@@ -632,453 +651,13 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
-;;; Bytecode
-;;;
-;;; "bytecode" is actually a little strong. This "bytecode" consists of a
-;;; sequence of "instructions" that must be executed sequentially.
-;;; There's no other control flow. There is no data structure involved other
-;;; than the array of constants being produced (so e.g. no operand stack).
-;;; All multibyte values are big-endian. All indices are one byte, or two
-;;; bytes, or etc. powers of two based on how many constants there are. E.g. if
-;;; there are 200 constants indices will be one byte, but if there are 300
-;;; indices will be two bytes.
-;;; Instruction set is copied from Clasp for now. "sind" in the below means an
-;;; index that the allocated object will be stored into. This may need some
-;;; review later.
-;;; Operations are as follows:
-(defparameter +ops+
-  '((nil 65 sind)
-    (t 66 sind)
-    (ratio 67)
-    (complex 68)
-    (cons 69 sind)
-    (rplaca 70 ind1 ind2) ; (setf (car [ind1]) [ind2])
-    (rplacd 71 ind1 ind2)
-    (make-array 74 sind rank . dims)
-    (setf-row-major-aref 75 arrayind rmindex valueind)
-    (make-hash-table 76 sind test count)
-    ((setf gethash) 77 htind keyind valueind)
-    (make-sb64 78 sind sb64)
-    (find-package 79 sind nameind)
-    (make-bignum 80 sind size . words)
-    (make-symbol 81)
-    (intern 82 sind packageind nameind)
-    (make-character 83 sind ub32)
-    (make-pathname 85)
-    (make-bytecode-function 87)
-    (make-bytecode-module 88)
-    (setf-literals 89)
-    (make-single-float 90 sind ub32)
-    (make-double-float 91 sind ub64)
-    (funcall-create 93 sind find nargs . args)
-    (funcall-initialize 94 find nargs . args)
-    (fdefinition 95 find nameind)
-    (fcell 96 find nameind)
-    (vcell 97 vind nameind)
-    (find-class 98 sind cnind)
-    (init-object-array 99 ub64)
-    (environment 100)
-    (attribute 255 name nbytes . data)))
-
-;;; STREAM is a ub8 stream.
-(defgeneric encode (instruction stream))
-
-;; how many bytes are needed to represent an index?
-(defvar *index-bytes*)
-
-;;; Write an n-byte integer to a ub8 stream, big-endian.
-(defun write-b (int n stream)
-  ;; write-sequence is better for this, but I don't think we can really
-  ;; use it without consing or touching memory generally.
-  (loop for i from (* (1- n) 8) downto 0 by 8
-        for byte = (ldb (byte 8 i) int)
-        do (write-byte byte stream)))
-
-(defun write-b64 (word stream) (write-b word 8 stream))
-(defun write-b32 (word stream) (write-b word 4 stream))
-(defun write-b16 (word stream) (write-b word 2 stream))
-
-(defconstant +magic+ #x8d7498b1) ; randomly chosen bytes.
-
-(defun write-magic (stream) (write-b32 +magic+ stream))
-
-(defparameter *major-version* 0)
-(defparameter *minor-version* 13)
-
-(defun write-version (stream)
-  (write-b16 *major-version* stream)
-  (write-b16 *minor-version* stream))
-
-;; Used in disltv as well.
-(defun write-bytecode (instructions stream)
-  (let* ((nobjs (count-if (lambda (i) (typep i 'creator)) instructions))
-         ;; Next highest power of two bytes, roughly
-         (*index-bytes* (ash 1 (1- (ceiling (integer-length nobjs) 8))))
-         ;; 1+ for the init-object-array.
-         (ninsts (1+ (length instructions))))
-    (assign-indices instructions)
-    (dbgprint "Instructions:~{~&~a~}" instructions)
-    (write-magic stream)
-    (write-version stream)
-    (write-b64 ninsts stream)
-    (encode (make-instance 'init-object-array :count nobjs) stream)
-    (map nil (lambda (inst) (encode inst stream)) instructions)))
-
-(defun %write-bytecode (stream)
-  ;; lol efficiency with the reverse
-  (write-bytecode (reverse *instructions*) stream))
-
-(defun opcode (mnemonic)
-  (let ((inst (assoc mnemonic +ops+ :test #'equal)))
-    (if inst
-        (second inst)
-        (error "unknown mnemonic ~a" mnemonic))))
-
-(defun write-mnemonic (mnemonic stream) (write-byte (opcode mnemonic) stream))
-
-(defun write-index (creator stream)
-  (let ((position (index creator)))
-    (ecase *index-bytes*
-      ((1) (write-byte position stream))
-      ((2) (write-b16 position stream))
-      ((4) (write-b32 position stream))
-      ((8) (write-b64 position stream)))))
-
-(defmethod encode ((inst cons-creator) stream)
-  (write-mnemonic 'cons stream)
-  (write-index inst stream))
-
-(defmethod encode ((inst rplaca-init) stream)
-  (write-mnemonic 'rplaca stream)
-  (write-index (rplac-cons inst) stream)
-  (write-index (rplac-value inst) stream))
-
-(defmethod encode ((inst rplacd-init) stream)
-  (write-mnemonic 'rplacd stream)
-  (write-index (rplac-cons inst) stream)
-  (write-index (rplac-value inst) stream))
-
-(defun write-dimensions (dimensions stream)
-  (let ((rank (length dimensions)))
-    (unless (< rank 256)
-      (error "Can't dump an array of ~d dimensions" rank))
-    (write-byte rank stream))
-  ;; Only two bytes for now. Might want different opcodes for larger
-  ;; (or smaller?) dimensions.
-  (unless (< (reduce #'* dimensions) 65536)
-    (error "Can't dump an array with ~d elements" (reduce #'* dimensions)))
-  (dolist (dim dimensions)
-    (write-b16 dim stream)))
-
-(defmacro write-sub-byte (array stream nbits)
-  (let ((perbyte (floor 8 nbits))
-        (a (gensym "ARRAY")) (s (gensym "STREAM")))
-    `(let* ((,a ,array) (,s ,stream) (total-size (array-total-size ,a)))
-       (multiple-value-bind (full-bytes remainder) (floor total-size 8)
-         (loop for byteindex below full-bytes
-               for index = (* ,perbyte byteindex)
-               for byte = (logior
-                           ,@(loop for i below perbyte
-                                   for shift = (- 8 (* i nbits) nbits)
-                                   for rma = `(row-major-aref ,a (+ index ,i))
-                                   collect `(ash ,rma ,shift)))
-               do (write-byte byte ,s))
-         ;; write remainder
-         (let* ((index (* ,nbits full-bytes))
-                (byte 0))
-           (loop for i below remainder
-                 for shift = (- 8 (* i ,nbits) ,nbits)
-                 for rma = (row-major-aref ,a (+ index i))
-                 do (setf (ldb (byte ,nbits shift) byte) rma))
-           (write-byte byte ,s))))))
-
-(defmethod encode ((inst array-creator) stream)
-  (write-mnemonic 'make-array stream)
-  (write-index inst stream)
-  (write-byte (uaet-code inst) stream)
-  (let* ((packing-info (packing-info inst))
-         (dims (dimensions inst))
-         (packing-type (first packing-info))
-         (packing-code (second packing-info)))
-    (write-byte packing-code stream)
-    (write-dimensions dims stream)
-    (macrolet ((dump (&rest forms)
-                 `(loop with arr = (prototype inst)
-                        for i below (array-total-size arr)
-                        for elem = (row-major-aref arr i)
-                        do ,@forms)))
-      (cond ((equal packing-type 'nil)) ; just need dims
-            ((equal packing-type 'base-char)
-             (dump (write-byte (char-code elem) stream)))
-            ((equal packing-type 'character)
-             ;; TODO: UTF-8
-             (dump (write-b32 (char-code elem) stream)))
-            ((equal packing-type 'single-float)
-             (dump (write-b32 (ieee-floats:encode-float32 elem) stream)))
-            ((equal packing-type 'double-float)
-             (dump (write-b64 (ieee-floats:encode-float64 elem) stream)))
-            ((equal packing-type '(complex single-float))
-             (dump (write-b32 (ieee-floats:encode-float32 (realpart elem))
-                              stream)
-                   (write-b32 (ieee-floats:encode-float32 (imagpart elem))
-                              stream)))
-            ((equal packing-type '(complex double-float))
-             (dump (write-b64 (ieee-floats:encode-float64 (realpart elem))
-                              stream)
-                   (write-b64 (ieee-floats:encode-float64 (imagpart elem))
-                              stream)))
-            ((equal packing-type 'bit)
-             (write-sub-byte (prototype inst) stream 1))
-            ((equal packing-type '(unsigned-byte 2))
-             (write-sub-byte (prototype inst) stream 2))
-            ((equal packing-type '(unsigned-byte 4))
-             (write-sub-byte (prototype inst) stream 4))
-            ((equal packing-type '(unsigned-byte 8))
-             (write-sequence (prototype inst) stream))
-            ((equal packing-type '(unsigned-byte 16))
-             (dump (write-b16 elem stream)))
-            ((equal packing-type '(unsigned-byte 32))
-             (dump (write-b32 elem stream)))
-            ((equal packing-type '(unsigned-byte 64))
-             (dump (write-b64 elem stream)))
-            ((equal packing-type '(signed-byte 8))
-             (dump (write-byte (ldb (byte 8 0) elem) stream)))
-            ((equal packing-type '(signed-byte 16))
-             (dump (write-b16 elem stream)))
-            ((equal packing-type '(signed-byte 32))
-             (dump (write-b32 elem stream)))
-            ((equal packing-type '(signed-byte 64))
-             (dump (write-b64 elem stream)))
-            ;; TODO: Signed bytes
-            ((equal packing-type 't)) ; handled by setf-aref instructions
-            (t (error "BUG: Unknown packing-type ~s" packing-type))))))
-
-(defmethod encode ((inst setf-aref) stream)
-  (write-mnemonic 'setf-row-major-aref stream)
-  (write-index (setf-aref-array inst) stream)
-  (write-b16 (setf-aref-index inst) stream)
-  (write-index (setf-aref-value inst) stream))
-
-;;; Arrays are encoded with two codes: One for the packing, and one
-;;; for the element type. The latter is in place so that, hopefully,
-;;; arrays can be dumped portably. These two codes do not necessarily
-;;; coincide: for example a general (T) array full of ub8s could be
-;;; encoded as ub8s but still be loaded as a general array.
-;;; (This is not done right now.)
-;;; FIXME: Not sure how to deal with nonportable element types, such
-;;; as clasp's vec3 arrays, or sbcl's ub7 etc. For now the similarity
-;;; of arrays is weaker than the language standard mandates.
-;;; The portability concern is that, for example, Clasp will have
-;;; array element type of ext:byte8 instead of (unsigned-byte 8). In
-;;; that case we want to dump as (unsigned-byte 8) and Clasp's loader
-;;; will upgrade to ext:byte8 no problem.
-;;; TODO: For version 1, put more thought into these IDs.
-(defvar +array-packing-infos+
-  '((nil                    #b00000000)
-    (base-char              #b10000000)
-    (character              #b11000000)
-    ;;(short-float          #b10100000) ; i.e. binary16
-    (single-float           #b00100000) ; binary32
-    (double-float           #b01100000) ; binary64
-    ;;(long-float           #b11100000) ; binary128?
-    ;;((complex short...)   #b10110000)
-    ((complex single-float) #b00110000)
-    ((complex double-float) #b01110000)
-    ;;((complex long...)    #b11110000)
-    (bit                    #b00000001) ; (2^(code-1)) bits
-    ((unsigned-byte 2)      #b00000010)
-    ((unsigned-byte 4)      #b00000011)
-    ((unsigned-byte 8)      #b00000100)
-    ((unsigned-byte 16)     #b00000101)
-    ((unsigned-byte 32)     #b00000110)
-    ((unsigned-byte 64)     #b00000111)
-    ;;((unsigned-byte 128) ??)
-    ((signed-byte 8)        #b10000100)
-    ((signed-byte 16)       #b10000101)
-    ((signed-byte 32)       #b10000110)
-    ((signed-byte 64)       #b10000111)
-    (t                      #b11111111)))
-
-(defun %uaet-info (uaet)
-  (dolist (info +array-packing-infos+)
-    (when (subtypep uaet (first info))
-      (return-from %uaet-info info)))
-  ;; subtypep not doing so well. default to general.
-  (assoc t +array-packing-infos+))
-
-(defun find-uaet-code (uaet) (second (%uaet-info uaet)))
-
-(defun array-packing-info (array)
-  ;; TODO? As mentioned above, we could pack arrays more efficiently
-  ;; than suggested by their element type. Iterating over every array
-  ;; checking might be a little too slow though?
-  ;; Also wouldn't work for NIL arrays, but who's dumping NIL arrays?
-  (%uaet-info (array-element-type array)))
-
-(defmethod encode ((inst hash-table-creator) stream)
-  (let* ((ht (prototype inst))
-         ;; TODO: Custom hash-table tests.
-         ;; NOTE that for non-custom hash table tests, the standard
-         ;; guarantees that hash-table-test returns a symbol.
-         (testcode (ecase (hash-table-test ht)
-                     ((eq) #b00)
-                     ((eql) #b01)
-                     ((equal) #b10)
-                     ((equalp) #b11)))
-         ;; For now, only allow counts up to #xffff.
-         ;; Since the count is just a hint, bigger hash tables can still
-         ;; be dumped okay.
-         ;; efficiency NOTE: The size passed to make-hash-table really
-         ;; specifies a capacity, so for example if we have an HT with 56
-         ;; entries, make a 56-entry similar hash table, and start filling it
-         ;; up, it might be rehashed and resized during initialization as it
-         ;; reaches the rehash threshold. I am not sure how to deal with this
-         ;; in a portable fashion. (we could just invert a provided rehash-size?)
-         (count (max (hash-table-count ht) #xffff)))
-    (write-mnemonic 'make-hash-table stream)
-    (write-index inst stream)
-    (write-byte testcode stream)
-    (write-b16 count stream)))
-
-(defmethod encode ((inst setf-gethash) stream)
-  (write-mnemonic '(setf gethash) stream)
-  (write-index (setf-gethash-hash-table inst) stream)
-  (write-index (setf-gethash-key inst) stream)
-  (write-index (setf-gethash-value inst) stream))
-
-(defmethod encode ((inst singleton-creator) stream)
-  (ecase (prototype inst)
-    ((nil) (write-mnemonic 'nil stream))
-    ((t) (write-mnemonic 't stream)))
-  (write-index inst stream))
-
-(defmethod encode ((inst symbol-creator) stream)
-  (write-mnemonic 'make-symbol stream)
-  (write-index inst stream)
-  (write-index (symbol-creator-name inst) stream))
-
-(defmethod encode ((inst interned-symbol-creator) stream)
-  (write-mnemonic 'intern stream)
-  (write-index inst stream)
-  (write-index (symbol-creator-package inst) stream)
-  (write-index (symbol-creator-name inst) stream))
-
-(defmethod encode ((inst package-creator) stream)
-  (write-mnemonic 'find-package stream)
-  (write-index inst stream)
-  (write-index (package-creator-name inst) stream))
-
-(defmethod encode ((inst character-creator) stream)
-  (write-mnemonic 'make-character stream)
-  (write-index inst stream)
-  (write-b32 (char-code (prototype inst)) stream))
-
-(defmethod encode ((inst pathname-creator) stream)
-  (write-mnemonic 'make-pathname stream)
-  (write-index inst stream)
-  (write-index (pathname-creator-host inst) stream)
-  (write-index (pathname-creator-device inst) stream)
-  (write-index (pathname-creator-directory inst) stream)
-  (write-index (pathname-creator-name inst) stream)
-  (write-index (pathname-creator-type inst) stream)
-  (write-index (pathname-creator-version inst) stream))
-
-(defmethod encode ((inst sb64-creator) stream)
-  (write-mnemonic 'make-sb64 stream)
-  (write-index inst stream)
-  (write-b64 (prototype inst) stream))
-
-(defmethod encode ((inst bignum-creator) stream)
-  ;; uses sign-magnitude representation.
-  (write-mnemonic 'make-bignum stream)
-  (write-index inst stream)
-  (let* ((number (prototype inst))
-         (anumber (abs number))
-         (nwords (ceiling (integer-length anumber) 64))
-         (negp (minusp number)))
-    (write-b64 (if negp (- nwords) nwords) stream)
-    (loop for i from nwords above 0
-          for pos = (* (1- i) 64)
-          for word = (ldb (byte 64 pos) anumber)
-          do (write-b64 word stream))))
-
-(defmethod encode ((inst single-float-creator) stream)
-  (write-mnemonic 'make-single-float stream)
-  (write-index inst stream)
-  (write-b32 (ieee-floats:encode-float32 (prototype inst)) stream))
-
-(defmethod encode ((inst double-float-creator) stream)
-  (write-mnemonic 'make-double-float stream)
-  (write-index inst stream)
-  (write-b64 (ieee-floats:encode-float64 (prototype inst)) stream))
-
-(defmethod encode ((inst ratio-creator) stream)
-  (write-mnemonic 'ratio stream)
-  (write-index inst stream)
-  (write-index (ratio-creator-numerator inst) stream)
-  (write-index (ratio-creator-denominator inst) stream))
-
-(defmethod encode ((inst complex-creator) stream)
-  (write-mnemonic 'complex stream)
-  (write-index inst stream)
-  (write-index (complex-creator-realpart inst) stream)
-  (write-index (complex-creator-imagpart inst) stream))
-
-(defmethod encode ((inst fdefinition-lookup) stream)
-  (write-mnemonic 'fdefinition stream)
-  (write-index inst stream)
-  (write-index (name inst) stream))
-
-(defmethod encode ((inst fcell-lookup) stream)
-  (write-mnemonic 'fcell stream)
-  (write-index inst stream)
-  (write-index (name inst) stream))
-
-(defmethod encode ((inst vcell-lookup) stream)
-  (write-mnemonic 'vcell stream)
-  (write-index inst stream)
-  (write-index (name inst) stream))
-
-(defmethod encode ((inst environment-lookup) stream)
-  (write-mnemonic 'environment stream)
-  (write-index inst stream))
-
-(defmethod encode ((inst general-creator) stream)
-  (write-mnemonic 'funcall-create stream)
-  (write-index inst stream)
-  (write-index (general-function inst) stream)
-  (write-b16 (length (general-arguments inst)) stream)
-  (loop for arg in (general-arguments inst)
-        do (write-index arg stream)))
-
-(defmethod encode ((inst general-initializer) stream)
-  (write-mnemonic 'funcall-initialize stream)
-  (write-index (general-function inst) stream)
-  (write-b16 (length (general-arguments inst)) stream)
-  (loop for arg in (general-arguments inst)
-        do (write-index arg stream)))
-
-(defmethod encode ((inst class-creator) stream)
-  (write-mnemonic 'find-class stream)
-  (write-index inst stream)
-  (write-index (class-creator-name inst) stream))
-
-(defmethod encode ((inst load-time-value-creator) stream)
-  (write-mnemonic 'funcall-create stream)
-  (write-index inst stream)
-  (write-index (load-time-value-creator-function inst) stream)
-  ;; no arguments
-  (write-b16 0 stream))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;
 ;;; File compiler
 ;;;   
 
 (defun bytecode-cf-compile-lexpr (lambda-expression environment)
   (cmp:compile-into (cmp:make-cmodule) lambda-expression environment))
 
-(defun bytecode-compile-file-form (form env)
+(defun compile-file-form (form env)
   (add-initializer-form form env))
 
 (defclass bytefunction-creator (creator)
@@ -1111,33 +690,7 @@
              :entry-point (cmp:annotation-module-position
                            (cmp:cfunction-entry-point value))
              :size (cmp:cfunction-final-size value)))))
-    #+clasp ; source info
-    (let ((cspi core:*current-source-pos-info*))
-      (add-instruction
-       (make-instance 'spi-attr
-         :function inst
-         :pathname (ensure-constant
-                    (core:file-scope-pathname
-                     (core:file-scope
-                      (core:source-pos-info-file-handle cspi))))
-         :lineno (core:source-pos-info-lineno cspi)
-         :column (core:source-pos-info-column cspi)
-         :filepos (core:source-pos-info-filepos cspi))))
     inst))
-
-(defmethod encode ((inst bytefunction-creator) stream)
-  ;; four bytes for the entry point, two for the nlocals and nclosed,
-  ;; then indices. TODO: Source info.
-  (write-mnemonic 'make-bytecode-function stream)
-  (write-index inst stream)
-  (write-b32 (entry-point inst) stream)
-  (write-b32 (size inst) stream)
-  (write-b16 (nlocals inst) stream)
-  (write-b16 (nclosed inst) stream)
-  (write-index (module inst) stream)
-  (write-index (name inst) stream)
-  (write-index (lambda-list inst) stream)
-  (write-index (docstring inst) stream))
 
 (defclass bytemodule-creator (vcreator)
   ((%cmodule :initarg :cmodule :reader bytemodule-cmodule)
@@ -1208,196 +761,3 @@
 
 (defun ensure-module (module)
   (or (find-oob module) (add-module module)))
-
-(defmethod encode ((inst bytemodule-creator) stream)
-  ;; Write instructions.
-  (write-mnemonic 'make-bytecode-module stream)
-  (write-index inst stream)
-  (let* ((lispcode (bytemodule-lispcode inst))
-         (len (length lispcode)))
-    (when (> len #.(ash 1 32))
-      (error "Bytecode length is ~d, too long to dump" len))
-    (write-b32 len stream)
-    (write-sequence lispcode stream)))
-
-(defmethod encode ((inst setf-literals) stream)
-  (write-mnemonic 'setf-literals stream)
-  (write-index (setf-literals-module inst) stream)
-  (let ((literals (setf-literals-literals inst)))
-    (write-b16 (length literals) stream)
-    (loop for creator across literals
-          do (write-index creator stream))))
-
-;;;
-
-(defmethod encode :before ((attr attribute) stream)
-  (write-mnemonic 'attribute stream)
-  (write-index (name attr) stream))
-
-#+clasp
-(defmethod encode ((attr spi-attr) stream)
-  ;; Write the length.
-  (write-b32 (+ *index-bytes* *index-bytes* 8 8 8) stream)
-  ;; And the data.
-  (write-index (spi-attr-function attr) stream)
-  (write-index (spi-attr-pathname attr) stream)
-  (write-b64 (lineno attr) stream)
-  (write-b64 (column attr) stream)
-  (write-b64 (filepos attr) stream))
-
-(defmethod encode ((init init-object-array) stream)
-  (write-mnemonic 'init-object-array stream)
-  (write-b64 (init-object-array-count init) stream))
-
-;;;
-
-(defvar *compile-time-too*)
-
-(defun bytecode-compile-toplevel-progn (forms env)
-  (dolist (form forms)
-    (bytecode-compile-toplevel form env)))
-
-(defun bytecode-compile-toplevel-eval-when (situations forms env)
-  (let ((ct (or (member :compile-toplevel situations)
-                (member 'cl:compile situations)))
-        (lt (or (member :load-toplevel situations)
-                (member 'cl:load situations)))
-        (e (or (member :execute situations)
-               (member 'cl:eval situations)))
-        (ctt *compile-time-too*))
-    ;; Following CLHS figure 3-7 pretty exactly.
-    (cond ((or (and ct lt) (and lt e ctt)) ; process compile-time-too
-           (let ((*compile-time-too* t))
-             (bytecode-compile-toplevel-progn forms env)))
-          ((or (and lt e (not ctt)) (and (not ct) lt (not e)))
-           ;; process not-compile-time
-           (let ((*compile-time-too* nil))
-             (bytecode-compile-toplevel-progn forms env)))
-          ((or (and ct (not lt)) (and (not ct) (not lt) e ctt))
-           ;; evaluate
-           (cmp:eval `(progn ,@forms) env))
-          (t
-           ;; (or (and (not ct) (not lt) e (not ctt)) (and (not ct) (not lt) (not e)))
-           ;; discard
-           nil))))
-
-(defun bytecode-compile-toplevel-locally (body env)
-  (multiple-value-bind (body decls) (alexandria:parse-body body)
-    (let* ((new-env (cmp:add-specials (cmp:extract-specials decls) env)))
-      (bytecode-compile-toplevel-progn body new-env))))
-
-(defun bytecode-compile-toplevel-macrolet (bindings body env)
-  (let ((macros nil)
-        (aenv (cmp:lexenv-for-macrolet env)))
-    (dolist (binding bindings)
-      (let* ((name (car binding)) (lambda-list (cadr binding))
-             (body (cddr binding))
-             (expander (cmp:compute-macroexpander
-                        name lambda-list body aenv))
-             (info (cmp:make-local-macro name expander)))
-        (push (cons name info) macros)))
-    (bytecode-compile-toplevel-locally
-     body (cmp::make-lexical-environment
-           env :funs (append macros (cmp:funs env))))))
-
-(defun bytecode-compile-toplevel-symbol-macrolet (bindings body env)
-  (let ((smacros
-          (loop for (name expansion) in bindings
-                for info = (cmp:make-symbol-macro name expansion)
-                collect (cons name info))))
-    (bytecode-compile-toplevel-locally
-     body (cmp:make-lexical-environment
-           env
-           :vars (append (nreverse smacros) (cmp:vars env))))))
-
-(defun macroexpand-1 (form &optional env)
-  (typecase form
-    (symbol
-     (let ((info (cmp:var-info form env)))
-       (if (typep info 'trucler:symbol-macro-description)
-           (values (cmp:symbol-macro-expansion info form env) t)
-           (values form nil))))
-    ((cons symbol)
-     (let ((info (cmp:fun-info (car form) env)))
-       (if (typep info 'trucler:macro-description)
-           (values (cmp:expand (trucler:expander info) form env) t)
-           (values form nil))))
-    (t (values form nil))))
-
-(defun macroexpand (form &optional env)
-  (loop with ever-expanded = nil
-        do (multiple-value-bind (expansion expandedp) (macroexpand-1 form env)
-             (if expandedp
-                 (setf ever-expanded t form expansion)
-                 (return (values form ever-expanded))))))
-
-(defun bytecode-compile-toplevel (form &optional env)
-  (let ((form (macroexpand form env)))
-    (if (consp form)
-        (case (car form)
-          ((progn) (bytecode-compile-toplevel-progn (cdr form) env))
-          ((eval-when)
-           (bytecode-compile-toplevel-eval-when (cadr form) (cddr form) env))
-          ((locally) (bytecode-compile-toplevel-locally (cdr form) env))
-          ((macrolet)
-           (bytecode-compile-toplevel-macrolet (cadr form) (cddr form) env))
-          ((symbol-macrolet)
-           (bytecode-compile-toplevel-symbol-macrolet (cadr form) (cddr form) env))
-          (otherwise
-           (when *compile-time-too* (cmp:eval form env))
-           (bytecode-compile-file-form form env)))
-        (progn
-          (when *compile-time-too* (cmp:eval form env))
-          (bytecode-compile-file-form form env)))))
-
-;; Print information about a form for *compile-print*.
-(defun describe-form (form)
-  (fresh-line)
-  (write-string ";   ")
-  (write form :length 2 :level 2 :lines 1 :pretty nil)
-  (terpri)
-  (values))
-
-;; input is a character stream. output is a ub8 stream.
-(defun compile-stream (input output &key environment &allow-other-keys)
-  (with-constants ()
-    ;; Read and compile the forms.
-    (loop with env = (cmp:coerce-to-lexenv environment)
-          with eof = (gensym "EOF")
-          with *compile-time-too* = nil
-          #|
-            with cfsdp = (core:file-scope cmp::*compile-file-source-debug-pathname*)
-            with cfsdl = cmp::*compile-file-source-debug-lineno*
-            with cfsdo = cmp::*compile-file-source-debug-offset*
-            for core:*current-source-pos-info*
-              = (core:input-stream-source-pos-info input cfsdp cfsdl cfsdo)
-            |#
-            for form = (read input nil eof)
-            until (eq form eof)
-            when *compile-print*
-              do (describe-form form)
-            do (bytecode-compile-toplevel form env))
-      ;; Write out the FASO bytecode.
-      (%write-bytecode output)))
-
-;;; TODO?: This is not a full compile-file - it returns different values
-;;; and is not good at handling errors, etc. That stuff is complicated enough
-;;; that it's probably out of scope. But it's nice to have a convenience
-;;; function like this for practical purposes.
-(defun compile-file (input-file
-                     &rest keys
-                     &key (output-file nil ofp) (external-format :default)
-                       ((:verbose *compile-verbose*) *compile-verbose*)
-                       ((:print *compile-print*) *compile-print*)
-                     &allow-other-keys)
-  (let ((output-file (if ofp
-                         output-file
-                         (make-pathname :type "faslbc" :defaults input-file))))
-    (with-open-file (in input-file :external-format external-format)
-      (with-open-file (out output-file
-                           :direction :output
-                           :if-exists :supersede
-                           :if-does-not-exist :create
-                           :element-type '(unsigned-byte 8))
-        (apply #'compile-stream in out keys)))
-    output-file))
