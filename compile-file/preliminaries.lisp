@@ -1,5 +1,8 @@
 (in-package #:cvm.compile-file)
 
+;;; Compilation environment the file compiler evaluates and compiles code in.
+(defvar *environment*)
+
 ;;; Magic number used to identify our FASLs.
 (defconstant +magic+ #x8d7498b1) ; randomly chosen bytes.
 

@@ -11,13 +11,17 @@
   (values))
 
 ;; input is a character stream. output is a ub8 stream.
-(defun compile-stream (input output &key environment &allow-other-keys)
+(defun compile-stream (input output
+                       &key environment (reader-client *reader-client*)
+                       &allow-other-keys)
   (with-constants ()
     ;; Read and compile the forms.
     (loop with env = (cmp:coerce-to-lexenv environment)
           with eof = (gensym "EOF")
           with *compile-time-too* = nil
-          for form = (read input nil eof)
+          with *environment* = environment
+          with eclector.base:*client* = reader-client
+          for form = (eclector.reader:read input nil eof)
           until (eq form eof)
           when *compile-print*
             do (describe-form form)
@@ -32,9 +36,9 @@
                      &key (output-file nil ofp) (external-format :default)
                        ((:verbose *compile-verbose*) *compile-verbose*)
                        ((:print *compile-print*) *compile-print*)
-                       environment
+                       environment (reader-client *reader-client*)
                      &allow-other-keys)
-  (declare (ignore environment)) ; passed to compile-stream
+  (declare (ignore environment reader-client)) ; passed to compile-stream
   (let ((output-file (if ofp
                          output-file
                          (make-pathname :type "faslbc" :defaults input-file))))
