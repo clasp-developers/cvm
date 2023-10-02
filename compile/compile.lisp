@@ -1,27 +1,3 @@
-(defpackage #:cvm.compile
-  (:use #:cl)
-  (:local-nicknames (#:m #:cvm.machine)
-                    (#:arg #:cvm.argparse))
-  (:shadow #:compile #:eval #:constantp)
-  (:export #:compile-into #:compile #:eval)
-  ;; Compiler guts - used in cmpltv
-  (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
-           #:make-lexical-environment #:make-local-macro #:make-symbol-macro
-           #:coerce-to-lexenv #:funs #:vars
-           #:compute-macroexpander)
-  (:export #:var-info #:fun-info #:expand #:symbol-macro-expansion)
-  (:export #:load-literal-info)
-  (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
-  (:export #:fdefinition-info #:fdefinition-info-name)
-  (:export #:value-cell-info #:value-cell-info-name)
-  (:export #:constant-info #:constant-info-value)
-  (:export #:env-info)
-  (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
-  (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
-           #:cfunction-closed #:cfunction-entry-point #:cfunction-name
-           #:cfunction-lambda-list #:cfunction-doc #:cfunction-final-size
-           #:annotation-module-position))
-
 (in-package #:cvm.compile)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -660,7 +636,6 @@
       env
       ;; Assume we've been passed a global environment.
       ;; NOTE: Other than the external COMPILE(-INTO), EVAL,
-      ;; and LOAD-LITERAL-INFO,
       ;; all functions in this file expecting an environment
       ;; specifically want one of our lexical environments.
       (make-null-lexical-environment env)))
@@ -712,6 +687,32 @@
   (let* ((expansion (trucler:expansion info))
          (expander (lambda (form env) (declare (ignore form env)) expansion)))
     (expand expander symbol env)))
+
+;;; Not used in this compiler, but useful in various other places.
+(defun macroexpand-1 (form &optional env)
+  (typecase form
+    (symbol
+     (let ((info (trucler:describe-variable m:*client* env form)))
+       (if (typep info 'trucler:symbol-macro-description)
+           (values (symbol-macro-expansion info form env) t)
+           (values form nil))))
+    ((cons symbol)
+     (let* ((head (car form))
+            (info (if (symbolp head)
+                      (trucler:describe-function m:*client* env head)
+                      nil)))
+       (if (typep info 'trucler:macro-description)
+           (values (expand (trucler:expander info) form env) t)
+           (values form nil))))
+    (t (values form nil))))
+
+;;; ditto.
+(defun macroexpand (form &optional env)
+  (loop with ever-expanded = nil
+        do (multiple-value-bind (expansion expandedp) (macroexpand-1 form env)
+             (if expandedp
+                 (setf ever-expanded t form expansion)
+                 (return (values form ever-expanded))))))
 
 (defmethod compile-symbol ((info trucler:symbol-macro-description)
                            form env context)
@@ -1267,8 +1268,8 @@
 (defun compute-macroexpander (name lambda-list body env)
   ;; see comment in parse-macro for explanation
   ;; as to how we're using the host here
-  (cl:compile nil (arg:parse-macro name lambda-list body env
-                                   #'compile)))
+  (cl:compile nil (parse-macro name lambda-list body env
+                               #'compile)))
 
 (defmethod compile-special ((op (eql 'macrolet)) form env context)
   (let* ((bindings (second form)) (body (cddr form))
@@ -1698,8 +1699,22 @@
   (resolve-fixup-sizes cmodule)
   (create-module-bytecode cmodule))
 
+;;; The compiler works with compilation environments, but for loading
+;;; in constants and stuff it may need a run-time environment.
+;;; This function is called to retrieve that environment.
+;;; The argument is a global compilation environment, e.g. the
+;;; argument provided to COMPILE or EVAL.
+(defgeneric run-time-environment (client compilation-environment)
+  ;; By default, the compilation environment is assumed to be
+  ;; identical to the run-time environment. E.g. for the native client
+  ;; they're both NIL.
+  (:method (client cmpenv)
+    (declare (ignore client))
+    cmpenv))
+
 ;;; Given info about a literal, return an object corresponding to it for an
 ;;; actual runtime constants vector.
+;;; ENVIRONMENT is a global compilation environment.
 (defgeneric load-literal-info (client literal-info environment))
 
 (defmethod load-literal-info (client (info cfunction) env)
@@ -1710,19 +1725,14 @@
 (defmethod load-literal-info (client (info constant-info) env)
   (declare (ignore client env))
   (constant-info-value info))
-;;; By default we expect the runtime to use CL:FDEFINITION.
 (defmethod load-literal-info (client (info fdefinition-info) env)
-  (declare (ignore client env))
-  (fdefinition-info-name info))
-;;; ...and SYMBOL-NAME
+  (m:link-function client (run-time-environment m:*client* env)
+                   (fdefinition-info-name info)))
 (defmethod load-literal-info (client (info value-cell-info) env)
-  (declare (ignore client env))
-  (value-cell-info-name info))
-;;; By default the VM just ignores the environment and uses the
-;;; native global environment.
+  (m:link-variable client (run-time-environment m:*client* env)
+                   (value-cell-info-name info)))
 (defmethod load-literal-info (client (info env-info) env)
-  (declare (ignore client))
-  env)
+  (m:link-environment client (run-time-environment m:*client* env)))
 
 ;;; Run down the hierarchy and link the compile time representations
 ;;; of modules and functions together into runtime objects.

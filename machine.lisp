@@ -14,6 +14,7 @@
   (:export #:bytecode-closure #:make-bytecode-closure
            #:bytecode-closure-template #:bytecode-closure-env)
   (:export #:compute-instance-function)
+  (:export #:link-function #:link-variable #:link-environment)
   (:export #:disassemble #:disassemble-instruction))
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.

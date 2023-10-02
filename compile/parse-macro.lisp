@@ -1,4 +1,4 @@
-(in-package #:cvm.argparse)
+(in-package #:cvm.compile)
 
 #|
 Here's the skinny.
@@ -112,7 +112,7 @@ FIXME: Currently PARSE-MACRO still expects CL:BLOCK to be defined standardly.
         (let ((s (gensym "ARGCOUNT-CHECK")))
           (push `(,s
                   (unless (<= ,nreq ,nargs ,@(when nmax `(,nmax)))
-                    (error 'wrong-number-of-arguments
+                    (error 'arg:wrong-number-of-arguments
                            :given-nargs ,nargs
                            :min-nargs ,nreq
                            ,@(when nmax `(:max-nargs ,nmax)))))
@@ -121,7 +121,7 @@ FIXME: Currently PARSE-MACRO still expects CL:BLOCK to be defined standardly.
       (when keysp
         (let ((s (gensym "EVEN-KEYS-CHECK")))
           (push `(,s (unless (evenp (- ,nargs ,(+ nreq nopt)))
-                       (error 'odd-keywords)))
+                       (error 'arg:odd-keywords)))
                 bindings)
           (push s ignorables)))
       ;; Required parameters
@@ -180,7 +180,7 @@ FIXME: Currently PARSE-MACRO still expects CL:BLOCK to be defined standardly.
                    (eq key :allow-other-keys)) ; always valid
           collect key into unknown-keys
         finally (when unknown-keys
-                  (error 'unrecognized-keyword-argument
+                  (error 'arg:unrecognized-keyword-argument
                          :unrecognized-keywords unknown-keys))))
 
 ;;; Check if a keyword is in the plist. The plist is valid and has

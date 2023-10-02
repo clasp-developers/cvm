@@ -1,11 +1,11 @@
-(defpackage #:cvm.vm
+(defpackage #:cvm.vm-native
   (:use #:cl)
   (:local-nicknames (#:m #:cvm.machine)
                     (#:arg #:cvm.argparse))
   (:export #:initialize-vm)
   (:export #:*trace*))
 
-(in-package #:cvm.vm)
+(in-package #:cvm.vm-native)
 
 (defstruct vm
   (values nil :type list)

@@ -2,7 +2,7 @@
 ;;; You can also use it yourself: just load this file. SBCL will quit
 ;;; with exit status based on whether everything passed.
 
-(ql:quickload :cvm/test)
+(ql:quickload '(:cvm/test :cvm/vm-native))
 
 (defpackage #:cvm.test.script
   (:use #:cl))
@@ -26,8 +26,8 @@
   #+sbcl (sb-ext:exit :code code))
 
 (defun test ()
-  (cvm.vm:initialize-vm 20000)
+  (cvm.vm-native:initialize-vm 20000)
   ;; won't work outside SBCL
-  (exit (cvm.test:run! nil (make-instance 'trucler-native-sbcl:client))))
+  (exit (cvm.test:run-native! (make-instance 'trucler-native-sbcl:client))))
 
 (test)
