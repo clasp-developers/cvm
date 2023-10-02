@@ -49,4 +49,4 @@
                            :if-does-not-exist :create
                            :element-type '(unsigned-byte 8))
         (apply #'compile-stream in out keys)))
-    output-file))
+    (values output-file nil nil)))

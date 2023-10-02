@@ -92,6 +92,10 @@
                                (:file "sham" :depends-on ("packages"))
                                (:file "rt" :depends-on ("sham"
                                                         "packages"))))
+                 (:module "fasl"
+                  :depends-on ("suites" "rt" "packages")
+                  :components ((:file "similarity")
+                               (:file "externalize")))
                  (:module "ansi"
                   :depends-on ("suites" "rt" "packages")
                   ;; These can be loaded in any order.
