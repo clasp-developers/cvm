@@ -692,7 +692,7 @@
 (defun macroexpand-1 (form &optional env)
   (typecase form
     (symbol
-     (let ((info (trucler:describe-variable m:*client* form env)))
+     (let ((info (trucler:describe-variable m:*client* env form)))
        (if (typep info 'trucler:symbol-macro-description)
            (values (symbol-macro-expansion info form env) t)
            (values form nil))))
