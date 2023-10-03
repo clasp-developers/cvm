@@ -57,3 +57,9 @@
             (throw) (throw nil) (throw nil nil nil) (throw nil nil . t)
             (throw . t) (throw nil . t)
             (unwind-protect) (unwind-protect . t)))))
+
+(5am:test unknown-exit
+  ;; these must fail immediately, unlike unknown references, since they
+  ;; cannot be resolved
+  (compilation-fails '(return-from a))
+  (compilation-fails '(go a)))
