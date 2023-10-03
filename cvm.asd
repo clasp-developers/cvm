@@ -104,6 +104,7 @@
                  (:module "compiler-conditions"
                   :depends-on ("suites" "rt" "packages")
                   :components ((:file "reference")
+                               (:file "syntax")
                                (:file "macroexpansion")))
                  (:module "ansi"
                   :depends-on ("suites" "rt" "packages")

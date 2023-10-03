@@ -896,6 +896,7 @@
              (valf-context (new-context context :receiving 1)))
         (dolist (binding bindings)
           (multiple-value-bind (var valf) (canonicalize-binding binding)
+            (assert (symbolp var))
             (compile-form valf env valf-context)
             (cond ((or (member var specials)
                        (globally-special-p var env))
@@ -918,6 +919,7 @@
         (inner-context context))
     (dolist (binding bindings)
       (multiple-value-bind (var valf) (canonicalize-binding binding)
+        (assert (symbolp var))
         (compile-form valf env (new-context inner-context :receiving 1))
         (cond ((or (member var specials) (globally-special-p var env))
                (incf special-binding-count)
@@ -1047,6 +1049,7 @@
             (assemble context m:pop)))
         (do ((pairs pairs (cddr pairs)))
             ((endp pairs))
+          (assert (and (consp pairs) (consp (cdr pairs))))
           (let ((var (car pairs))
                 (valf (cadr pairs))
                 (rest (cddr pairs)))
@@ -1158,6 +1161,7 @@
           (error "The GO tag ~a does not exist." (second form))))))
 
 (defun compile-block (name body env context)
+  (assert (symbolp name))
   (let ((block-dynenv (gensym "BLOCK-DYNENV")))
     (multiple-value-bind (env body-context-1)
         (bind-vars (list block-dynenv) env context)
@@ -1264,6 +1268,7 @@
                   collect (destructure-syntax
                               (symbol-macrolet-binding name expansion)
                               (binding :rest nil)
+                            (assert (symbolp name))
                             (cons name (make-symbol-macro name expansion))))))
       (compile-locally body (make-lexical-environment
                              env
@@ -1365,8 +1370,15 @@
 (defmethod compile-special ((op (eql 'locally)) form env context)
   (compile-locally (rest form) env context))
 
+(defun check-eval-when-situations (situations)
+  (loop for situation in situations
+        unless (member situation '(cl:eval cl:compile cl:load
+                                   :execute :compile-toplevel :load-toplevel))
+          do (error "Bad ~s situation: ~s" 'eval-when situation)))
+
 (defmethod compile-special ((op (eql 'eval-when)) form env context)
   (destructure-syntax (eval-when situations . body) (form)
+    (check-eval-when-situations situations)
     (if (or (member 'cl:eval situations) (member :execute situations))
         (compile-progn body env context)
         (compile-literal nil env context))))
