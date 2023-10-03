@@ -79,3 +79,15 @@
           (signal 'cvm.compile:resolve-function :name fname))))
     (5am:is-false warning
                   "Unknown function resolution failed: ~s signaled" warning)))
+
+(5am:test resolve-unknown-macro
+  (5am:signals
+      cvm.compile:assumed-function-now-macro
+      (cvm.compile:with-compilation-unit (:override t)
+        (let ((mname (make-symbol "UNKNOWN-MACRO")))
+          (multiple-value-bind (_ warningsp failurep)
+              (ccompile nil `(lambda () (,mname)))
+            (declare (ignore _))
+            (5am:is-false warningsp "COMPILE reported warning too early")
+            (5am:is-false failurep "COMPILE reported failure too early"))
+          (signal 'cvm.compile:resolve-macro :name mname)))))
