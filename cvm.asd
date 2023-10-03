@@ -103,7 +103,8 @@
                  (:file "cleanliness" :depends-on ("suites" "rt" "packages"))
                  (:module "compiler-conditions"
                   :depends-on ("suites" "rt" "packages")
-                  :components ((:file "reference")))
+                  :components ((:file "reference")
+                               (:file "macroexpansion")))
                  (:module "ansi"
                   :depends-on ("suites" "rt" "packages")
                   ;; These can be loaded in any order.
