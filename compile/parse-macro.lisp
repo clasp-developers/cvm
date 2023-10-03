@@ -103,6 +103,12 @@ We also reuse this machinery to bind subexpressions of forms in the compiler. Se
           (push `(,new-target (rest ,target)) bindings)
           (push new-target ignorables)
           (setf target new-target)))
+      ;; Argument propriety
+      (let ((propriety (gensym "CHECK-PROPRIETY")))
+        (push `(,propriety (unless (proper-list-p ,target)
+                             (error 'improper-arguments :args ,target)))
+              bindings)
+        (push propriety ignorables))
       ;; Argument count
       (push `(,nargs (length ,target)) bindings)
       (push nargs ignorables)

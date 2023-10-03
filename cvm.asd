@@ -32,11 +32,14 @@
   :components
   ((:module "compile"
     :components ((:file "package")
-                 (:file "parse-macro" :depends-on ("package"))
+                 (:file "misc-program-conditions" :depends-on ("package"))
+                 (:file "parse-macro" :depends-on ("misc-program-conditions"
+                                                   "package"))
                  (:file "unknown-reference-conditions" :depends-on ("package"))
                  (:file "compilation-unit"
                   :depends-on ("unknown-reference-conditions" "package"))
                  (:file "compile" :depends-on ("unknown-reference-conditions"
+                                               "misc-program-conditions"
                                                "compilation-unit" "parse-macro"
                                                "package"))))))
 

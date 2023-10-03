@@ -603,7 +603,7 @@
          (values (make-lexical-environment env :vars new-vars)
                  (new-context context :frame-end var-count)))
       (when (constantp (first vars) env)
-        (error "Cannot bind constant value ~a!" (first vars))))))
+        (error 'bind-constant :name (first vars))))))
 
 ;;; Like the above, but function namespace.
 (defun bind-fvars (funs env context)
@@ -829,22 +829,32 @@
 (defgeneric compile-special (operator form env context))
 
 (defun compile-progn (forms env context)
-  (do ((forms forms (rest forms))
-       (body-context (new-context context :receiving 0)))
-      ((null (rest forms))
-       ;; this subsumes (progn) because (rest nil) = (first nil) = nil.
-       (compile-form (first forms) env context))
-    (compile-form (first forms) env body-context)))
+  (if (null forms)
+      (compile-literal nil env context)
+      (loop with body-context = (new-context context :receiving 0)
+            with remaining = forms
+            do (if (consp remaining)
+                   (let ((form (first remaining))
+                         (nrem (rest remaining)))
+                     (cond ((null nrem)
+                            ;; last form
+                            (compile-form form env context)
+                            (return))
+                           (t
+                            (compile-form form env body-context)
+                            (setq remaining nrem))))
+                   (error 'improper-body :body forms)))))
 
 (defun compile-locally (body env context)
-  (multiple-value-bind (body decls) (alexandria:parse-body body)
+  (multiple-value-bind (body decls) (parse-body body)
     (compile-progn body (add-specials (extract-specials decls) env) context)))
 
 (defun fun-name-block-name (fun-name)
-  (if (symbolp fun-name)
-      fun-name
-      ;; setf name
-      (second fun-name)))
+  (typecase fun-name
+    (symbol fun-name)
+    ((cons (eql setf) (cons symbol null)) (second fun-name))
+    ;; TODO: Client defined additional function names?
+    (t (error 'not-function-name :name fun-name))))
 
 (defmethod compile-special ((operator (eql 'progn)) form env context)
   (compile-progn (rest form) env context))
@@ -867,24 +877,33 @@
         (make-lexical-environment env :vars new-vars))))
 
 (defun extract-specials (declarations)
+  (unless (proper-list-p declarations)
+    (error 'improper-declarations :declarations declarations))
   (let ((specials '()))
     (dolist (declaration declarations)
+      (unless (proper-list-p declaration)
+        (error 'improper-declarations :declarations declaration))
       (dolist (specifier (cdr declaration))
+        (unless (consp specifier) (error 'not-declaration :specifier specifier))
         (case (first specifier)
           (special
+           (unless (proper-list-p specifier)
+             (error 'not-declaration :specifier specifier))
            (dolist (var (rest specifier))
              (push var specials))))))
     specials))
 
 (defun canonicalize-binding (binding)
   (if (consp binding)
-      (values (first binding) (second binding))
+      (destructure-syntax (binding name value) (binding :rest nil)
+        (values name value))
       (values binding nil)))
 
 (defmethod compile-special ((operator (eql 'let)) form env context)
   (destructure-syntax (let bindings . body) (form)
-    (multiple-value-bind (body decls)
-        (alexandria:parse-body body :whole form)
+    (unless (proper-list-p bindings)
+      (error 'improper-bindings :bindings bindings))
+    (multiple-value-bind (body decls) (parse-body body :whole form)
       (let* ((specials (extract-specials decls))
              (lexical-binding-count 0)
              (special-binding-count 0)
@@ -896,7 +915,7 @@
              (valf-context (new-context context :receiving 1)))
         (dolist (binding bindings)
           (multiple-value-bind (var valf) (canonicalize-binding binding)
-            (assert (symbolp var))
+            (unless (symbolp var) (error 'variable-not-symbol :name var))
             (compile-form valf env valf-context)
             (cond ((or (member var specials)
                        (globally-special-p var env))
@@ -914,12 +933,14 @@
 
 (defun compile-let* (bindings decls body env context
                      &key (block-name nil block-name-p))
+  (unless (proper-list-p bindings)
+    (error 'improper-bindings :bindings bindings))
   (let ((special-binding-count 0)
         (specials (extract-specials decls))
         (inner-context context))
     (dolist (binding bindings)
       (multiple-value-bind (var valf) (canonicalize-binding binding)
-        (assert (symbolp var))
+        (unless (symbolp var) (error 'variable-not-symbol :name var))
         (compile-form valf env (new-context inner-context :receiving 1))
         (cond ((or (member var specials) (globally-special-p var env))
                (incf special-binding-count)
@@ -947,11 +968,13 @@
 
 (defmethod compile-special ((operator (eql 'let*)) form env context)
   (destructure-syntax (let* bindings . body) (form)
-    (multiple-value-bind (body decls) (alexandria:parse-body body)
+    (multiple-value-bind (body decls) (parse-body body)
       (compile-let* bindings decls body env context))))
 
 (defmethod compile-special ((operator (eql 'flet)) form env context)
   (destructure-syntax (flet definitions . body) (form)
+    (unless (proper-list-p definitions)
+      (error 'improper-bindings :bindings definitions))
     (loop for definition in definitions
           do (destructure-syntax (flet-definition name lambda-list . body)
                  (definition :rest nil)
@@ -964,6 +987,12 @@
 
 (defmethod compile-special ((operator (eql 'labels)) form env context)
   (destructure-syntax (labels definitions . body) (form)
+    (unless (proper-list-p definitions)
+      (error 'improper-bindings :bindings definitions))
+    (mapc (lambda (bind)
+            (unless (proper-list-p bind)
+              (error 'improper-arguments :args bind)))
+          definitions)
     (multiple-value-bind (new-env new-context)
         (bind-fvars (mapcar #'first definitions) env context)
       (let* ((module (context-module context))
@@ -1042,6 +1071,8 @@
 
 (defmethod compile-special ((op (eql 'setq)) form env context)
   (let ((pairs (rest form)))
+    (unless (proper-list-p pairs)
+      (error 'setq-uneven :remainder pairs))
     (if (null pairs)
         (unless (eql (context-receiving context) 0)
           (assemble context m:nil)
@@ -1049,10 +1080,12 @@
             (assemble context m:pop)))
         (do ((pairs pairs (cddr pairs)))
             ((endp pairs))
-          (assert (and (consp pairs) (consp (cdr pairs))))
+          (unless (and (consp pairs) (consp (cdr pairs)))
+            (error 'setq-uneven :remainder pairs))
           (let ((var (car pairs))
                 (valf (cadr pairs))
                 (rest (cddr pairs)))
+            (unless (symbolp var) (error 'variable-not-symbol :name var))
             (compile-setq-1 (var-info var env) var valf env
                             (if rest
                                 (new-context context :receiving 0)
@@ -1077,7 +1110,7 @@
       (assemble-maybe-long context m:closure (closure-index info context))))
 
 (defun compile-function-lookup (fnameoid env context)
-  (etypecase fnameoid
+  (typecase fnameoid
     (lambda-expression (compile-lambda-expression fnameoid env context))
     (function-name
      (let ((info (fun-info fnameoid env)))
@@ -1088,7 +1121,8 @@
           (reference-lexical-variable info context))
          (null
           (warn-unknown 'unknown-function :name fnameoid)
-          (emit-fdefinition context (fdefinition-index fnameoid context))))))))
+          (emit-fdefinition context (fdefinition-index fnameoid context))))))
+    (t (error 'not-fnameoid :fnameoid fnameoid))))
 
 (defmethod compile-special ((op (eql 'function)) form env context)
   (destructure-syntax (function fnameoid) (form)
@@ -1103,6 +1137,8 @@
   (let ((statements (rest form))
         (new-tags (tags env))
         (tagbody-dynenv (gensym "TAG-DYNENV")))
+    (unless (proper-list-p statements)
+      (error 'improper-body :body statements))
     (multiple-value-bind (env stmt-context-1)
         (bind-vars (list tagbody-dynenv) env context)
       (let* ((dynenv-info (var-info tagbody-dynenv env))
@@ -1155,13 +1191,14 @@
 
 (defmethod compile-special ((op (eql 'go)) form env context)
   (destructure-syntax (go tag) (form)
+    (unless (go-tag-p tag) (error 'go-tag-not-tag :tag tag))
     (let ((pair (assoc tag (tags env))))
       (if pair
           (compile-exit (cdr pair) context)
-          (error "The GO tag ~a does not exist." (second form))))))
+          (error 'no-go :tag tag)))))
 
 (defun compile-block (name body env context)
-  (assert (symbolp name))
+  (unless (symbolp name) (error 'block-name-not-symbol :name name))
   (let ((block-dynenv (gensym "BLOCK-DYNENV")))
     (multiple-value-bind (env body-context-1)
         (bind-vars (list block-dynenv) env context)
@@ -1195,11 +1232,12 @@
 
 (defmethod compile-special ((op (eql 'return-from)) form env context)
   (destructure-syntax (return-from name &optional value) (form)
+    (unless (symbolp name) (error 'block-name-not-symbol :name name))
     (compile-form value env (new-context context :receiving t))
     (let ((pair (assoc name (blocks env))))
       (if pair
           (compile-exit (cdr pair) context)
-          (error "The block ~a does not exist." name)))))
+          (error 'no-return :name name)))))
 
 (defmethod compile-special ((op (eql 'catch)) form env context)
   (destructure-syntax (catch tag . body) (form)
@@ -1263,12 +1301,15 @@
 
 (defmethod compile-special ((op (eql 'symbol-macrolet)) form env context)
   (destructure-syntax (symbol-macrolet bindings . body) (form)
+    (unless (proper-list-p bindings)
+      (error 'improper-bindings :bindings bindings))
     (let ((smacros
             (loop for binding in bindings
                   collect (destructure-syntax
                               (symbol-macrolet-binding name expansion)
                               (binding :rest nil)
-                            (assert (symbolp name))
+                            (unless (symbolp name)
+                              (error 'variable-not-symbol :name name))
                             (cons name (make-symbol-macro name expansion))))))
       (compile-locally body (make-lexical-environment
                              env
@@ -1308,6 +1349,8 @@
 
 (defmethod compile-special ((op (eql 'macrolet)) form env context)
   (destructure-syntax (macrolet bindings . body) (form)
+    (unless (proper-list-p bindings)
+      (error 'improper-bindings :bindings bindings))
     (let ((macros
             (loop with env = (lexenv-for-macrolet env)
                   for binding in bindings
@@ -1371,10 +1414,12 @@
   (compile-locally (rest form) env context))
 
 (defun check-eval-when-situations (situations)
+  (unless (proper-list-p situations)
+    (error 'improper-situations :situations situations))
   (loop for situation in situations
         unless (member situation '(cl:eval cl:compile cl:load
                                    :execute :compile-toplevel :load-toplevel))
-          do (error "Bad ~s situation: ~s" 'eval-when situation)))
+          do (error 'invalid-eval-when-situation :situation situation)))
 
 (defmethod compile-special ((op (eql 'eval-when)) form env context)
   (destructure-syntax (eval-when situations . body) (form)
@@ -1401,7 +1446,7 @@
   (multiple-value-bind (body decls documentation)
       (if forms-only
           (values body nil)
-          (alexandria:parse-body body :documentation t))
+          (parse-body body :documentation t))
     (declare (ignore documentation)) ; FIXME
     (multiple-value-bind (required optionals rest keys aok-p aux key-p)
         (alexandria:parse-ordinary-lambda-list lambda-list)

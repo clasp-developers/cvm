@@ -10,7 +10,11 @@
 (defun compilation-fails (form)
   ;; Allow either ccompile signaling an error, or returning a failure indication.
   (nth-value 2 (handler-case (ccompile nil `(lambda () ,form))
-                 (error () (values nil t t)))))
+                 (error (e)
+                   ;; if we do get an error, make sure it's a PROGRAM-ERROR.
+                   (5am:is-true (typep e 'program-error)
+                                "on form ~s, compiler signaled ~s and not a program error" form e)
+                   (values nil t t)))))
 
 (5am:test special-form-syntax
   (flet ((f (form)
