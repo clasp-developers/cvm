@@ -2,8 +2,10 @@
   (:use #:cl)
   (:local-nicknames (#:m #:cvm.machine)
                     (#:arg #:cvm.argparse))
-  (:shadow #:compile #:eval #:constantp #:macroexpand-1 #:macroexpand)
+  (:shadow #:compile #:eval #:constantp #:macroexpand-1 #:macroexpand
+           #:with-compilation-unit)
   (:export #:compile-into #:compile #:eval #:eval-progn)
+  (:export #:with-compilation-unit #:with-compilation-results)
   ;; Compiler guts - used in cmpltv
   (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
            #:make-lexical-environment #:make-local-macro #:make-symbol-macro
@@ -20,4 +22,11 @@
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
            #:cfunction-closed #:cfunction-entry-point #:cfunction-name
            #:cfunction-lambda-list #:cfunction-doc #:cfunction-final-size
-           #:annotation-module-position))
+           #:annotation-module-position)
+  ;; Conditions and compilation unit handling
+  (:export #:with-compilation-unit #:with-compilation-results)
+  (:export #:unknown-reference #:unknown-variable #:unknown-function
+           #:warn-unknown #:name
+           #:unknown-reference-resolution #:resolve-reference
+           #:resolve-function #:resolve-macro
+           #:assumed-function-now-macro))

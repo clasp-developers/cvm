@@ -660,7 +660,9 @@
 
 ;;; As CL:COMPILE, but doesn't mess with function bindings.
 (defun compile (lambda-expression &optional env (m:*client* m:*client*))
-  (compile-link lambda-expression env))
+  (with-compilation-results
+    (with-compilation-unit ()
+      (compile-link lambda-expression env))))
 
 ;;; Evaluate FORMS as a progn without relying on PROGN to be bound.
 (defun eval-progn (forms &optional env (m:*client* m:*client*))
@@ -754,7 +756,7 @@
       (assemble context m:pop))))
 
 (defmethod compile-symbol ((info null) form env context)
-  (warn "Unknown variable ~a: treating as special" form)
+  (warn-unknown 'unknown-variable :name form)
   (unless (eql (context-receiving context) 0)
     (assemble context m:symbol-value (value-cell-index form context))
     (when (eql (context-receiving context) 't)
@@ -786,7 +788,7 @@
     (compile-call (rest form) env context)))
 
 (defmethod compile-combination ((info null) form env context)
-  (warn "Unknown operator ~a: treating as global function" (first form))
+  (warn-unknown 'unknown-function :name (first form))
   (emit-fdefinition context (fdefinition-index (first form) context))
   (compile-call (rest form) env context))
 
@@ -1003,7 +1005,7 @@
   (compile-setq-1-special var valf env context))
 
 (defmethod compile-setq-1 ((info null) var valf env context)
-  (warn "Unknown variable ~a: treating as special" var)
+  (warn-unknown 'unknown-variable :name var)
   (compile-setq-1-special var valf env context))
 
 (defmethod compile-setq-1 ((info trucler:lexical-variable-description)
@@ -1070,7 +1072,7 @@
          (trucler:local-function-description
           (reference-lexical-variable info context))
          (null
-          (warn "Unknown function ~a: treating as global function" fnameoid)
+          (warn-unknown 'unknown-function :name fnameoid)
           (emit-fdefinition context (fdefinition-index fnameoid context))))))))
 
 (defmethod compile-special ((op (eql 'function)) form env context)

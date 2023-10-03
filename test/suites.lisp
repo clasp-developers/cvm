@@ -9,4 +9,6 @@
 (5am:def-suite eval-and-compile :in ansi)
 (5am:def-suite data-and-control-flow :in ansi)
 
+(5am:def-suite compiler-conditions :in cvm)
+
 (5am:def-suite fasl :in cvm-cross)
