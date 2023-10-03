@@ -803,16 +803,17 @@
 (defun compile-lambda-expression (lexpr env context
                                   &rest keys &key block-name forms-only)
   (declare (ignore block-name forms-only))
-  (check-type lexpr lambda-expression)
-  (let* ((cfunction (apply #'compile-lambda (cadr lexpr) (cddr lexpr)
-                           env (context-module context) keys))
-         (closed (cfunction-closed cfunction)))
-    (loop for info across closed
-          do (reference-lexical-variable info context))
-    (if (zerop (length closed))
-        (emit-const context (cfunction-literal-index cfunction context))
-        (assemble context m:make-closure
-          (cfunction-literal-index cfunction context)))))
+  ;; TODO: check car is actually LAMBDA
+  (destructure-syntax (lambda lambda-list . body) (lexpr)
+    (let* ((cfunction (apply #'compile-lambda lambda-list body
+                             env (context-module context) keys))
+           (closed (cfunction-closed cfunction)))
+      (loop for info across closed
+            do (reference-lexical-variable info context))
+      (if (zerop (length closed))
+          (emit-const context (cfunction-literal-index cfunction context))
+          (assemble context m:make-closure
+            (cfunction-literal-index cfunction context))))))
 
 (defun compile-lambda-form (form env context)
   ;; FIXME: We can probably handle this more efficiently (without consing
@@ -881,33 +882,34 @@
       (values binding nil)))
 
 (defmethod compile-special ((operator (eql 'let)) form env context)
-  (multiple-value-bind (body decls)
-      (alexandria:parse-body (cddr form))
-    (let* ((specials (extract-specials decls))
-           (lexical-binding-count 0)
-           (special-binding-count 0)
-           (post-binding-env (add-specials specials env))
-           (frame-start (context-frame-end context))
-           ;; The values are compiled in a context with no extra
-           ;; frame slots used, since the BIND takes place after the
-           ;; values are evaluated.
-           (valf-context (new-context context :receiving 1)))
-      (dolist (binding (second form))
-        (multiple-value-bind (var valf) (canonicalize-binding binding)
-          (compile-form valf env valf-context)
-          (cond ((or (member var specials)
-                     (globally-special-p var env))
-                 (incf special-binding-count)
-                 (emit-special-bind context var))
-                (t
-                 (setf (values post-binding-env context)
-                       (bind-vars (list var) post-binding-env context))
-                 (incf lexical-binding-count)
-                 (maybe-emit-make-cell (var-info var post-binding-env)
-                                       context)))))
-      (emit-bind context lexical-binding-count frame-start)
-      (compile-progn body post-binding-env context)
-      (emit-unbind context special-binding-count))))
+  (destructure-syntax (let bindings . body) (form)
+    (multiple-value-bind (body decls)
+        (alexandria:parse-body body :whole form)
+      (let* ((specials (extract-specials decls))
+             (lexical-binding-count 0)
+             (special-binding-count 0)
+             (post-binding-env (add-specials specials env))
+             (frame-start (context-frame-end context))
+             ;; The values are compiled in a context with no extra
+             ;; frame slots used, since the BIND takes place after the
+             ;; values are evaluated.
+             (valf-context (new-context context :receiving 1)))
+        (dolist (binding bindings)
+          (multiple-value-bind (var valf) (canonicalize-binding binding)
+            (compile-form valf env valf-context)
+            (cond ((or (member var specials)
+                       (globally-special-p var env))
+                   (incf special-binding-count)
+                   (emit-special-bind context var))
+                  (t
+                   (setf (values post-binding-env context)
+                         (bind-vars (list var) post-binding-env context))
+                   (incf lexical-binding-count)
+                   (maybe-emit-make-cell (var-info var post-binding-env)
+                                         context)))))
+        (emit-bind context lexical-binding-count frame-start)
+        (compile-progn body post-binding-env context)
+        (emit-unbind context special-binding-count)))))
 
 (defun compile-let* (bindings decls body env context
                      &key (block-name nil block-name-p))
@@ -942,30 +944,38 @@
     (emit-unbind context special-binding-count)))
 
 (defmethod compile-special ((operator (eql 'let*)) form env context)
-  (let ((bindings (second form)) (body (cddr form)))
+  (destructure-syntax (let* bindings . body) (form)
     (multiple-value-bind (body decls) (alexandria:parse-body body)
       (compile-let* bindings decls body env context))))
 
 (defmethod compile-special ((operator (eql 'flet)) form env context)
-  (destructuring-bind (definitions . body) (rest form)
-    (loop for (name lambda-list . body) in definitions
-          do (compile-lambda-expression
-              `(lambda ,lambda-list ,@body)
-              env context :block-name (fun-name-block-name name)))
+  (destructure-syntax (flet definitions . body) (form)
+    (loop for definition in definitions
+          do (destructure-syntax (flet-definition name lambda-list . body)
+                 (definition :rest nil)
+               (compile-lambda-expression
+                `(lambda ,lambda-list ,@body)
+                env context :block-name (fun-name-block-name name))))
     (emit-bind context (length definitions) (context-frame-end context))
     (multiple-value-call #'compile-locally body
       (bind-fvars (mapcar #'car definitions) env context))))
 
 (defmethod compile-special ((operator (eql 'labels)) form env context)
-  (destructuring-bind (definitions . body) (rest form)
+  (destructure-syntax (labels definitions . body) (form)
     (multiple-value-bind (new-env new-context)
         (bind-fvars (mapcar #'first definitions) env context)
       (let* ((module (context-module context))
              (closures
-               (loop for (name lambda-list . body) in definitions
-                     for bname = (fun-name-block-name name)
-                     for fun = (compile-lambda lambda-list body new-env module
-                                               :block-name bname)
+               (loop for definition in definitions
+                     for (name fun)
+                       = (destructure-syntax
+                             (labels-binding name lambda-list . body)
+                             (definition :rest nil)
+                           (let ((bname (fun-name-block-name name)))
+                             (list name
+                                   (compile-lambda
+                                    lambda-list body new-env module
+                                    :block-name bname))))
                      for literal-index = (cfunction-literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
                        do (emit-const context literal-index)
@@ -1046,7 +1056,7 @@
                                 context)))))))
 
 (defmethod compile-special ((op (eql 'if)) form env context)
-  (destructuring-bind (condition then &optional else) (rest form)
+  (destructure-syntax (if condition then &optional else) (form)
     (compile-form condition env (new-context context :receiving 1))
     (let ((then-label (make-label))
           (done-label (make-label)))
@@ -1078,10 +1088,11 @@
           (emit-fdefinition context (fdefinition-index fnameoid context))))))))
 
 (defmethod compile-special ((op (eql 'function)) form env context)
-  (unless (eql (context-receiving context) 0)
-    (compile-function-lookup (second form) env context)
-    (when (eql (context-receiving context) t)
-      (assemble context m:pop))))
+  (destructure-syntax (function fnameoid) (form)
+    (unless (eql (context-receiving context) 0)
+      (compile-function-lookup fnameoid env context)
+      (when (eql (context-receiving context) t)
+        (assemble context m:pop)))))
 
 (defun go-tag-p (object) (typep object '(or symbol integer)))
 
@@ -1140,10 +1151,11 @@
            (emit-exit context label)))))
 
 (defmethod compile-special ((op (eql 'go)) form env context)
-  (let ((pair (assoc (second form) (tags env))))
-    (if pair
-        (compile-exit (cdr pair) context)
-        (error "The GO tag ~a does not exist." (second form)))))
+  (destructure-syntax (go tag) (form)
+    (let ((pair (assoc tag (tags env))))
+      (if pair
+          (compile-exit (cdr pair) context)
+          (error "The GO tag ~a does not exist." (second form))))))
 
 (defun compile-block (name body env context)
   (let ((block-dynenv (gensym "BLOCK-DYNENV")))
@@ -1174,10 +1186,11 @@
         (maybe-emit-entry-close context dynenv-info)))))
 
 (defmethod compile-special ((op (eql 'block)) form env context)
-  (compile-block (second form) (cddr form) env context))
+  (destructure-syntax (block name . body) (form)
+    (compile-block name body env context)))
 
 (defmethod compile-special ((op (eql 'return-from)) form env context)
-  (let ((name (second form)) (value (third form)))
+  (destructure-syntax (return-from name &optional value) (form)
     (compile-form value env (new-context context :receiving t))
     (let ((pair (assoc name (blocks env))))
       (if pair
@@ -1185,22 +1198,22 @@
           (error "The block ~a does not exist." name)))))
 
 (defmethod compile-special ((op (eql 'catch)) form env context)
-  (let ((tag (second form)) (body (cddr form))
-        (target (make-label)))
-    (compile-form tag env (new-context context :receiving 1))
-    (emit-catch context target)
-    (compile-progn body env (new-context context :dynenv '(:catch)))
-    (assemble context m:catch-close)
-    (emit-label context target)))
+  (destructure-syntax (catch tag . body) (form)
+    (let ((target (make-label)))
+      (compile-form tag env (new-context context :receiving 1))
+      (emit-catch context target)
+      (compile-progn body env (new-context context :dynenv '(:catch)))
+      (assemble context m:catch-close)
+      (emit-label context target))))
 
 (defmethod compile-special ((op (eql 'throw)) form env context)
-  (let ((tag (second form)) (result (third form)))
+  (destructure-syntax (throw tag result) (form)
     (compile-form tag env (new-context context :receiving 1))
     (compile-form result env (new-context context :receiving t))
     (assemble context m:throw)))
 
 (defmethod compile-special ((op (eql 'progv)) form env context)
-  (destructuring-bind (symbols values . body) (rest form)
+  (destructure-syntax (progv symbols values . body) (form)
     (compile-form symbols env (new-context context :receiving 1))
     (compile-form values env (new-context context :receiving 1))
     (assemble-maybe-long context m:progv (env-index context))
@@ -1209,7 +1222,7 @@
 
 (defmethod compile-special ((op (eql 'unwind-protect))
                             form env context)
-  (destructuring-bind (protected . cleanup) (rest form)
+  (destructure-syntax (unwind-protect protected . cleanup) (form)
     ;; Build a cleanup thunk.
     ;; This will often/usually be a closure, which is why we
     ;; can't just give M:PROTECT a constant argument.
@@ -1224,10 +1237,11 @@
     (assemble context m:cleanup)))
 
 (defmethod compile-special ((op (eql 'quote)) form env context)
-  (compile-literal (second form) env context))
+  (destructure-syntax (quote thing) (form)
+    (compile-literal thing env context)))
 
 (defmethod compile-special ((op (eql 'load-time-value)) form env context)
-  (destructuring-bind (form &optional read-only-p) (rest form)
+  (destructure-syntax (load-time-value form &optional read-only-p) (form)
     (check-type read-only-p boolean)
     ;; Stick info about the LTV into the literals vector. It will be handled
     ;; later by COMPILE or a file compiler.
@@ -1244,14 +1258,17 @@
          (assemble context m:pop))))))
 
 (defmethod compile-special ((op (eql 'symbol-macrolet)) form env context)
-  (let* ((bindings (second form)) (body (cddr form))
-         (smacros
-           (loop for (name expansion) in bindings
-                 collect (cons name (make-symbol-macro name expansion)))))
-    (compile-locally body (make-lexical-environment
-                           env
-                           :vars (append (nreverse smacros) (vars env)))
-                     context)))
+  (destructure-syntax (symbol-macrolet bindings . body) (form)
+    (let ((smacros
+            (loop for binding in bindings
+                  collect (destructure-syntax
+                              (symbol-macrolet-binding name expansion)
+                              (binding :rest nil)
+                            (cons name (make-symbol-macro name expansion))))))
+      (compile-locally body (make-lexical-environment
+                             env
+                             :vars (append (nreverse smacros) (vars env)))
+                       context))))
 
 (defun lexenv-for-macrolet (env)
   ;; Macrolet expanders need to be compiled in the local compilation environment,
@@ -1285,17 +1302,20 @@
                                  (apply #'compile-link lexpr env keys)))))
 
 (defmethod compile-special ((op (eql 'macrolet)) form env context)
-  (let* ((bindings (second form)) (body (cddr form))
-         (macros
-           (loop with env = (lexenv-for-macrolet env)
-                 for (name lambda-list . body) in bindings
-                 for macrof = (compute-macroexpander
-                               name lambda-list body env)
-                 for info = (make-local-macro name macrof)
-                 collect (cons name info))))
-    (compile-locally body (make-lexical-environment
-                           env :funs (append macros (funs env)))
-                     context)))
+  (destructure-syntax (macrolet bindings . body) (form)
+    (let ((macros
+            (loop with env = (lexenv-for-macrolet env)
+                  for binding in bindings
+                  collect (destructure-syntax
+                              (macrolet-binding name lambda-list . body)
+                              (binding :rest nil)
+                            (let* ((macrof (compute-macroexpander
+                                            name lambda-list body env))
+                                   (info (make-local-macro name macrof)))
+                              (cons name info))))))
+      (compile-locally body (make-lexical-environment
+                             env :funs (append macros (funs env)))
+                       context))))
 
 ;;; Compile resolution of a function designator into a function.
 ;;; This is only one value, so CONTEXT's receiving is ignored.
@@ -1318,7 +1338,7 @@
      (assemble-maybe-long context m:fdesignator (env-index context)))))
 
 (defmethod compile-special ((op (eql 'multiple-value-call)) form env context)
-  (let ((function-form (second form)) (forms (cddr form)))
+  (destructure-syntax (multiple-value-call function-form . forms) (form)
     (compile-fdesignator function-form env context)
     (if forms
         (let ((first (first forms))
@@ -1333,7 +1353,7 @@
         (emit-call context 0))))
 
 (defmethod compile-special ((op (eql 'multiple-value-prog1)) form env context)
-  (let ((first-form (second form)) (forms (cddr form)))
+  (destructure-syntax (multiple-value-prog1 first-form . forms) (form)
     (compile-form first-form env context)
     (unless (member (context-receiving context) '(0 1))
       (assemble context m:push-values))
@@ -1346,14 +1366,16 @@
   (compile-locally (rest form) env context))
 
 (defmethod compile-special ((op (eql 'eval-when)) form env context)
-  (let ((situations (second form)) (body (cddr form)))
+  (destructure-syntax (eval-when situations . body) (form)
     (if (or (member 'cl:eval situations) (member :execute situations))
         (compile-progn body env context)
         (compile-literal nil env context))))
 
 (defmethod compile-special ((op (eql 'the)) form env context)
   ;; ignore
-  (compile-form (third form) env context))
+  (destructure-syntax (the type form) (form)
+    (declare (ignore type))
+    (compile-form form env context)))
 
 ;;; Deal with lambda lists. Compile the body with the lambda vars bound.
 ;;; Optional/key handling is done in two steps:

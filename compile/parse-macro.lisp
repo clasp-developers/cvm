@@ -10,6 +10,8 @@ Instead, what we do is use a _host_ function as our macroexpander. The compiler 
 Of course, the actual macro body, as well as any default forms in the lambda list, must still be compiled by our compiler in the appropriate environment, rather than by the host. To accomplish this, PARSE-MACRO receives a callback, called COMPILER below. This is a function of two arguments and one keyword: a lambda expression, a compiler environment, and a :BLOCK-NAME. The function must compile the lambda in the environment and return a callable function. If :BLOCK-NAME is provided the body will have a block of that name wrapped around it.
 And here's the really funky part: PARSE-MACRO then includes this function as a literal object in the expression it returns. So the expression will have code looking something like `(funcall #<BYTECODE-FUNCTION ...> a b c)`. This lets the host function call our bytecode-compiled function even though they were compiled by completely different means in completely different kinds of environments. Literal functions are quite unusual in code, but since the macroexpander only needs to go through CL:COMPILE or CL:EVAL, and not CL:COMPILE-FILE (as macroexpanders are not dumped), this works out.
 End result: a callable host function that does lambda list processing independently of bytecode anything, but still calls into the bytecode when semantics demand it.
+
+We also reuse this machinery to bind subexpressions of forms in the compiler. See DESTRUCTURE-SYNTAX.
 |#
 
 ;;; returns four values:
@@ -207,3 +209,22 @@ End result: a callable host function that does lambda list processing independen
          (let* (,@bindings)
            (declare (ignorable ,@ignorables))
            (funcall ,bodyf ,@arguments))))))
+
+(defmacro destructure-syntax ((op &rest lambda-list) (form &key (rest t))
+                              &body body)
+  (declare (ignore op))
+  (alexandria:once-only (form)
+    (multiple-value-bind (bindings ignorables arguments parameters)
+        (process-lambda-list
+         (ecclesia:parse-macro-lambda-list lambda-list)
+         ;; since this is executing in the host, nothing fancy is required.
+         ;; this is only used for default forms, so block-name is never provided.
+         (lambda (lexpr env &key (block-name nil block-name-p))
+           (declare (ignore env block-name))
+           (assert (not block-name-p))
+           lexpr)
+         nil form nil rest)
+      `(let* (,@bindings
+              ,@(mapcar #'list parameters arguments))
+         (declare (ignorable ,@ignorables))
+         ,@body))))
