@@ -32,8 +32,15 @@
   :components
   ((:module "compile"
     :components ((:file "package")
-                 (:file "parse-macro" :depends-on ("package"))
-                 (:file "compile" :depends-on ("parse-macro"
+                 (:file "misc-program-conditions" :depends-on ("package"))
+                 (:file "parse-macro" :depends-on ("misc-program-conditions"
+                                                   "package"))
+                 (:file "unknown-reference-conditions" :depends-on ("package"))
+                 (:file "compilation-unit"
+                  :depends-on ("unknown-reference-conditions" "package"))
+                 (:file "compile" :depends-on ("unknown-reference-conditions"
+                                               "misc-program-conditions"
+                                               "compilation-unit" "parse-macro"
                                                "package"))))))
 
 (asdf:defsystem #:cvm/compile-file
@@ -97,6 +104,11 @@
                   :components ((:file "similarity")
                                (:file "externalize")))
                  (:file "cleanliness" :depends-on ("suites" "rt" "packages"))
+                 (:module "compiler-conditions"
+                  :depends-on ("suites" "rt" "packages")
+                  :components ((:file "reference")
+                               (:file "syntax")
+                               (:file "macroexpansion")))
                  (:module "ansi"
                   :depends-on ("suites" "rt" "packages")
                   ;; These can be loaded in any order.

@@ -125,12 +125,12 @@
 
 (deftest eval-when.15
   (let ((x :good))
-    (values (eval-when (load) (setq x :bad)) x))
+    (values (eval-when (cl:load) (setq x :bad)) x))
   nil :good)
 
 (deftest eval-when.16
   (let ((x :good))
-    (values (eval-when (compile) (setq x :bad)) x))
+    (values (eval-when (cl:compile) (setq x :bad)) x))
   nil :good)
 
 (deftest eval-when.17

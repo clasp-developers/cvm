@@ -14,20 +14,23 @@
 (defun compile-stream (input output
                        &key environment (reader-client *reader-client*)
                        &allow-other-keys)
-  (with-constants ()
-    ;; Read and compile the forms.
-    (loop with env = (cmp:coerce-to-lexenv environment)
-          with eof = (gensym "EOF")
-          with *compile-time-too* = nil
-          with *environment* = environment
-          with eclector.base:*client* = reader-client
-          for form = (eclector.reader:read input nil eof)
-          until (eq form eof)
-          when *compile-print*
-            do (describe-form form)
-          do (compile-toplevel form env))
-    ;; Write out the FASO bytecode.
-    (write-bytecode (reverse *instructions*) output)))
+  (cmp:with-compilation-results
+    (cmp:with-compilation-unit ()
+      (with-constants ()
+        ;; Read and compile the forms.
+        (loop with env = (cmp:coerce-to-lexenv environment)
+              with eof = (gensym "EOF")
+              with *compile-time-too* = nil
+              with *environment* = environment
+              with eclector.base:*client* = reader-client
+              for form = (eclector.reader:read input nil eof)
+              until (eq form eof)
+              when *compile-print*
+                do (describe-form form)
+              do (compile-toplevel form env))
+        ;; Write out the FASO bytecode.
+        (write-bytecode (reverse *instructions*) output))
+      output)))
 
 ;;; TODO?: This is not a full compile-file - it returns different values
 ;;; and is not good at handling errors, etc.
@@ -48,5 +51,6 @@
                            :if-exists :supersede
                            :if-does-not-exist :create
                            :element-type '(unsigned-byte 8))
-        (apply #'compile-stream in out keys)))
-    (values output-file nil nil)))
+        (multiple-value-bind (out warningsp failurep)
+            (apply #'compile-stream in out keys)
+          (values output-file warningsp failurep))))))
