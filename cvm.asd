@@ -41,7 +41,8 @@
                  (:file "compile" :depends-on ("unknown-reference-conditions"
                                                "misc-program-conditions"
                                                "compilation-unit" "parse-macro"
-                                               "package"))))))
+                                               "package"))
+		 (:file "documentation" :depends-on ("compile"))))))
 
 (asdf:defsystem #:cvm/compile-file
   :description "Reference implementation file compiler for CVM."

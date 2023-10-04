@@ -20,13 +20,13 @@
   (:export #:env-info)
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
-           #:cfunction-closed #:cfunction-entry-point #:cfunction-name
-           #:cfunction-lambda-list #:cfunction-doc #:cfunction-final-size
-           #:annotation-module-position)
+           #:cfunction-closed #:cfunction-final-entry-point
+	   #:cfunction-name
+           #:cfunction-lambda-list #:cfunction-doc #:cfunction-final-size)
   ;; Conditions and compilation unit handling
   (:export #:with-compilation-unit #:with-compilation-results)
   (:export #:unknown-reference #:unknown-variable #:unknown-function
-           #:warn-unknown #:name
+           #:name
            #:unknown-reference-resolution #:resolve-reference
            #:resolve-function #:resolve-macro
            #:assumed-function-now-macro))
