@@ -59,7 +59,8 @@
                  (:file "top-level-forms" :depends-on ("preliminaries" "package"))
                  (:file "compile-file"
                   :depends-on ("read" "top-level-forms" "cmpltv"
-                                      "encode" "package"))))))
+                                      "encode" "package"))
+		 (:file "documentation" :depends-on ("compile-file"))))))
 
 (asdf:defsystem #:cvm/load
   :description "Reference implementation FASL loader for CVM."
