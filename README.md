@@ -1,18 +1,14 @@
-Lisp implementation of Common Lisp VM used in Clasp and possibly for other purposes.
+CVM is an implementation of a Common Lisp evaluator, compiler, file compiler, and FASL loader, all written in portable Common Lisp. It compiles Lisp into a bytecode representation, which is interpreted by a simple virtual machine. The compiler is complete but simple, performing only easy optimizations; this makes it fast, and suited for code that does not necessarily need to run quickly, such as that evaluated just once.
 
-Specification is at https://github.com/clasp-developers/clasp/wiki/Virtual-machine-design
+Compilation and bytecode interpretation take place relative to specified environments. [Clostrum](https://github.com/s-expressionists/Clostrum) can be used to build a first-class environment to execute code in, meaning CVM can be used to execute code in an isolated environment, like a sandbox.
 
-# Design goals
+Bytecode functions exist as real functions, so they can be called the same as any other functions. Bytecode functions and native functions can coexist without difficulty and call each other.
 
-* Quick compilation of CL code (in more-or-less one pass)
-* Reasonably quick execution of the bytecode
-* Compatibility with native code, i.e. VM functions can call native functions and vice versa, with practical performance
-* Proper involvement of environments, so code can be compiled and/or loaded in artificial environments
-* Portability between implementations, i.e. bytecode compiled in one host Lisp can be loaded in any implementation of the VM
+The FASL format is simple and portable. Lisp source files can be compiled in one implementation and then loaded it into another, as long as the compilation and loading environments agree.
 
 # Quick start
 
-Load the `cvm` ASDF system. There is a dependency on [Clostrum](https://github.com/s-expressionists/Clostrum), which is not available on Quicklisp, so you'll need to set that up yourself.
+Load the `cvm` ASDF system. There is a dependency on Clostrum, which is not available on Quicklisp, so you'll need to set that up yourself.
 
 Before compiling or evaluating code, you need to set the client in order to inform Trucler how to get global definitions. On SBCL you can use the host environment as follows:
 
@@ -75,7 +71,7 @@ You can get a running trace of the machine state by binding `cvm.vm-native:*trac
 
 # First-class environments
 
-The `cvm/vm-cross` subsystem allows CVM to be used for compiling and running Lisp code in arbitrary first-class environments, in concert with [Clostrum](https://github.com/s-expressionists/Clostrum). Here is an example:
+The `cvm/vm-cross` subsystem allows CVM to be used for compiling and running Lisp code in arbitrary first-class environments, in concert with Clostrum. Here is an example:
 
 ```lisp
 ;;; cvm-cross does not itself load a global environment implementation,
@@ -95,10 +91,6 @@ The `cvm/vm-cross` subsystem allows CVM to be used for compiling and running Lis
 
 ;;; These new environments are totally devoid of bindings.
 ;;; To do anything useful, we have to define at least a few.
-;;; In this simple example, we will define CL:PROGN since it is used
-;;; by CVM.COMPILE:EVAL.
-(clostrum:make-special-operator cvm.machine:*client* *rte* 'progn t)
-
 ;;; We'll define + and *readtable* weirdly to emphasize that we are
 ;;; not operating in the host environment.
 (setf (clostrum:fdefinition cvm.machine:*client* *rte* '+) #'-)
@@ -145,4 +137,3 @@ Works. Except:
   * Contify?
   * Use multiple-value contexts for `multiple-value-call` with a lambda
 * Instructions for inline operations like `car`, possibly
-* Better syntax errors (required for serious use as a frontend)
