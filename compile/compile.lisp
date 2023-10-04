@@ -940,7 +940,9 @@
             (cond ((or (member var specials)
                        (globally-special-p var env))
                    (incf special-binding-count)
-                   (emit-special-bind context var))
+                   (emit-special-bind context var)
+		   (setf context
+			 (new-context context :dynenv '(:special))))
                   (t
                    (setf (values post-binding-env context)
                          (bind-vars (list var) post-binding-env context))
