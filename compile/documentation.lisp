@@ -14,6 +14,38 @@ Unlike CL:COMPILE, COMPILE does not accept a function name, and does not alter b
       "As CL:MACROEXPAND-1. Uses Trucler to interrogate for macro definitions, so it is (probably) more flexible than the host function."
       (documentation 'macroexpand-1 'function)
       "As CL:MACROEXPAND. Uses Trucler to interrogate for macro definitions, so it is (probably) more flexible than the host function."
+      (documentation 'make-null-lexical-environment 'function)
+      "Create a compiler lexenv given a global compilation environment. This can be used for local augmentations and passed as an argument to COMPILE, etc.
+
+See ADD-DECLARATIONS
+See ADD-MACROS
+See ADD-SYMBOL-MACROS"
+      (documentation 'lexenv-for-macrolet 'function)
+      "Given a compiler lexenv, return a lexenv stripped of runtime information. This is suitable for passing to COMPUTE-MACROEXPANDER and is used for compiling MACROLET forms correctly.
+
+See COMPUTE-MACROEXPANDER"
+      (documentation 'compute-macroexpander 'function)
+      "Given the definition of a local macro - its name, lambda list, body, and the environment it's being compiled in - return an actual function to use as a macroexpander. The environment should be one returned by LEXENV-FOR-MACROLET.
+
+See LEXENV-FOR-MACROLET
+See ADD-MACROS"
+      (documentation 'make-local-macro 'function)
+      "Given a macro name and expander function, return a compiler information structure it can use to understand the MACROLET binding. This structure is usable in concert with ADD-MACROS.
+
+See COMPUTE-MACROEXPANDER
+See ADD-MACROS"
+      (documentation 'make-symbol-macro 'function)
+      "Given a symbol and its macroexpansion, return a compiler information structure which it can use to understand the SYMBOL-MACROLET binding. This structure is usable in concert with ADD-SYMBOL-MACROS.
+
+See ADD-SYMBOL-MACROS"
+      (documentation 'add-macros 'function)
+      "Augment a compiler lexenv with new macro definitions. The new definitions should be an alist, with names for cars and macro information objects (returned by MAKE-LOCAL-MACRO) for cdrs.
+
+See MAKE-LOCAL-MACRO"
+      (documentation 'add-symbol-macros 'function)
+      "Augment a compiler lexenv with new symbol macro definitions. The new definitions should be an alist, with names for cars and symbol macro information objects (returned by MAKE-SYMBOL-MACRO) for cdrs.
+
+See MAKE-SYMBOL-MACRO"
       (documentation 'compile-into 'function)
       "Compile LAMBDA-EXPRESSION in the compilation ENVIRONMENT into a new compiler function within MODULE. The compiler function information is returned, but is not loaded into being an actual callable function. COMPILE-INTO underlies all other compilation operations and can be used for lower level purposes, such as getting a compiler function to serialize during COMPILE-FILE.
 If FORMS-ONLY is provided, the body of the lambda expression is treated as if it was in a PROGN, so declaration expressions are not permitted (and will be treated as forms). If BLOCK-NAME is provided, a block of that name will be established around the body of the lambda expression. These options are available so that functions can be compiled with implicit blocks or progns regardless of the compilation environment's bindings of CL:PROGN or CL:BLOCK.
@@ -44,6 +76,10 @@ See COMPILE-INTO"
 
 See CFUNCTION
 See CMODULE"
+      (documentation 'cfunction-nlocals 'function)
+      "Return the number of local variables bound within a compiler function.
+
+See CFUNCTION"
       (documentation 'cfunction-final-entry-point 'function)
       "Return the computed entry point for a compiler function. This is an index into the bytecode indicating the first instruction to be executed when the eventual function is called.
 

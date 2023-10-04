@@ -484,6 +484,10 @@
    :vars vars :tags tags :blocks blocks :funs funs
    :global-environment (global-environment parent)))
 
+(defun make-null-lexenv (global-compilation-environment)
+  (%make-lexical-environment
+   :global-environment global-compilation-environment))
+
 ;;; We don't actually use Trucler's query protocol internally, since the
 ;;; environments are necessarily ours (they include bytecode-specific
 ;;; information, etc.)
@@ -628,6 +632,12 @@
         ((>= index frame-end)
          (values (make-lexical-environment env :funs new-vars)
                  (new-context context :frame-end fun-count))))))
+
+(defun add-macros (env macros)
+  (make-lexical-environment env :funs (append macros (funs env))))
+
+(defun add-symbol-macros (env symbol-macros)
+  (make-lexical-environment env :vars (append symbol-macros (vars env))))
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 (deftype function-name () '(or symbol (cons (eql setf) (cons symbol null))))
@@ -854,7 +864,7 @@
 
 (defun compile-locally (body env context)
   (multiple-value-bind (body decls) (parse-body body)
-    (compile-progn body (add-specials (extract-specials decls) env) context)))
+    (compile-progn body (add-declarations env decls) context)))
 
 (defun fun-name-block-name (fun-name)
   (typecase fun-name
@@ -899,6 +909,9 @@
            (dolist (var (rest specifier))
              (push var specials))))))
     specials))
+
+(defun add-declarations (env declarations)
+  (add-specials (extract-specials declarations) env))
 
 (defun canonicalize-binding (binding)
   (if (consp binding)

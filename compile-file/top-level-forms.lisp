@@ -37,7 +37,7 @@
 
 (defun compile-toplevel-locally (body env)
   (multiple-value-bind (body decls) (alexandria:parse-body body)
-    (let* ((new-env (cmp:add-specials (cmp:extract-specials decls) env)))
+    (let* ((new-env (cmp:add-declarations env decls)))
       (compile-toplevel-progn body new-env))))
 
 (defun compile-toplevel-macrolet (bindings body env)
@@ -51,8 +51,7 @@
              (info (cmp:make-local-macro name expander)))
         (push (cons name info) macros)))
     (compile-toplevel-locally
-     body (cmp:make-lexical-environment
-           env :funs (append macros (cmp:funs env))))))
+     body (cmp:add-macros env macros))))
 
 (defun compile-toplevel-symbol-macrolet (bindings body env)
   (let ((smacros
@@ -60,9 +59,7 @@
                 for info = (cmp:make-symbol-macro name expansion)
                 collect (cons name info))))
     (compile-toplevel-locally
-     body (cmp:make-lexical-environment
-           env
-           :vars (append (nreverse smacros) (cmp:vars env))))))
+     body (cmp:add-symbol-macros env (nreverse smacros)))))
 
 (defun compile-toplevel (form &optional env)
   (let ((form (cmp:macroexpand form env)))

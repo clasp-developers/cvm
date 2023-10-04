@@ -7,9 +7,10 @@
   (:export #:compile-into #:compile #:eval #:eval-progn)
   (:export #:with-compilation-unit #:with-compilation-results)
   ;; Compiler guts - used in cmpltv
-  (:export #:add-specials #:extract-specials #:lexenv-for-macrolet
-           #:make-lexical-environment #:make-local-macro #:make-symbol-macro
-           #:coerce-to-lexenv #:funs #:vars
+  (:export #:add-declarations #:lexenv-for-macrolet
+	   #:make-null-lexical-environment
+	   #:make-local-macro #:make-symbol-macro
+	   #:add-macros #:add-symbol-macros
            #:compute-macroexpander
            #:macroexpand-1 #:macroexpand)
   (:export #:run-time-environment)
