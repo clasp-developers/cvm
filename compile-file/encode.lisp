@@ -156,6 +156,36 @@
                  do (setf (ldb (byte ,nbits shift) byte) rma))
            (write-byte byte ,s))))))
 
+(defun write-utf8 (character-array stream)
+  (declare (optimize speed) (type (array character) character-array))
+  ;; WARNING: We assume the host lisp's CHAR-CODE returns the Unicode codepoint.
+  ;; This is the case on anything sane, probably. Babel makes the same assumption
+  ;; as far as I can tell.
+  ;; TODO: There's probably cleverness to be done to make this write faster.
+  (loop for i below (array-total-size character-array)
+	for char = (row-major-aref character-array i)
+	for cpoint = (char-code char)
+	do (cond ((< cpoint #x80) ; one byte
+		  (write-byte cpoint stream))
+		 ((< cpoint #x800) ; two
+		  (write-byte (logior #b11000000 (ldb (byte 5  6) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  0) cpoint)) stream))
+		 ((< cpoint #x10000) ; three
+		  (write-byte (logior #b11100000 (ldb (byte 4 12) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  6) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  0) cpoint)) stream))
+		 ((< cpoint #x110000) ; four
+		  (write-byte (logior #b11110000 (ldb (byte 3 18) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6 12) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  6) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  0) cpoint)) stream))
+		 ;; The following is deleted as unreachable on e.g. SBCL because
+		 ;; it knows that char-code doesn't go this high.
+		 ;; Don't worry about it.
+		 (t ; not allowed by RFC3629
+		  (error "Code point #x~x for character ~:c is out of range for UTF-8"
+			 cpoint char)))))
+
 (defmethod encode ((inst array-creator) stream)
   (write-mnemonic 'make-array stream)
   (write-byte (uaet-code inst) stream)
@@ -174,8 +204,7 @@
             ((equal packing-type 'base-char)
              (dump (write-byte (char-code elem) stream)))
             ((equal packing-type 'character)
-             ;; TODO: UTF-8
-             (dump (write-b32 (char-code elem) stream)))
+	     (write-utf8 (prototype inst) stream))
             ((equal packing-type 'single-float)
              (dump (write-b32 (ieee-floats:encode-float32 elem) stream)))
             ((equal packing-type 'double-float)

@@ -252,6 +252,81 @@ Did not initialize constants~{ #~d~}"
                  for bits = (ldb (byte ,nbits bit-index) byte)
                  do (setf (row-major-aref ,a (+ index j)) bits)))))))
 
+(define-condition illegal-utf8 (invalid-fasl) ())
+
+(define-condition illegal-utf8-continuation (illegal-utf8)
+  ((%bytes :initarg :bytes :reader utf8-bytes))
+  (:report (lambda (condition stream)
+	     (format stream "Illegal UTF-8 sequence: expected continuation bytes while reading~{ #x~x~}"
+		     (utf8-bytes condition)))))
+
+(defun illegal-utf8-continuation (&rest bytes)
+  (error 'illegal-utf8-continuation :bytes bytes))
+
+(define-condition illegal-utf8-head (illegal-utf8)
+  ((%byte :initarg :byte :reader utf8-byte))
+  (:report (lambda (condition stream)
+	     (format stream "Illegal UTF-8 sequence: encountered invalid byte #x~x as the start of a codepoint"
+		     (utf8-byte condition)))))
+
+(defun illegal-utf8-head (byte)
+  (error 'illegal-utf8-head :byte byte))
+
+(declaim (inline continuation-byte-p))
+(defun continuation-byte-p (byte)
+  (declare (optimize speed) (type (unsigned-byte 8) byte))
+  (= #b10000000 (mask-field (byte 2 6) byte)))
+
+(defun read-utf8-codepoint (stream)
+  (declare (optimize speed))
+  (let ((byte0 (read-byte stream)))
+    (declare (type (unsigned-byte 8) byte0))
+    (cond
+      ((= #b00000000 (mask-field (byte 1 7) byte0)) ; one byte
+       byte0)
+      ((= #b11000000 (mask-field (byte 3 5) byte0)) ; two bytes
+       (let ((byte1 (read-byte stream)))
+	 (declare (type (unsigned-byte 8) byte1))
+	 (unless (continuation-byte-p byte1)
+	   (illegal-utf8-continuation byte0 byte1))
+	 (logior (ash (ldb (byte 5 0) byte0) 6)
+  		      (ldb (byte 6 0) byte1))))
+      ((= #b11100000 (mask-field (byte 4 4) byte0)) ; three
+       (let ((byte1 (read-byte stream))
+	     (byte2 (read-byte stream)))
+	 (declare (type (unsigned-byte 8) byte1 byte2))
+	 (unless (and (continuation-byte-p byte1)
+		      (continuation-byte-p byte2))
+	   (illegal-utf8-continuation byte0 byte1 byte2))
+	 (logior (ash (ldb (byte 4 0) byte0) 12)
+		 (ash (ldb (byte 6 0) byte1)  6)
+		      (ldb (byte 6 0) byte2))))
+      ((= #b11110000 (mask-field (byte 5 3) byte0)) ; four
+       (let ((byte1 (read-byte stream))
+	     (byte2 (read-byte stream))
+	     (byte3 (read-byte stream)))
+	 (declare (type (unsigned-byte 8) byte1 byte2 byte3))
+	 (unless (and (continuation-byte-p byte1)
+		      (continuation-byte-p byte2)
+		      (continuation-byte-p byte3))
+	   (illegal-utf8-continuation byte0 byte1 byte2 byte3))
+	 (logior (ash (ldb (byte 3 0) byte0) 18)
+		 (ash (ldb (byte 6 0) byte1) 12)
+		 (ash (ldb (byte 6 0) byte2)  6)
+		      (ldb (byte 6 0) byte3))))
+      (t (illegal-utf8-head byte0)))))
+
+(defun read-utf8 (array stream)
+  (declare (optimize speed) (type (simple-array character) array))
+  ;; Since we only make simple arrays right now, we declare that type to
+  ;; maybe make this slightly faster. With complex arrays that would change.
+  ;; WARNING: Like compile-file, we assume that code-char operates on Unicode
+  ;; codepoints. Which is true unless your Lisp is a scrub.
+  (loop for i below (array-total-size array)
+	for cpoint = (read-utf8-codepoint stream)
+	for char = (code-char cpoint)
+	do (setf (row-major-aref array i) char)))
+
 (defmethod %load-instruction ((mnemonic (eql 'make-array)) stream)
   (let* ((uaet-code (read-byte stream))
          (uaet (decode-uaet uaet-code))
@@ -271,7 +346,7 @@ Did not initialize constants~{ #~d~}"
             ((equal packing-type 'base-char)
              (undump (code-char (read-byte stream))))
             ((equal packing-type 'character)
-             (undump (code-char (read-ub32 stream))))
+	     (read-utf8 array stream))
             ((equal packing-type 'single-float)
              (undump (float:decode-float32 (read-ub32 stream))))
             ((equal packing-type 'double-float)

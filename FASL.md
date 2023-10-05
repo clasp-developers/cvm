@@ -25,7 +25,8 @@ After the last instruction is executed, the FASL has been fully loaded. Any rema
 * `fdesignator` and `progv` changed to have an environment parameter for first-class environment purposes.
 * `environment` fasl op to get the loader environment for `fdesignator`.
 * New instructions `protect` and `cleanup` for implementing `cl:unwind-protect`.
-* Eliminate redundant indexing in FASLs, reducing complexity and saving space.
+* Redundant indexing in FASLs is eliminated, reducing complexity and saving space.
+* Character encoding in FASLs changed from UTF-32 to UTF-8.
 
 ## 0.12
 
