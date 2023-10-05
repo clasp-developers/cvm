@@ -12,7 +12,7 @@
 	   #:make-local-macro #:make-symbol-macro
 	   #:add-macros #:add-symbol-macros
            #:compute-macroexpander
-           #:macroexpand-1 #:macroexpand)
+           #:macroexpand-1 #:macroexpand #:constantp)
   (:export #:run-time-environment)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
   (:export #:fdefinition-info #:fdefinition-info-name)

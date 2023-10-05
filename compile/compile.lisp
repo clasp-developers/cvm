@@ -578,9 +578,6 @@
   (make-instance 'trucler:symbol-macro-description
     :name name :expansion expansion))
 
-(defun constantp (symbol env)
-  (typep (var-info symbol env) 'trucler:constant-variable-description))
-
 (defun globally-special-p (symbol env)
   (typep (var-info symbol env) 'trucler:global-special-variable-description))
 
@@ -741,6 +738,15 @@
              (if expandedp
                  (setf ever-expanded t form expansion)
                  (return (values form ever-expanded))))))
+
+;;; Only used on symbols here, but exported for use in the file compiler.
+;;; TODO: Could be souped up.
+(defun constantp (form &optional env)
+  (typecase form
+    (symbol (typep (var-info form env) 'trucler:constant-variable-description))
+    ((cons (eql quote) (cons t null)) t) ; (quote foo)
+    (cons nil)
+    (t t)))
 
 (defmethod compile-symbol ((info trucler:symbol-macro-description)
                            form env context)

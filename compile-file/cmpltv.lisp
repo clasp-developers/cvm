@@ -307,7 +307,7 @@
 
 ;;; Given a form, get a constant handle to a function that at load time will
 ;;; have the effect of evaluating the form in a null lexical environment.
-(defun add-form (form &optional env)
+(defun add-form (form &optional (env *environment*))
   ;; PROGN so that (declare ...) expressions for example correctly cause errors.
   (add-function (bytecode-cf-compile-lexpr `(lambda () ,form) env t)))
 
@@ -499,14 +499,14 @@
 
 ;;; Return true iff the proper list FORM represents a call to a global
 ;;; function with all constant or #' arguments (and not too many).
-(defun call-with-dumpable-arguments-p (form &optional env)
+(defun call-with-dumpable-arguments-p (form &optional (env *environment*))
   (declare (ignorable env))
   (and (symbolp (car form))
        (fboundp (car form))
        (not (macro-function (car form)))
        (not (special-operator-p (car form)))
        (< (length (rest form)) +max-call-args+)
-       (every (lambda (f) (or (constantp f #+(or) env)
+       (every (lambda (f) (or (cmp:constantp f env)
                               (function-form-p f)
                               (lambda-expression-p f)))
               (rest form))))
@@ -516,8 +516,7 @@
     (cond ((lambda-expression-p form)
            (add-function (bytecode-cf-compile-lexpr form env)))
           ((not (function-form-p form)) ; must be a constant
-           (ensure-constant (eval form)
-                            #+(or)(ext:constant-form-value form env)))
+           (ensure-constant (cmp:eval form env)))
           ((and (consp (second form)) (eq (caadr form) 'cl:lambda))
            ;; #'(lambda ...)
            (add-function (bytecode-cf-compile-lexpr (second form) env)))
@@ -551,7 +550,7 @@
     (t nil)))
 
 ;;; Make a possibly-special creator based on an MLF creation form.
-(defun creation-form-creator (value form &optional env)
+(defun creation-form-creator (value form &optional (env *environment*))
   (let ((*creating* (cons value *creating*)))
     (flet ((default ()
              (make-instance 'general-creator
@@ -561,12 +560,10 @@
             ;; (find-class 'something)
             ((and (eq (car form) 'cl:find-class)
                   (= (length form) 2)
-                  (constantp (second form) #+(or)env))
+                  (cmp:constantp (second form) env))
              (make-instance 'class-creator
                :prototype value
-               :name (ensure-constant
-                      (eval (second form))
-                      #+(or)(ext:constant-form-value (second form) env))))
+               :name (ensure-constant (cmp:eval (second form) env))))
             ;; (foo 'bar 'baz)
             ((call-with-dumpable-arguments-p form)
              (make-instance 'general-creator
@@ -578,12 +575,12 @@
             (t (default))))))
 
 ;;; Make a possibly-special initializer.
-(defun add-initializer-form (form &optional env)
+(defun add-initializer-form (form &optional (env *environment*))
   (flet ((default ()
            (add-instruction
             (make-instance 'general-initializer
               :function (add-form form env) :arguments ()))))
-    (cond ((constantp form #+(or) env) nil) ; do nothing (good for e.g. defun's return)
+    (cond ((cmp:constantp form env) nil) ; do nothing (good for e.g. defun's return)
           ((not (proper-list-p form)) (default))
           ((call-with-dumpable-arguments-p form env)
            (let ((cre (f-dumpable-form-creator env)))

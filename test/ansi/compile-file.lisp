@@ -67,6 +67,7 @@
 	(5am:is-false (m:fboundp m:*client* run-time-environment funname))
         (cvm.load:load-bytecode output-truename
 				:environment run-time-environment)
+	(5am:is-true (m:fboundp m:*client* run-time-environment funname))
         (5am:is-false
 	 (funcall (m:fdefinition m:*client* run-time-environment funname)))))))
 
