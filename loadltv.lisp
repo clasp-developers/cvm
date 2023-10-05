@@ -2,7 +2,7 @@
   (:use #:cl)
   (:local-nicknames (#:m #:cvm.machine)
                     (#:float #:ieee-floats))
-  (:export #:load-bytecode))
+  (:export #:load-bytecode #:load-bytecode-stream))
 
 (in-package #:cvm.load)
 
@@ -583,9 +583,12 @@ Tried to define constant #~d, but it was already defined"
 (defmethod %load-instruction ((mnemonic (eql 'attribute)) stream)
   (load-attribute stream))
 
-(defun load-bytecode-stream (stream *environment*
-                             &key ((:verbose *load-verbose*)
-                                   *load-verbose*))
+(defun load-bytecode-stream (stream
+                             &key ((:environment *environment*))
+			       ((:verbose *load-verbose*)
+                                *load-verbose*))
+  "As CL:LOAD, but only operates on bytecode FASLs, and has a stream as input rather than a file. The stream must be an (unsigned-byte 8) stream.
+If :ENVIRONMENT is provided, it must be a runtime environment. The FASL is loaded into this environment."
   (load-magic stream)
   (multiple-value-bind (*major* *minor*) (load-version stream)
     (let* ((ninsts (read-ub64 stream))
@@ -605,15 +608,18 @@ Tried to define constant #~d, but it was already defined"
       (when (listen stream)
         (error "Bytecode continues beyond end of instructions"))
       (check-initialization *initflags*)))
-  (values))
+  t)
 
-(defun load-bytecode (filespec *environment*
+(defun load-bytecode (filespec
                       &key
+			environment
                         ((:verbose *load-verbose*) *load-verbose*)
                         ((:print *load-print*) *load-print*)
                         ((:debug *debug-loader*) *debug-loader*)
                         (if-does-not-exist :error)
                         (external-format :default))
+  "As CL:LOAD, but only operates on bytecode FASLs. Load FILESPEC as a bytecode FASL.
+If :ENVIRONMENT is provided, it must be a runtime environment. If not provided, an environment of NIL (meaning the host's) is used. The FASL is loaded into this environment."
   (let ((*load-pathname* (pathname (merge-pathnames filespec))))
     (with-open-file (input filespec :element-type '(unsigned-byte 8)
                                     :if-does-not-exist if-does-not-exist
@@ -621,5 +627,5 @@ Tried to define constant #~d, but it was already defined"
       ;; check for :if-does-not-exist nil failure
       (unless input (return-from load-bytecode nil))
       (verboseprint "Loading ~a as FASL" filespec)
-      (load-bytecode-stream input *environment*)
+      (load-bytecode-stream input :environment environment)
       t)))

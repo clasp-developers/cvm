@@ -41,7 +41,8 @@
                  (:file "compile" :depends-on ("unknown-reference-conditions"
                                                "misc-program-conditions"
                                                "compilation-unit" "parse-macro"
-                                               "package"))))))
+                                               "package"))
+		 (:file "documentation" :depends-on ("compile"))))))
 
 (asdf:defsystem #:cvm/compile-file
   :description "Reference implementation file compiler for CVM."
@@ -58,7 +59,8 @@
                  (:file "top-level-forms" :depends-on ("preliminaries" "package"))
                  (:file "compile-file"
                   :depends-on ("read" "top-level-forms" "cmpltv"
-                                      "encode" "package"))))))
+                                      "encode" "package"))
+		 (:file "documentation" :depends-on ("compile-file"))))))
 
 (asdf:defsystem #:cvm/load
   :description "Reference implementation FASL loader for CVM."

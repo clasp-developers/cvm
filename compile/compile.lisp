@@ -6,14 +6,14 @@
 ;;;
 
 (defstruct (cfunction (:constructor make-cfunction (cmodule)))
-  cmodule
+  (cmodule (error "missing arg") :read-only t)
   ;; Bytecode vector for this function.
   (bytecode (make-array 0 :element-type '(unsigned-byte 8)
                           :fill-pointer 0 :adjustable t))
   ;; An ordered vector of annotations emitted in this function.
   (annotations (make-array 0 :fill-pointer 0 :adjustable t))
-  (nlocals 0)
-  (closed (make-array 0 :fill-pointer 0 :adjustable t))
+  (%nlocals 0)
+  (closed (make-array 0 :fill-pointer 0 :adjustable t) :read-only t)
   (entry-point (make-label))
   ;; The position of the start of this function in this module
   ;; (optimistic).
@@ -26,11 +26,16 @@
   index
   info)
 
+;;; Used in cmpltv.
+(defun cfunction-final-entry-point (cfunction)
+  (annotation-module-position (cfunction-entry-point cfunction)))
 (defun cfunction-final-size (cfunction)
   (+ (length (cfunction-bytecode cfunction)) (cfunction-extra cfunction)))
+;;; To avoid exporting the writer.
+(defun cfunction-nlocals (cfunction) (cfunction-%nlocals cfunction))
 
 (defstruct (cmodule (:constructor make-cmodule ()))
-  (cfunctions (make-array 1 :fill-pointer 0 :adjustable t))
+  (cfunctions (make-array 1 :fill-pointer 0 :adjustable t) :read-only t)
   ;; Each entry in this vector is either a constant-info, an ltv-info,
   ;; a global-function-reference, or a cfunction.
   ;; The compiler treats them all pretty identically, but the linker
@@ -38,24 +43,25 @@
   ;; For example, a cfunction appearing literally in the code (for whatever
   ;; odd reason) gets a constant-info, distinguishing it from a cfunction
   ;; in the vector which will be linked to an actual function.
-  (literals (make-array 0 :fill-pointer 0 :adjustable t)))
+  (literals (make-array 0 :fill-pointer 0 :adjustable t) :read-only t))
 
 (defstruct (constant-info (:constructor make-constant-info (value)))
-  value)
+  (value (error "missing arg") :read-only t))
 
 (defstruct (ltv-info (:constructor make-ltv-info (form read-only-p)))
-  form read-only-p)
+  (form (error "missing arg") :read-only t)
+  (read-only-p (error "missing arg") :read-only t))
 
 ;;; Info about a name that we use for FDEFINITION.
 ;;; This is separate from CONSTANT-INFO because some clients can do better
 ;;; than a full call to CL:FDEFINITION on the actual name, e.g. with cells.
 (defstruct (fdefinition-info (:constructor make-fdefinition-info (name)))
-  name)
+  (name (error "missing arg") :read-only t))
 
 ;;; Info about a global symbol value.
 ;;; For example, the linker may want to make it a cell.
 (defstruct (value-cell-info (:constructor make-value-cell-info (name)))
-  name)
+  (name (error "missing arg") :read-only t))
 
 ;;; This info represents the loader environment. It is used for a few
 ;;; instructions that need to perform runtime name lookups.
@@ -458,15 +464,15 @@
                                 (:constructor %make-lexical-environment)
                                 (:conc-name nil))
   ;; An alist of (var . var-info) in the current environment.
-  (vars nil :type list)
+  (vars nil :type list :read-only t)
   ;; An alist of (tag tag-dynenv . label) in the current environment.
-  (tags nil :type list)
+  (tags nil :type list :read-only t)
   ;; An alist of (block block-dynenv . label) in the current environment.
-  (blocks nil :type list)
+  (blocks nil :type list :read-only t)
   ;; An alist of (fun . fun-var) in the current environment.
-  (funs nil :type list)
+  (funs nil :type list :read-only t)
   ;; Global environment, which we just pass to Trucler.
-  global-environment)
+  (global-environment (error "missing arg") :read-only t))
 
 ;;; We don't use Trucler's augmentation protocol internally since we often
 ;;; want to add a bunch of stuff at once, which is awkward in Trucler.
@@ -477,6 +483,10 @@
   (%make-lexical-environment
    :vars vars :tags tags :blocks blocks :funs funs
    :global-environment (global-environment parent)))
+
+(defun make-null-lexenv (global-compilation-environment)
+  (%make-lexical-environment
+   :global-environment global-compilation-environment))
 
 ;;; We don't actually use Trucler's query protocol internally, since the
 ;;; environments are necessarily ours (they include bytecode-specific
@@ -591,8 +601,8 @@
          (var-count (length vars))
          (frame-end (+ frame-start var-count))
          (function (context-function context)))
-    (setf (cfunction-nlocals function)
-          (max (cfunction-nlocals function) frame-end))
+    (setf (cfunction-%nlocals function)
+          (max (cfunction-%nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (vars vars (rest vars))
          (new-vars (vars env)
@@ -611,8 +621,8 @@
          (fun-count (length funs))
          (frame-end (+ frame-start fun-count))
          (function (context-function context)))
-    (setf (cfunction-nlocals function)
-          (max (cfunction-nlocals function) frame-end))
+    (setf (cfunction-%nlocals function)
+          (max (cfunction-%nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (funs funs (rest funs))
          (new-vars (funs env)
@@ -622,6 +632,12 @@
         ((>= index frame-end)
          (values (make-lexical-environment env :funs new-vars)
                  (new-context context :frame-end fun-count))))))
+
+(defun add-macros (env macros)
+  (make-lexical-environment env :funs (append macros (funs env))))
+
+(defun add-symbol-macros (env symbol-macros)
+  (make-lexical-environment env :vars (append symbol-macros (vars env))))
 
 (deftype lambda-expression () '(cons (eql lambda) (cons list list)))
 (deftype function-name () '(or symbol (cons (eql setf) (cons symbol null))))
@@ -659,18 +675,19 @@
                      env)))
 
 ;;; As CL:COMPILE, but doesn't mess with function bindings.
-(defun compile (lambda-expression &optional env (m:*client* m:*client*))
+(defun compile (lambda-expression
+		&optional environment (m:*client* m:*client*))
   (with-compilation-results
     (with-compilation-unit ()
-      (compile-link lambda-expression env))))
+      (compile-link lambda-expression environment))))
 
 ;;; Evaluate FORMS as a progn without relying on PROGN to be bound.
-(defun eval-progn (forms &optional env (m:*client* m:*client*))
-  (funcall (compile-link `(lambda () ,@forms) env :forms-only t)))
+(defun eval-progn (forms &optional environment (m:*client* m:*client*))
+  (funcall (compile-link `(lambda () ,@forms) environment :forms-only t)))
 
 ;;; As CL:EVAL.
-(defun eval (form &optional env (m:*client* m:*client*))
-  (eval-progn `(,form) env))
+(defun eval (form &optional environment (m:*client* m:*client*))
+  (eval-progn `(,form) environment))
 
 (defun compile-form (form env context)
   (typecase form
@@ -847,7 +864,7 @@
 
 (defun compile-locally (body env context)
   (multiple-value-bind (body decls) (parse-body body)
-    (compile-progn body (add-specials (extract-specials decls) env) context)))
+    (compile-progn body (add-declarations env decls) context)))
 
 (defun fun-name-block-name (fun-name)
   (typecase fun-name
@@ -893,6 +910,9 @@
              (push var specials))))))
     specials))
 
+(defun add-declarations (env declarations)
+  (add-specials (extract-specials declarations) env))
+
 (defun canonicalize-binding (binding)
   (if (consp binding)
       (destructure-syntax (binding name value) (binding :rest nil)
@@ -920,7 +940,9 @@
             (cond ((or (member var specials)
                        (globally-special-p var env))
                    (incf special-binding-count)
-                   (emit-special-bind context var))
+                   (emit-special-bind context var)
+		   (setf context
+			 (new-context context :dynenv '(:special))))
                   (t
                    (setf (values post-binding-env context)
                          (bind-vars (list var) post-binding-env context))
@@ -1860,7 +1882,7 @@
                    (m:make-bytecode-function
                     m:*client*
                     bytecode-module
-                    (cfunction-nlocals cfunction)
+                    (cfunction-%nlocals cfunction)
                     (length (cfunction-closed cfunction))
                     (annotation-module-position
                      (cfunction-entry-point cfunction))

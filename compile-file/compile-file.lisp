@@ -18,7 +18,7 @@
     (cmp:with-compilation-unit ()
       (with-constants ()
         ;; Read and compile the forms.
-        (loop with env = (cmp:coerce-to-lexenv environment)
+        (loop with env = (cmp:make-null-lexical-environment environment)
               with eof = (gensym "EOF")
               with *compile-time-too* = nil
               with *environment* = environment
@@ -53,4 +53,5 @@
                            :element-type '(unsigned-byte 8))
         (multiple-value-bind (out warningsp failurep)
             (apply #'compile-stream in out keys)
+	  (declare (ignore out))
           (values output-file warningsp failurep))))))

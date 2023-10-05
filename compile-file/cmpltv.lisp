@@ -664,8 +664,7 @@
              :docstring (ensure-constant nil #+(or) (cmp:cfunction-doc value))
              :nlocals (cmp:cfunction-nlocals value)
              :nclosed (length (cmp:cfunction-closed value))
-             :entry-point (cmp:annotation-module-position
-                           (cmp:cfunction-entry-point value))
+             :entry-point (cmp:cfunction-final-entry-point value)
              :size (cmp:cfunction-final-size value)))))
     inst))
 

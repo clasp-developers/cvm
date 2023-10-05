@@ -62,7 +62,7 @@
     (let* ((load-env (make-clean-load-environment))
            (load-rte
              (clostrum:evaluation-environment *client* load-env)))
-      (cvm.load:load-bytecode output load-rte)
+      (cvm.load:load-bytecode output :environment load-rte)
       (let ((c (cvm.compile:eval '*compiled* load-env *client*)))
         (5am:is (similarp object c) "~s externalization was unsimilar")))))
 

@@ -130,7 +130,7 @@
     (pop 57)
     (dup 58)
     (fdesignator 59)
-    (called-fdefinition 60)
+    (called-fdefinition 60 ((constant-arg 1)) ((constant-arg 2)))
     (protect 61)
     (cleanup 62)
     (long 255)))
