@@ -684,3 +684,12 @@
   (%progv client env symbols values)
   (unwind-protect (funcall thunk)
     (pop (vm-dynenv-stack *vm*))))
+
+(defmethod m:fboundp ((client client) env name)
+  (clostrum:fboundp client env name))
+(defmethod m:fdefinition ((client client) env name)
+  (clostrum:fdefinition client env name))
+(defmethod (setf m:fdefinition) (new (client client) env name)
+  (setf (clostrum:fdefinition client env name) new))
+(defmethod m:fmakunbound ((client client) env name)
+  (clostrum:fmakunbound client env name))

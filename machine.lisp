@@ -3,6 +3,7 @@
   (:shadow #:return #:throw #:symbol-value #:progv #:fdefinition #:nil #:eq
            #:set #:push #:pop)
   (:shadow #:disassemble)
+  (:shadow #:fboundp #:fmakunbound)
   ;; Additional opname exports are done below.
   (:export #:*client*)
   (:export #:bytecode-module #:make-bytecode-module
@@ -15,7 +16,8 @@
            #:bytecode-closure-template #:bytecode-closure-env)
   (:export #:compute-instance-function)
   (:export #:link-function #:link-variable #:link-environment)
-  (:export #:symbol-value #:call-with-progv #:progv)
+  (:export #:symbol-value #:call-with-progv #:progv
+	   #:fdefinition #:fmakunbound #:fboundp)
   (:export #:disassemble #:disassemble-instruction))
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.

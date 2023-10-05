@@ -78,7 +78,7 @@
                   (default-symbol-setf-expansion place))))
     (cons (let* ((head (car place))
                  (rest (rest place))
-                 (info (trucler:describe-function *client* env head)))
+                 (info (trucler:describe-function m:*client* env head)))
             (typecase info
               (trucler:local-function-description ; shadowed
                (default-call-setf-expansion head rest))
@@ -135,3 +135,29 @@
               ,@(mapcar #'list temps forms)
               (,(first news) (cons ,osym ,read)))
          ,write))))
+
+;;; in compile-file tests
+(defun fun-name-block-name (fun-name)
+  (etypecase fun-name
+    (symbol fun-name)
+    ((cons (eql setf) (cons symbol null)) (second fun-name))))
+
+;;; does nothing. the cross definition can be more interesting.
+(defun s:note-defun (fun-name) (declare (ignore fun-name)))
+
+(defmacro s:defun (name lambda-list &body body)
+  (multiple-value-bind (body decls doc)
+      (alexandria:parse-body body :documentation t)
+    `(progn
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+	 (s:note-defun ',name))
+       (s:setf (fdefinition ',name)
+	       #'(lambda ,lambda-list
+		   (declare ,@decls)
+		   ,doc
+		   (block ,(fun-name-block-name name) ,@body)))
+       ',name)))
+
+(defmacro s:in-package (package-designator)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (setq *package* (find-package ,package-designator))))

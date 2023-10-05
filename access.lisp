@@ -1,5 +1,6 @@
 (in-package #:cvm.machine)
- ;;; Some basic functions for getting at parts of the VM state.
+
+;;; Some basic functions for getting at parts of the VM state.
 
 (defgeneric symbol-value (client environment symbol))
 (defgeneric (setf symbol-value) (new client environment symbol))
@@ -8,3 +9,8 @@
 (defmacro progv (client environment symbols values &body body)
   `(call-with-progv ,client ,environment ,symbols ,values
 		    (lambda () ,@body)))
+
+(defgeneric fboundp (client environment function-name))
+(defgeneric fdefinition (client environment function-name))
+(defgeneric (setf fdefinition) (new client environment function-name))
+(defgeneric fmakunbound (client environment function-name))

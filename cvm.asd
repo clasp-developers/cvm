@@ -144,6 +144,8 @@
                                (:file "progv")
                                (:file "return-from")
                                (:file "tagbody")
-                               (:file "unwind-protect")))
+                               (:file "unwind-protect")
+			       ;; system-construction
+			       (:file "compile-file")))
                  (:file "run-all"
                   :depends-on ("ansi" "cross" "rt" "packages"))))))

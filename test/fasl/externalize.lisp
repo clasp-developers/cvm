@@ -9,14 +9,14 @@
   (let* ((rte (make-instance 'clostrum-basic:run-time-environment))
          (ce (make-instance 'clostrum-basic:compilation-environment
                :parent rte)))
-    (clostrum:make-special-operator *client* rte 'setq t)
-    (clostrum:make-special-operator *client* rte 'quote t)
-    (clostrum:make-parameter *client* rte '*source* object)
+    (clostrum:make-special-operator m:*client* rte 'setq t)
+    (clostrum:make-special-operator m:*client* rte 'quote t)
+    (clostrum:make-parameter m:*client* rte '*source* object)
     ;; FIXME: make-variable's value should be optional. Oopsie.
-    (clostrum:make-variable *client* rte '*compiled* nil)
+    (clostrum:make-variable m:*client* rte '*compiled* nil)
     (loop for var in '(*read-suppress* *read-eval* *features* *read-base*
 		       *read-default-float-format*)
-	  do (clostrum:make-parameter *client* rte var (symbol-value var)))
+	  do (clostrum:make-parameter m:*client* rte var (symbol-value var)))
     ce))
 
 ;;; Make a fresh environment containing just *COMPILED*.
@@ -24,7 +24,7 @@
   (let* ((rte (make-instance 'clostrum-basic:run-time-environment))
          (ce (make-instance 'clostrum-basic:compilation-environment
                :parent rte)))
-    (clostrum:make-variable *client* rte '*compiled* nil)
+    (clostrum:make-variable m:*client* rte '*compiled* nil)
     ce))
 
 (defun compile-test-file (input-file &rest keys &key &allow-other-keys)
@@ -67,9 +67,9 @@
 (defun load-externalized-object (filename)
   (let* ((load-env (make-clean-load-environment))
          (load-rte
-           (clostrum:evaluation-environment *client* load-env)))
+           (clostrum:evaluation-environment m:*client* load-env)))
     (cvm.load:load-bytecode filename :environment load-rte)
-    (cvm.compile:eval '*compiled* load-env *client*)))
+    (cvm.compile:eval '*compiled* load-env)))
 
 (defun test-externalize (object)
   (let* ((output (compile-externalization-test-file object))

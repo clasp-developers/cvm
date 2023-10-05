@@ -2,5 +2,5 @@
   (:use #:cl)
   (:local-nicknames (#:cmp #:cvm.compile)
 		    (#:m #:cvm.machine))
-  (:shadow #:compile-file)
-  (:export #:compile-stream #:compile-file))
+  (:shadow #:compile-file #:compile-file-pathname)
+  (:export #:compile-stream #:compile-file #:compile-file-pathname))
