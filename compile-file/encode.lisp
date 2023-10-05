@@ -110,8 +110,7 @@
       ((8) (write-b64 position stream)))))
 
 (defmethod encode ((inst cons-creator) stream)
-  (write-mnemonic 'cons stream)
-  (write-index inst stream))
+  (write-mnemonic 'cons stream))
 
 (defmethod encode ((inst rplaca-init) stream)
   (write-mnemonic 'rplaca stream)
@@ -159,7 +158,6 @@
 
 (defmethod encode ((inst array-creator) stream)
   (write-mnemonic 'make-array stream)
-  (write-index inst stream)
   (write-byte (uaet-code inst) stream)
   (let* ((packing-info (packing-info inst))
          (dims (dimensions inst))
@@ -245,7 +243,6 @@
          ;; in a portable fashion. (we could just invert a provided rehash-size?)
          (count (max (hash-table-count ht) #xffff)))
     (write-mnemonic 'make-hash-table stream)
-    (write-index inst stream)
     (write-byte testcode stream)
     (write-b16 count stream)))
 
@@ -258,33 +255,27 @@
 (defmethod encode ((inst singleton-creator) stream)
   (ecase (prototype inst)
     ((nil) (write-mnemonic 'nil stream))
-    ((t) (write-mnemonic 't stream)))
-  (write-index inst stream))
+    ((t) (write-mnemonic 't stream))))
 
 (defmethod encode ((inst symbol-creator) stream)
   (write-mnemonic 'make-symbol stream)
-  (write-index inst stream)
   (write-index (symbol-creator-name inst) stream))
 
 (defmethod encode ((inst interned-symbol-creator) stream)
   (write-mnemonic 'intern stream)
-  (write-index inst stream)
   (write-index (symbol-creator-package inst) stream)
   (write-index (symbol-creator-name inst) stream))
 
 (defmethod encode ((inst package-creator) stream)
   (write-mnemonic 'find-package stream)
-  (write-index inst stream)
   (write-index (package-creator-name inst) stream))
 
 (defmethod encode ((inst character-creator) stream)
   (write-mnemonic 'make-character stream)
-  (write-index inst stream)
   (write-b32 (char-code (prototype inst)) stream))
 
 (defmethod encode ((inst pathname-creator) stream)
   (write-mnemonic 'make-pathname stream)
-  (write-index inst stream)
   (write-index (pathname-creator-host inst) stream)
   (write-index (pathname-creator-device inst) stream)
   (write-index (pathname-creator-directory inst) stream)
@@ -294,13 +285,11 @@
 
 (defmethod encode ((inst sb64-creator) stream)
   (write-mnemonic 'make-sb64 stream)
-  (write-index inst stream)
   (write-b64 (prototype inst) stream))
 
 (defmethod encode ((inst bignum-creator) stream)
   ;; uses sign-magnitude representation.
   (write-mnemonic 'make-bignum stream)
-  (write-index inst stream)
   (let* ((number (prototype inst))
          (anumber (abs number))
          (nwords (ceiling (integer-length anumber) 64))
@@ -313,48 +302,39 @@
 
 (defmethod encode ((inst single-float-creator) stream)
   (write-mnemonic 'make-single-float stream)
-  (write-index inst stream)
   (write-b32 (ieee-floats:encode-float32 (prototype inst)) stream))
 
 (defmethod encode ((inst double-float-creator) stream)
   (write-mnemonic 'make-double-float stream)
-  (write-index inst stream)
   (write-b64 (ieee-floats:encode-float64 (prototype inst)) stream))
 
 (defmethod encode ((inst ratio-creator) stream)
   (write-mnemonic 'ratio stream)
-  (write-index inst stream)
   (write-index (ratio-creator-numerator inst) stream)
   (write-index (ratio-creator-denominator inst) stream))
 
 (defmethod encode ((inst complex-creator) stream)
   (write-mnemonic 'complex stream)
-  (write-index inst stream)
   (write-index (complex-creator-realpart inst) stream)
   (write-index (complex-creator-imagpart inst) stream))
 
 (defmethod encode ((inst fdefinition-lookup) stream)
   (write-mnemonic 'fdefinition stream)
-  (write-index inst stream)
   (write-index (name inst) stream))
 
 (defmethod encode ((inst fcell-lookup) stream)
   (write-mnemonic 'fcell stream)
-  (write-index inst stream)
   (write-index (name inst) stream))
 
 (defmethod encode ((inst vcell-lookup) stream)
   (write-mnemonic 'vcell stream)
-  (write-index inst stream)
   (write-index (name inst) stream))
 
 (defmethod encode ((inst environment-lookup) stream)
-  (write-mnemonic 'environment stream)
-  (write-index inst stream))
+  (write-mnemonic 'environment stream))
 
 (defmethod encode ((inst general-creator) stream)
   (write-mnemonic 'funcall-create stream)
-  (write-index inst stream)
   (write-index (general-function inst) stream)
   (write-b16 (length (general-arguments inst)) stream)
   (loop for arg in (general-arguments inst)
@@ -369,12 +349,10 @@
 
 (defmethod encode ((inst class-creator) stream)
   (write-mnemonic 'find-class stream)
-  (write-index inst stream)
   (write-index (class-creator-name inst) stream))
 
 (defmethod encode ((inst load-time-value-creator) stream)
   (write-mnemonic 'funcall-create stream)
-  (write-index inst stream)
   (write-index (load-time-value-creator-function inst) stream)
   ;; no arguments
   (write-b16 0 stream))
@@ -383,7 +361,6 @@
   ;; four bytes for the entry point, two for the nlocals and nclosed,
   ;; then indices. TODO: Source info.
   (write-mnemonic 'make-bytecode-function stream)
-  (write-index inst stream)
   (write-b32 (entry-point inst) stream)
   (write-b32 (size inst) stream)
   (write-b16 (nlocals inst) stream)
@@ -396,7 +373,6 @@
 (defmethod encode ((inst bytemodule-creator) stream)
   ;; Write instructions.
   (write-mnemonic 'make-bytecode-module stream)
-  (write-index inst stream)
   (let* ((lispcode (bytemodule-lispcode inst))
          (len (length lispcode)))
     (when (> len #.(ash 1 32))
