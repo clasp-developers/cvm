@@ -15,6 +15,7 @@
            #:bytecode-closure-template #:bytecode-closure-env)
   (:export #:compute-instance-function)
   (:export #:link-function #:link-variable #:link-environment)
+  (:export #:symbol-value #:call-with-progv #:progv)
   (:export #:disassemble #:disassemble-instruction))
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.

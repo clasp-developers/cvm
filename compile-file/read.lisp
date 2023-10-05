@@ -13,6 +13,16 @@
 
 (defvar *reader-client* (make-instance 'reader-client))
 
+(defmethod eclector.reader:state-value ((client reader-client) aspect)
+  (m:symbol-value m:*client*
+		  (cmp:run-time-environment m:*client* *environment*) aspect))
+
+(defmethod eclector.reader:call-with-state-value
+    ((client reader-client) thunk aspect value)
+  (m:progv m:*client* (cmp:run-time-environment m:*client* *environment*)
+    (list aspect) (list value)
+    (funcall thunk)))
+
 (defmethod eclector.reader:evaluate-expression ((client reader-client)
                                                 expression)
   (cmp:eval expression *environment*))

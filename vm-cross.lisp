@@ -87,6 +87,14 @@
         collect (cons global-cell cell) into mapping
         finally (return (%make-progv-dynenv mapping))))
 
+(defun %progv (client env varnames values)
+  (let* ((global-cells
+           (loop for symbol in varnames
+                                   collect (clostrum-sys:variable-cell
+                                            client env symbol)))
+         (de (make-progv-dynenv global-cells values)))
+    (push de (vm-dynenv-stack *vm*))))
+
 (defun bytecode-call (template closure-env args)
   (declare (optimize speed)
            (type list args))
@@ -557,15 +565,8 @@
                     (incf ip))
                    ((#.m:progv)
                     (let* ((env (constant (next-code)))
-                           (values (spop)) (varnames (spop))
-                           (global-cells
-                             (loop with client = (vm-client vm)
-                                   for symbol in varnames
-                                   collect (clostrum-sys:variable-cell
-                                            client env symbol)))
-                           (de
-                             (make-progv-dynenv global-cells values)))
-                      (push de (vm-dynenv-stack vm)))
+                           (values (spop)) (varnames (spop)))
+		      (%progv (vm-client vm) env varnames values))
                     (incf ip))
                    ((#.m:unbind)
                     ;; NOTE: used for both special-bind and progv
@@ -671,3 +672,15 @@
            (#3=#:makunbound (symbol)
              (%makunbound symbol (cell symbol))))
     (values #'#1# #'(setf #1#) #'#2# #'#3#)))
+
+(defmethod m:symbol-value ((client client) env symbol)
+  (let ((cell (clostrum-sys:variable-cell client env symbol)))
+    (%symbol-value symbol cell)))
+(defmethod (setf m:symbol-value) (new (client client) env symbol)
+  (let ((cell (clostrum-sys:variable-cell client env symbol)))
+    (setf (%symbol-value symbol cell) new)))
+
+(defmethod m:call-with-progv ((client client) env symbols values thunk)
+  (%progv client env symbols values)
+  (unwind-protect (funcall thunk)
+    (pop (vm-dynenv-stack *vm*))))

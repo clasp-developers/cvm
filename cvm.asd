@@ -21,6 +21,7 @@
                (:file "arg-conditions")
                (:file "structures" :depends-on ("machine"))
                (:file "link" :depends-on ("machine"))
+               (:file "access" :depends-on ("machine"))
                (:file "disassemble" :depends-on ("structures" "machine"))))
 
 (asdf:defsystem #:cvm/compile
@@ -42,7 +43,7 @@
                                                "misc-program-conditions"
                                                "compilation-unit" "parse-macro"
                                                "package"))
-		 (:file "documentation" :depends-on ("compile"))))))
+                 (:file "documentation" :depends-on ("compile"))))))
 
 (asdf:defsystem #:cvm/compile-file
   :description "Reference implementation file compiler for CVM."
@@ -60,7 +61,7 @@
                  (:file "compile-file"
                   :depends-on ("read" "top-level-forms" "cmpltv"
                                       "encode" "package"))
-		 (:file "documentation" :depends-on ("compile-file"))))))
+                 (:file "documentation" :depends-on ("compile-file"))))))
 
 (asdf:defsystem #:cvm/load
   :description "Reference implementation FASL loader for CVM."
@@ -74,7 +75,7 @@
   :author ("Charles Zhang"
            "Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm/base)
+  :depends-on (:cvm/base :trucler) ; trucler only needed for client class - remove?
   :components ((:file "vm-native")))
 
 (asdf:defsystem #:cvm/vm-cross
@@ -82,13 +83,13 @@
   :author ("Charles Zhang"
            "Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm/base :clostrum)
+  :depends-on (:cvm/base :clostrum :clostrum-trucler)
   :components ((:file "vm-cross")))
 
 (asdf:defsystem #:cvm/test
   :author ("Bike <aeshtaer@gmail.com>")
   :maintainer "Bike <aeshtaer@gmail.com>"
-  :depends-on (:cvm :clostrum-basic :clostrum-trucler :fiveam)
+  :depends-on (:cvm :clostrum-basic :fiveam)
   :components
   ((:module "test"
     :components ((:file "packages")

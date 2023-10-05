@@ -495,3 +495,15 @@
                                         (closure m:bytecode-function))
   (lambda (&rest args)
     (bytecode-call closure #() args)))
+
+(defmethod m:symbol-value ((client trucler-native:client) env symbol)
+  (declare (ignore env))
+  (symbol-value symbol))
+(defmethod (setf m:symbol-value) (new (client trucler-native:client) env symbol)
+  (declare (ignore env))
+  (setf (symbol-value symbol) new))
+
+(defmethod m:call-with-progv ((client trucler-native:client)
+			      env symbols values thunk)
+  (declare (ignore env))
+  (progv symbols values (funcall thunk)))

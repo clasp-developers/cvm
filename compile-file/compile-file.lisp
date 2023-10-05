@@ -13,21 +13,24 @@
 ;; input is a character stream. output is a ub8 stream.
 (defun compile-stream (input output
                        &key environment (reader-client *reader-client*)
+		       ((:client m:*client*) m:*client*)
                        &allow-other-keys)
   (cmp:with-compilation-results
     (cmp:with-compilation-unit ()
       (with-constants ()
-        ;; Read and compile the forms.
-        (loop with env = (cmp:make-null-lexical-environment environment)
-              with eof = (gensym "EOF")
-              with *compile-time-too* = nil
-              with *environment* = environment
-              with eclector.base:*client* = reader-client
-              for form = (eclector.reader:read input nil eof)
-              until (eq form eof)
-              when *compile-print*
-                do (describe-form form)
-              do (compile-toplevel form env))
+	(m:progv m:*client* (cmp:run-time-environment m:*client* environment)
+	  '(*readtable* *package*) (list eclector.reader:*readtable* *package*)
+          ;; Read and compile the forms.
+          (loop with env = (cmp:make-null-lexical-environment environment)
+		with eof = (gensym "EOF")
+		with *compile-time-too* = nil
+		with *environment* = environment
+		with eclector.base:*client* = reader-client
+		for form = (eclector.reader:read input nil eof)
+		until (eq form eof)
+		when *compile-print*
+                  do (describe-form form)
+		do (compile-toplevel form env)))
         ;; Write out the FASO bytecode.
         (write-bytecode (reverse *instructions*) output))
       output)))
@@ -40,8 +43,9 @@
                        ((:verbose *compile-verbose*) *compile-verbose*)
                        ((:print *compile-print*) *compile-print*)
                        environment (reader-client *reader-client*)
+		       ((:client m:*client*) m:*client*)
                      &allow-other-keys)
-  (declare (ignore environment reader-client)) ; passed to compile-stream
+  (declare (ignore reader-client)) ; passed to compile-stream
   (let ((output-file (if ofp
                          output-file
                          (make-pathname :type "faslbc" :defaults input-file))))
@@ -52,6 +56,9 @@
                            :if-does-not-exist :create
                            :element-type '(unsigned-byte 8))
         (multiple-value-bind (out warningsp failurep)
-            (apply #'compile-stream in out keys)
+	    (m:progv m:*client* (cmp:run-time-environment m:*client* environment)
+	      '(*compile-file-pathname* *compile-file-truename*)
+	      (list (truename input-file) (pathname (merge-pathnames input-file)))
+              (apply #'compile-stream in out keys))
 	  (declare (ignore out))
           (values output-file warningsp failurep))))))
