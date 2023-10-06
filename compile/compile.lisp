@@ -6,7 +6,8 @@
 ;;;
 
 (defstruct (cfunction (:constructor make-cfunction
-                          (cmodule &key name doc)))
+                          (cmodule &key name doc
+                                     (lambda-list nil lambda-list-p))))
   (cmodule (error "missing arg") :read-only t)
   ;; Bytecode vector for this function.
   (bytecode (make-array 0 :element-type '(unsigned-byte 8)
@@ -30,9 +31,14 @@
   ;; A function name for debugging purposes (e.g. printing).
   ;; NIL means no name provided. Hopefully you don't want to name
   ;; a function NIL.
-  (name nil)
+  (name nil :read-only t)
+  ;; A lambda list used for debugging purposes.
+  (lambda-list nil :read-only t)
+  ;; Whether a lambda list was provided.
+  ;; (This is needed since NIL is a valid lambda list.)
+  (lambda-list-p nil :read-only t)
   ;; A docstring.
-  (doc nil))
+  (doc nil :read-only t))
 
 ;;; Used in cmpltv.
 (defun cfunction-final-entry-point (cfunction)
@@ -1745,7 +1751,9 @@
       (if declsp
           (values body declarations docstring)
           (alexandria:parse-body body :documentation t))
-    (let* ((function (make-cfunction module :name name :doc doc))
+    (let* ((function
+             (make-cfunction module
+                             :name name :lambda-list lambda-list :doc doc))
            (context (make-context :receiving t :function function))
            (env (make-lexical-environment env)))
       (setf (cfunction-index function)

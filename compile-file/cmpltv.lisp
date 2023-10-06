@@ -210,6 +210,11 @@
    (%object :initarg :object :reader object :type creator)
    (%objname :initarg :objname :reader objname :type creator)))
 
+(defclass lambda-list-attr (attribute)
+  ((%name :initform (ensure-constant "lambda-list"))
+   (%function :initarg :function :reader ll-function :type creator)
+   (%lambda-list :initarg :lambda-list :reader lambda-list :type creator)))
+
 ;;;
 
 ;;; Return true iff the value is similar to the existing creator.
@@ -649,7 +654,6 @@
 (defclass bytefunction-creator (creator)
   ((%cfunction :initarg :cfunction :reader cfunction)
    (%module :initarg :module :reader module)
-   (%lambda-list :initarg :lambda-list :reader lambda-list :type creator)
    (%nlocals :initarg :nlocals :reader nlocals :type (unsigned-byte 16))
    (%nclosed :initarg :nclosed :reader nclosed :type (unsigned-byte 16))
    (%entry-point :initarg :entry-point :reader entry-point
@@ -664,13 +668,13 @@
            (make-instance 'bytefunction-creator
              :cfunction value
              :module (ensure-module (cmp:cfunction-cmodule value))
-             :lambda-list (ensure-constant
-                           nil
-                           #+(or) (cmp:cfunction-lambda-list value))
              :nlocals (cmp:cfunction-nlocals value)
              :nclosed (length (cmp:cfunction-closed value))
              :entry-point (cmp:cfunction-final-entry-point value)
              :size (cmp:cfunction-final-size value)))))
+    ;; Something to consider: Any of these, but most likely the lambda list,
+    ;; could contain unexternalizable data. In this case we should find a way
+    ;; to gracefully and silently not dump the attribute.
     (when (cmp:cfunction-name value)
       (add-instruction (make-instance 'name-attr
                          :object inst
@@ -681,6 +685,11 @@
                          :object inst
                          :docstring (ensure-constant
                                      (cmp:cfunction-doc value)))))
+    (when (cmp:cfunction-lambda-list-p value)
+      (add-instruction (make-instance 'lambda-list-attr
+                         :function inst
+                         :lambda-list (ensure-constant
+                                       (cmp:cfunction-lambda-list value)))))
     inst))
 
 (defclass bytemodule-creator (vcreator)

@@ -392,8 +392,7 @@
   (write-b32 (size inst) stream)
   (write-b16 (nlocals inst) stream)
   (write-b16 (nclosed inst) stream)
-  (write-index (module inst) stream)
-  (write-index (lambda-list inst) stream))
+  (write-index (module inst) stream))
 
 (defmethod encode ((inst bytemodule-creator) stream)
   ;; Write instructions.
@@ -417,7 +416,7 @@
 
 (defmethod encode :before ((attr attribute) stream)
   (write-mnemonic 'attribute stream)
-  (write-index (name attr) stream))
+  (write-index (name attr) stream))  
 
 (defmethod encode ((attr docstring-attr) stream)
   ;; Write the length.
@@ -425,6 +424,18 @@
   ;; And the data.
   (write-index (object attr) stream)
   (write-index (docstring attr) stream))
+
+(defmethod encode ((attr name-attr) stream)
+  (write-b32 (+ *index-bytes* *index-bytes*) stream)
+  (write-index (object attr) stream)
+  (write-index (objname attr) stream))
+
+(defmethod encode ((attr lambda-list-attr) stream)
+  (write-b32 (+ *index-bytes* *index-bytes*) stream)
+  (write-index (ll-function attr) stream)
+  (write-index (lambda-list attr) stream))
+
+;;;
 
 (defmethod encode ((init init-object-array) stream)
   (write-mnemonic 'init-object-array stream)
