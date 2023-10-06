@@ -679,6 +679,10 @@
 (defmethod (setf m:symbol-value) (new (client client) env symbol)
   (let ((cell (clostrum-sys:variable-cell client env symbol)))
     (setf (%symbol-value symbol cell) new)))
+(defmethod m:boundp ((client client) env symbol)
+  (%boundp symbol (clostrum-sys:variable-cell client env symbol)))
+(defmethod m:makunbound ((client client) env symbol)
+  (%makunbound symbol (clostrum-sys:variable-cell client env symbol)))
 
 (defmethod m:call-with-progv ((client client) env symbols values thunk)
   (%progv client env symbols values)

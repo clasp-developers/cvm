@@ -502,6 +502,12 @@
 (defmethod (setf m:symbol-value) (new (client trucler-native:client) env symbol)
   (declare (ignore env))
   (setf (symbol-value symbol) new))
+(defmethod m:boundp ((client trucler-native:client) env symbol)
+  (declare (ignore env))
+  (boundp symbol))
+(defmethod m:makunbound ((client trucler-native:client) env symbol)
+  (declare (ignore env))
+  (makunbound symbol))
 
 (defmethod m:call-with-progv ((client trucler-native:client)
 			      env symbols values thunk)
