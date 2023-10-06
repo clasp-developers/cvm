@@ -2,12 +2,14 @@
   (:use)
   (:export #:expand-in-current-env #:notnot)
   (:export #:macroexpand-1 #:macroexpand #:eval)
-  (:export #:multiple-value-bind #:setf #:incf #:decf #:push
-           #:prog1 #:when #:unless #:return #:prog))
+  (:export #:note-defun)
+  (:export #:multiple-value-bind #:setf #:incf #:decf #:push #:defun
+           #:prog1 #:when #:unless #:return #:prog #:in-package))
 
 (defpackage #:cvm.test
   (:use #:cl)
-  (:local-nicknames (#:s #:cvm.test.sham))
+  (:local-nicknames (#:s #:cvm.test.sham)
+		    (#:m #:cvm.machine))
   (:export #:run #:run!)
   (:export #:run-native! #:run-cross!)
   ;; We don't define these. They're shadowed so that if you

@@ -13,6 +13,21 @@
 
 (defvar *reader-client* (make-instance 'reader-client))
 
+(defmethod eclector.reader:state-value ((client reader-client) aspect)
+  (let (;; This is required so that we don't try to mess with *readtable*
+	;; with the native client. We can't bind cl:*readtable* to one of
+	;; eclector's readtables.
+	(aspect (if (eql aspect '*readtable*) 'eclector.reader:*readtable* aspect)))
+    (m:symbol-value m:*client*
+		    (cmp:run-time-environment m:*client* *environment*) aspect)))
+
+(defmethod eclector.reader:call-with-state-value
+    ((client reader-client) thunk aspect value)
+  (let ((aspect (if (eql aspect '*readtable*) 'eclector.reader:*readtable* aspect)))
+    (m:progv m:*client* (cmp:run-time-environment m:*client* *environment*)
+      (list aspect) (list value)
+      (funcall thunk))))
+
 (defmethod eclector.reader:evaluate-expression ((client reader-client)
                                                 expression)
   (cmp:eval expression *environment*))

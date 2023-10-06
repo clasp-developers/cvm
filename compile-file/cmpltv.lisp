@@ -52,7 +52,7 @@
 (defclass array-creator (vcreator)
   ((%dimensions :initarg :dimensions :reader dimensions)
    (%packing-info :initarg :packing-info :reader packing-info)
-   (%uaet-code :initarg :uaet-code :reader uaet-code)))
+   (%element-type-info :initarg :element-type-info :reader element-type-info)))
 
 ;; row-major.
 (defclass setf-aref (effect)
@@ -200,6 +200,21 @@
    ;; FIXME: Do this more cleanly.
    (%name :reader name :type creator)))
 
+(defclass docstring-attr (attribute)
+  ((%name :initform (ensure-constant "docstring"))
+   (%object :initarg :object :reader object :type creator)
+   (%docstring :initarg :docstring :reader docstring :type creator)))
+
+(defclass name-attr (attribute)
+  ((%name :initform (ensure-constant "name"))
+   (%object :initarg :object :reader object :type creator)
+   (%objname :initarg :objname :reader objname :type creator)))
+
+(defclass lambda-list-attr (attribute)
+  ((%name :initform (ensure-constant "lambda-list"))
+   (%function :initarg :function :reader ll-function :type creator)
+   (%lambda-list :initarg :lambda-list :reader lambda-list :type creator)))
+
 ;;;
 
 ;;; Return true iff the value is similar to the existing creator.
@@ -307,8 +322,8 @@
 
 ;;; Given a form, get a constant handle to a function that at load time will
 ;;; have the effect of evaluating the form in a null lexical environment.
-(defun add-form (form &optional env)
-  ;; PROGN so that (declare ...) expressions for example correctly cause errors.
+(defun add-form (form &optional (env *environment*))
+  ;; FORMS-ONLY so that (declare ...) forms for example correctly cause errors.
   (add-function (bytecode-cf-compile-lexpr `(lambda () ,form) env t)))
 
 (defmethod add-constant ((value cons))
@@ -320,20 +335,21 @@
                        :cons cons :value (ensure-constant (cdr value))))
     cons))
 
-;;; Arrays are encoded with two codes: One for the packing, and one
-;;; for the element type. The latter is in place so that, hopefully,
-;;; arrays can be dumped portably. These two codes do not necessarily
-;;; coincide: for example a general (T) array full of ub8s could be
-;;; encoded as ub8s but still be loaded as a general array.
-;;; (This is not done right now.)
-;;; FIXME: Not sure how to deal with nonportable element types, such
-;;; as clasp's vec3 arrays, or sbcl's ub7 etc. For now the similarity
-;;; of arrays is weaker than the language standard mandates.
-;;; The portability concern is that, for example, Clasp will have
-;;; array element type of ext:byte8 instead of (unsigned-byte 8). In
-;;; that case we want to dump as (unsigned-byte 8) and Clasp's loader
-;;; will upgrade to ext:byte8 no problem.
+;;; Arrays are encoded with a code describing how elements are packed.
+;;; This packing can be done independently of the element type, so
+;;; that choice of representation is not dependent on how the host
+;;; Lisp happens to represent arrays.
+;;; We also use codes for common array element types. This shaves some
+;;; bytes from FASLs, but is also important to avoid infinite recursion:
+;;; If we just dumped the element type, say BASE-CHAR, we'd have to dump
+;;; the symbol, which means having to dump the symbol name, and guess
+;;; what kind of object the symbol name is?
+;;; CLHS defines UPGRADED-ARRAY-ELEMENT-TYPE to return BASE-CHAR or
+;;; equivalent for base char arrays, so the code works fine there.
+;;; Ditto CHARACTER, and BIT but that's not as important.
 ;;; TODO: For version 1, put more thought into these IDs.
+(defconstant +other-uaet+   #b11111110)
+
 (defvar +array-packing-infos+
   '((nil                    #b00000000)
     (base-char              #b10000000)
@@ -360,33 +376,41 @@
     ((signed-byte 64)       #b10000111)
     (t                      #b11111111)))
 
-(defun %uaet-info (uaet)
-  (dolist (info +array-packing-infos+)
-    (when (subtypep uaet (first info))
-      (return-from %uaet-info info)))
-  ;; subtypep not doing so well. default to general.
-  (assoc t +array-packing-infos+))
-
-(defun find-uaet-code (uaet) (second (%uaet-info uaet)))
-
 (defun array-packing-info (array)
   ;; TODO? As mentioned above, we could pack arrays more efficiently
   ;; than suggested by their element type. Iterating over every array
   ;; checking might be a little too slow though?
   ;; Also wouldn't work for NIL arrays, but who's dumping NIL arrays?
-  (%uaet-info (array-element-type array)))
+  (let ((aet (array-element-type array)))
+    (dolist (info +array-packing-infos+)
+      (when (subtypep aet (first info))
+        (return-from array-packing-info info)))
+    (assoc t +array-packing-infos+)))
+
+(defun compute-element-type-info (array)
+  (let ((aet (array-element-type array)))
+    (dolist (info +array-packing-infos+)
+      ;; Check for actual type equality.
+      ;; We do type= instead of just equal because some implementations,
+      ;; like CLASP and ECL, return nonstandard specifiers from a-e-t.
+      (when (and (subtypep aet (first info))
+                 (subtypep (first info) aet))
+        (return-from compute-element-type-info info)))
+    ;; The element type is something we don't specially code for.
+    ;; Dump it as a constant and use +other-uaet+.
+    (list (ensure-constant aet) +other-uaet+)))
 
 (defmethod add-constant ((value array))
-  (let* ((uaet (array-element-type value))
+  (let* ((element-type-info (compute-element-type-info value))
          (info (array-packing-info value))
          (info-type (first info))
-         (uaet-code (find-uaet-code uaet))
          (arr (add-creator
                value
                (make-instance 'array-creator
                  :prototype value :dimensions (array-dimensions value)
-                 :packing-info info :uaet-code uaet-code))))
-    (when (eq info-type t) ; general - dump setf-arefs for elements.
+                 :packing-info info :element-type-info element-type-info))))
+    (when (or (eq info-type t) ; general - dump setf-arefs for elements.
+              (eql (second element-type-info) +other-uaet+))
       ;; (we have to separate initialization here in case the array
       ;;  contains itself. packed arrays can't contain themselves)
       (loop for i below (array-total-size value)
@@ -499,14 +523,14 @@
 
 ;;; Return true iff the proper list FORM represents a call to a global
 ;;; function with all constant or #' arguments (and not too many).
-(defun call-with-dumpable-arguments-p (form &optional env)
+(defun call-with-dumpable-arguments-p (form &optional (env *environment*))
   (declare (ignorable env))
   (and (symbolp (car form))
        (fboundp (car form))
        (not (macro-function (car form)))
        (not (special-operator-p (car form)))
        (< (length (rest form)) +max-call-args+)
-       (every (lambda (f) (or (constantp f #+(or) env)
+       (every (lambda (f) (or (cmp:constantp f env)
                               (function-form-p f)
                               (lambda-expression-p f)))
               (rest form))))
@@ -516,8 +540,7 @@
     (cond ((lambda-expression-p form)
            (add-function (bytecode-cf-compile-lexpr form env)))
           ((not (function-form-p form)) ; must be a constant
-           (ensure-constant (eval form)
-                            #+(or)(ext:constant-form-value form env)))
+           (ensure-constant (cmp:eval form env)))
           ((and (consp (second form)) (eq (caadr form) 'cl:lambda))
            ;; #'(lambda ...)
            (add-function (bytecode-cf-compile-lexpr (second form) env)))
@@ -551,7 +574,7 @@
     (t nil)))
 
 ;;; Make a possibly-special creator based on an MLF creation form.
-(defun creation-form-creator (value form &optional env)
+(defun creation-form-creator (value form &optional (env *environment*))
   (let ((*creating* (cons value *creating*)))
     (flet ((default ()
              (make-instance 'general-creator
@@ -561,12 +584,10 @@
             ;; (find-class 'something)
             ((and (eq (car form) 'cl:find-class)
                   (= (length form) 2)
-                  (constantp (second form) #+(or)env))
+                  (cmp:constantp (second form) env))
              (make-instance 'class-creator
                :prototype value
-               :name (ensure-constant
-                      (eval (second form))
-                      #+(or)(ext:constant-form-value (second form) env))))
+               :name (ensure-constant (cmp:eval (second form) env))))
             ;; (foo 'bar 'baz)
             ((call-with-dumpable-arguments-p form)
              (make-instance 'general-creator
@@ -578,12 +599,12 @@
             (t (default))))))
 
 ;;; Make a possibly-special initializer.
-(defun add-initializer-form (form &optional env)
+(defun add-initializer-form (form &optional (env *environment*))
   (flet ((default ()
            (add-instruction
             (make-instance 'general-initializer
               :function (add-form form env) :arguments ()))))
-    (cond ((constantp form #+(or) env) nil) ; do nothing (good for e.g. defun's return)
+    (cond ((cmp:constantp form env) nil) ; do nothing (good for e.g. defun's return)
           ((not (proper-list-p form)) (default))
           ((call-with-dumpable-arguments-p form env)
            (let ((cre (f-dumpable-form-creator env)))
@@ -631,8 +652,10 @@
 
 (defun bytecode-cf-compile-lexpr (lambda-expression environment
                                   &optional forms-only)
-  (cmp:compile-into (cmp:make-cmodule) lambda-expression environment
-                    :forms-only forms-only))
+  (if forms-only
+      (cmp:compile-into (cmp:make-cmodule) lambda-expression environment
+                        :declarations nil)
+      (cmp:compile-into (cmp:make-cmodule) lambda-expression environment)))
 
 (defun compile-file-form (form env)
   (add-initializer-form form env))
@@ -640,9 +663,6 @@
 (defclass bytefunction-creator (creator)
   ((%cfunction :initarg :cfunction :reader cfunction)
    (%module :initarg :module :reader module)
-   (%name :initarg :name :reader name :type creator)
-   (%lambda-list :initarg :lambda-list :reader lambda-list :type creator)
-   (%docstring :initarg :docstring :reader docstring :type creator)
    (%nlocals :initarg :nlocals :reader nlocals :type (unsigned-byte 16))
    (%nclosed :initarg :nclosed :reader nclosed :type (unsigned-byte 16))
    (%entry-point :initarg :entry-point :reader entry-point
@@ -657,15 +677,28 @@
            (make-instance 'bytefunction-creator
              :cfunction value
              :module (ensure-module (cmp:cfunction-cmodule value))
-             :name (ensure-constant nil #+(or) (cmp:cfunction-name value))
-             :lambda-list (ensure-constant
-                           nil
-                           #+(or) (cmp:cfunction-lambda-list value))
-             :docstring (ensure-constant nil #+(or) (cmp:cfunction-doc value))
              :nlocals (cmp:cfunction-nlocals value)
              :nclosed (length (cmp:cfunction-closed value))
              :entry-point (cmp:cfunction-final-entry-point value)
              :size (cmp:cfunction-final-size value)))))
+    ;; Something to consider: Any of these, but most likely the lambda list,
+    ;; could contain unexternalizable data. In this case we should find a way
+    ;; to gracefully and silently not dump the attribute.
+    (when (cmp:cfunction-name value)
+      (add-instruction (make-instance 'name-attr
+                         :object inst
+                         :objname (ensure-constant
+                                   (cmp:cfunction-name value)))))
+    (when (cmp:cfunction-doc value)
+      (add-instruction (make-instance 'docstring-attr
+                         :object inst
+                         :docstring (ensure-constant
+                                     (cmp:cfunction-doc value)))))
+    (when (cmp:cfunction-lambda-list-p value)
+      (add-instruction (make-instance 'lambda-list-attr
+                         :function inst
+                         :lambda-list (ensure-constant
+                                       (cmp:cfunction-lambda-list value)))))
     inst))
 
 (defclass bytemodule-creator (vcreator)

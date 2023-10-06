@@ -110,8 +110,7 @@
       ((8) (write-b64 position stream)))))
 
 (defmethod encode ((inst cons-creator) stream)
-  (write-mnemonic 'cons stream)
-  (write-index inst stream))
+  (write-mnemonic 'cons stream))
 
 (defmethod encode ((inst rplaca-init) stream)
   (write-mnemonic 'rplaca stream)
@@ -157,14 +156,48 @@
                  do (setf (ldb (byte ,nbits shift) byte) rma))
            (write-byte byte ,s))))))
 
+(defun write-utf8 (character-array stream)
+  (declare (optimize speed) (type (array character) character-array))
+  ;; WARNING: We assume the host lisp's CHAR-CODE returns the Unicode codepoint.
+  ;; This is the case on anything sane, probably. Babel makes the same assumption
+  ;; as far as I can tell.
+  ;; TODO: There's probably cleverness to be done to make this write faster.
+  (loop for i below (array-total-size character-array)
+	for char = (row-major-aref character-array i)
+	for cpoint = (char-code char)
+	do (cond ((< cpoint #x80) ; one byte
+		  (write-byte cpoint stream))
+		 ((< cpoint #x800) ; two
+		  (write-byte (logior #b11000000 (ldb (byte 5  6) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  0) cpoint)) stream))
+		 ((< cpoint #x10000) ; three
+		  (write-byte (logior #b11100000 (ldb (byte 4 12) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  6) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  0) cpoint)) stream))
+		 ((< cpoint #x110000) ; four
+		  (write-byte (logior #b11110000 (ldb (byte 3 18) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6 12) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  6) cpoint)) stream)
+		  (write-byte (logior #b10000000 (ldb (byte 6  0) cpoint)) stream))
+		 ;; The following is deleted as unreachable on e.g. SBCL because
+		 ;; it knows that char-code doesn't go this high.
+		 ;; Don't worry about it.
+		 (t ; not allowed by RFC3629
+		  (error "Code point #x~x for character ~:c is out of range for UTF-8"
+			 cpoint char)))))
+
 (defmethod encode ((inst array-creator) stream)
   (write-mnemonic 'make-array stream)
-  (write-index inst stream)
-  (write-byte (uaet-code inst) stream)
-  (let* ((packing-info (packing-info inst))
+  (let* ((et-info (element-type-info inst))
+         (et-type (first et-info))
+         (et-code (second et-info))
+         (packing-info (packing-info inst))
          (dims (dimensions inst))
          (packing-type (first packing-info))
          (packing-code (second packing-info)))
+    (write-byte et-code stream)
+    (when (eql et-code +other-uaet+)
+      (write-index et-type stream))
     (write-byte packing-code stream)
     (write-dimensions dims stream)
     (macrolet ((dump (&rest forms)
@@ -176,8 +209,7 @@
             ((equal packing-type 'base-char)
              (dump (write-byte (char-code elem) stream)))
             ((equal packing-type 'character)
-             ;; TODO: UTF-8
-             (dump (write-b32 (char-code elem) stream)))
+	     (write-utf8 (prototype inst) stream))
             ((equal packing-type 'single-float)
              (dump (write-b32 (ieee-floats:encode-float32 elem) stream)))
             ((equal packing-type 'double-float)
@@ -245,7 +277,6 @@
          ;; in a portable fashion. (we could just invert a provided rehash-size?)
          (count (max (hash-table-count ht) #xffff)))
     (write-mnemonic 'make-hash-table stream)
-    (write-index inst stream)
     (write-byte testcode stream)
     (write-b16 count stream)))
 
@@ -258,33 +289,27 @@
 (defmethod encode ((inst singleton-creator) stream)
   (ecase (prototype inst)
     ((nil) (write-mnemonic 'nil stream))
-    ((t) (write-mnemonic 't stream)))
-  (write-index inst stream))
+    ((t) (write-mnemonic 't stream))))
 
 (defmethod encode ((inst symbol-creator) stream)
   (write-mnemonic 'make-symbol stream)
-  (write-index inst stream)
   (write-index (symbol-creator-name inst) stream))
 
 (defmethod encode ((inst interned-symbol-creator) stream)
   (write-mnemonic 'intern stream)
-  (write-index inst stream)
   (write-index (symbol-creator-package inst) stream)
   (write-index (symbol-creator-name inst) stream))
 
 (defmethod encode ((inst package-creator) stream)
   (write-mnemonic 'find-package stream)
-  (write-index inst stream)
   (write-index (package-creator-name inst) stream))
 
 (defmethod encode ((inst character-creator) stream)
   (write-mnemonic 'make-character stream)
-  (write-index inst stream)
   (write-b32 (char-code (prototype inst)) stream))
 
 (defmethod encode ((inst pathname-creator) stream)
   (write-mnemonic 'make-pathname stream)
-  (write-index inst stream)
   (write-index (pathname-creator-host inst) stream)
   (write-index (pathname-creator-device inst) stream)
   (write-index (pathname-creator-directory inst) stream)
@@ -294,13 +319,11 @@
 
 (defmethod encode ((inst sb64-creator) stream)
   (write-mnemonic 'make-sb64 stream)
-  (write-index inst stream)
   (write-b64 (prototype inst) stream))
 
 (defmethod encode ((inst bignum-creator) stream)
   ;; uses sign-magnitude representation.
   (write-mnemonic 'make-bignum stream)
-  (write-index inst stream)
   (let* ((number (prototype inst))
          (anumber (abs number))
          (nwords (ceiling (integer-length anumber) 64))
@@ -313,48 +336,39 @@
 
 (defmethod encode ((inst single-float-creator) stream)
   (write-mnemonic 'make-single-float stream)
-  (write-index inst stream)
   (write-b32 (ieee-floats:encode-float32 (prototype inst)) stream))
 
 (defmethod encode ((inst double-float-creator) stream)
   (write-mnemonic 'make-double-float stream)
-  (write-index inst stream)
   (write-b64 (ieee-floats:encode-float64 (prototype inst)) stream))
 
 (defmethod encode ((inst ratio-creator) stream)
   (write-mnemonic 'ratio stream)
-  (write-index inst stream)
   (write-index (ratio-creator-numerator inst) stream)
   (write-index (ratio-creator-denominator inst) stream))
 
 (defmethod encode ((inst complex-creator) stream)
   (write-mnemonic 'complex stream)
-  (write-index inst stream)
   (write-index (complex-creator-realpart inst) stream)
   (write-index (complex-creator-imagpart inst) stream))
 
 (defmethod encode ((inst fdefinition-lookup) stream)
   (write-mnemonic 'fdefinition stream)
-  (write-index inst stream)
   (write-index (name inst) stream))
 
 (defmethod encode ((inst fcell-lookup) stream)
   (write-mnemonic 'fcell stream)
-  (write-index inst stream)
   (write-index (name inst) stream))
 
 (defmethod encode ((inst vcell-lookup) stream)
   (write-mnemonic 'vcell stream)
-  (write-index inst stream)
   (write-index (name inst) stream))
 
 (defmethod encode ((inst environment-lookup) stream)
-  (write-mnemonic 'environment stream)
-  (write-index inst stream))
+  (write-mnemonic 'environment stream))
 
 (defmethod encode ((inst general-creator) stream)
   (write-mnemonic 'funcall-create stream)
-  (write-index inst stream)
   (write-index (general-function inst) stream)
   (write-b16 (length (general-arguments inst)) stream)
   (loop for arg in (general-arguments inst)
@@ -369,34 +383,25 @@
 
 (defmethod encode ((inst class-creator) stream)
   (write-mnemonic 'find-class stream)
-  (write-index inst stream)
   (write-index (class-creator-name inst) stream))
 
 (defmethod encode ((inst load-time-value-creator) stream)
   (write-mnemonic 'funcall-create stream)
-  (write-index inst stream)
   (write-index (load-time-value-creator-function inst) stream)
   ;; no arguments
   (write-b16 0 stream))
 
 (defmethod encode ((inst bytefunction-creator) stream)
-  ;; four bytes for the entry point, two for the nlocals and nclosed,
-  ;; then indices. TODO: Source info.
   (write-mnemonic 'make-bytecode-function stream)
-  (write-index inst stream)
   (write-b32 (entry-point inst) stream)
   (write-b32 (size inst) stream)
   (write-b16 (nlocals inst) stream)
   (write-b16 (nclosed inst) stream)
-  (write-index (module inst) stream)
-  (write-index (name inst) stream)
-  (write-index (lambda-list inst) stream)
-  (write-index (docstring inst) stream))
+  (write-index (module inst) stream))
 
 (defmethod encode ((inst bytemodule-creator) stream)
   ;; Write instructions.
   (write-mnemonic 'make-bytecode-module stream)
-  (write-index inst stream)
   (let* ((lispcode (bytemodule-lispcode inst))
          (len (length lispcode)))
     (when (> len #.(ash 1 32))
@@ -416,7 +421,26 @@
 
 (defmethod encode :before ((attr attribute) stream)
   (write-mnemonic 'attribute stream)
-  (write-index (name attr) stream))
+  (write-index (name attr) stream))  
+
+(defmethod encode ((attr docstring-attr) stream)
+  ;; Write the length.
+  (write-b32 (+ *index-bytes* *index-bytes*) stream)
+  ;; And the data.
+  (write-index (object attr) stream)
+  (write-index (docstring attr) stream))
+
+(defmethod encode ((attr name-attr) stream)
+  (write-b32 (+ *index-bytes* *index-bytes*) stream)
+  (write-index (object attr) stream)
+  (write-index (objname attr) stream))
+
+(defmethod encode ((attr lambda-list-attr) stream)
+  (write-b32 (+ *index-bytes* *index-bytes*) stream)
+  (write-index (ll-function attr) stream)
+  (write-index (lambda-list attr) stream))
+
+;;;
 
 (defmethod encode ((init init-object-array) stream)
   (write-mnemonic 'init-object-array stream)

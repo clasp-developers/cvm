@@ -48,7 +48,9 @@ See MAKE-LOCAL-MACRO"
 See MAKE-SYMBOL-MACRO"
       (documentation 'compile-into 'function)
       "Compile LAMBDA-EXPRESSION in the compilation ENVIRONMENT into a new compiler function within MODULE. The compiler function information is returned, but is not loaded into being an actual callable function. COMPILE-INTO underlies all other compilation operations and can be used for lower level purposes, such as getting a compiler function to serialize during COMPILE-FILE.
-If FORMS-ONLY is provided, the body of the lambda expression is treated as if it was in a PROGN, so declaration expressions are not permitted (and will be treated as forms). If BLOCK-NAME is provided, a block of that name will be established around the body of the lambda expression. These options are available so that functions can be compiled with implicit blocks or progns regardless of the compilation environment's bindings of CL:PROGN or CL:BLOCK.
+If DECLARATIONS is provided, the body of the lambda expression is treated as if it was in a PROGN, so declaration expressions are not permitted (and will be treated as forms). The provided DECLARATIONS are used instead of any in the body.
+If BLOCK-NAME is provided, a block of that name will be established around the body of the lambda expression.
+ These options are available so that functions can be compiled with implicit blocks or progns regardless of the compilation environment's bindings of CL:PROGN or CL:BLOCK.
 
 See CMODULE"
       (documentation 'link 'function)

@@ -26,7 +26,7 @@
 (defun make-sole-operator-env (operator)
   (let* ((rte (make-instance 'clostrum-basic:run-time-environment))
          (ce (make-instance 'clostrum-basic:compilation-environment :parent rte)))
-    (clostrum:make-special-operator *client* rte operator t)
+    (clostrum:make-special-operator m:*client* rte operator t)
     ce))
 
 (5am:test lone-special-operators

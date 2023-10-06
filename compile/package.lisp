@@ -12,7 +12,7 @@
 	   #:make-local-macro #:make-symbol-macro
 	   #:add-macros #:add-symbol-macros
            #:compute-macroexpander
-           #:macroexpand-1 #:macroexpand)
+           #:macroexpand-1 #:macroexpand #:constantp)
   (:export #:run-time-environment)
   (:export #:ltv-info #:ltv-info-form #:ltv-info-read-only-p)
   (:export #:fdefinition-info #:fdefinition-info-name)
@@ -22,8 +22,9 @@
   (:export #:cmodule #:make-cmodule #:cmodule-literals #:link)
   (:export #:cfunction #:cfunction-cmodule #:cfunction-nlocals
            #:cfunction-closed #:cfunction-final-entry-point
-	   #:cfunction-name
-           #:cfunction-lambda-list #:cfunction-doc #:cfunction-final-size)
+           #:cfunction-final-size
+	   #:cfunction-name #:cfunction-doc
+           #:cfunction-lambda-list #:cfunction-lambda-list-p)
   ;; Conditions and compilation unit handling
   (:export #:with-compilation-unit #:with-compilation-results)
   (:export #:unknown-reference #:unknown-variable #:unknown-function

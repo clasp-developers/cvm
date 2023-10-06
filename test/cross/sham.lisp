@@ -1,31 +1,5 @@
 (in-package #:cvm.test.cross)
 
-#| ; accounting for what's actually used
-compile: (eq let quote)
-dynamic-extent: (let quote list length vector flet mapcar labels consp cons car cdr most-positive-fixnum 1- values setq prog1 make-array coerce equal make-string every eql s:setf function)
-eval: (let)
-eval-when: (eval-when values setq let s:expand-in-current-env)
-ignorable: ()
-ignore: ()
-lambda: (s:notnot 1+ s:incf) ; not the lambda macro, funnily enough
-locally: (locally t nil macrolet) ; nil's probably in an earlier file, w/e
-optimize: ()
-special: ()
-symbol-macrolet: (symbol-macrolet)
-the: (the)
-type: (s:decf)
-block: (block return-from return tagbody)
-flet: (:x) ; bla bla keywords will need a clostrum intercept
-if: (if =)
-labels:
-let: (+)
-multiple-value-call: (multiple-value-call floor)
-multiple-value-prog1: (values-list)
-progn: (progn go)
-return-from: ()
-tagbody: ()
-|#
-
 (defun define-specials (client environment)
   ;; from figure 3-2
   (loop for op in '(block      let*                  return-from
@@ -47,7 +21,7 @@ tagbody: ()
                     ;; (coerce foo 'function)
                     1+ 1- + = - floor values functionp coerce
                     values-list eq eql equal equalp
-                    error)
+                    error find-package)
         for f = (fdefinition op)
         do (setf (clostrum:fdefinition client environment op) f)))
 
@@ -59,7 +33,8 @@ tagbody: ()
           (clostrum:fdefinition client environment '(setf cdr)) #'(setf %cdr))))
 
 (defun define-sham-aliases (client environment)
-  (loop for op in '(s:notnot)
+  ;; FIXME: Give note-defun an interesting definition
+  (loop for op in '(s:notnot s:note-defun)
         for f = (fdefinition op)
         do (setf (clostrum:fdefinition client environment op) f))
   (loop for op in '(s:macroexpand-1 s:macroexpand s:eval)
@@ -71,11 +46,15 @@ tagbody: ()
 (defun define-env-access (client environment)
   (flet ((%fdefinition (name)
            (clostrum:fdefinition client environment name))
+	 ((setf %fdefinition) (fun name)
+	   (setf (clostrum:fdefinition client environment name) fun))
          (%symbol-function (name)
            (check-type name symbol)
            (clostrum:fdefinition client environment name)))
     (setf (clostrum:fdefinition client environment 'fdefinition)
           #'%fdefinition
+	  (clostrum:fdefinition client environment '(setf fdefinition))
+	  #'(setf %fdefinition)
           (clostrum:fdefinition client environment 'symbol-function)
           #'%symbol-function))
   (multiple-value-bind (symbol-value setf-symbol-value
@@ -111,15 +90,22 @@ tagbody: ()
   (loop for mac in '(s:expand-in-current-env)
         for f = (macro-function mac)
         do (setf (clostrum:macro-function client environment mac) f))
-  (loop for mac in '(s:multiple-value-bind
-                     s:setf s:incf s:decf s:push
+  (loop for mac in '(s:multiple-value-bind s:in-package
+                     s:setf s:incf s:decf s:push s:defun
                      s:when s:unless s:prog1 s:prog s:return)
-        for cl in    '(multiple-value-bind
-                       setf   incf   decf   push
+        for cl in    '(multiple-value-bind   in-package
+                       setf   incf   decf   push   defun
                        when   unless   prog1   prog   return)
         for f = (macro-function mac)
         do (setf (clostrum:macro-function client environment mac) f
                  (clostrum:macro-function client environment cl) f)))
+
+(defun define-variables (client environment)
+  ;; Needed for COMPILE-FILE.
+  (loop for var in '(*read-suppress* *read-eval* *features* *read-base*
+		     *read-default-float-format*)
+	for v = (symbol-value var)
+	do (clostrum:make-parameter client environment var v)))
 
 (defun %fill-environment (client environment)
   (define-specials client environment)
@@ -129,7 +115,8 @@ tagbody: ()
   (define-env-access client environment)
   (define-stricter-aliases client environment)
   (define-constants client environment)
-  (define-macros client environment))
+  (define-macros client environment)
+  (define-variables client environment))
 
 ;;; On top of all that, we need to define a client so that we
 ;;; can define some methods to automatically bind keywords.

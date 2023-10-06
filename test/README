@@ -1,7 +1,0 @@
-This system runs a small subset of the ANSI tests directly related to evaluation semantics on the VM with a client and environment of your choice. This client and environment are passed through to cvm.compile functions and otherwise arbitrary.
-
-For example, to use the basic native client on SBCL, you could do:
-
-(run! nil (make-instance 'trucler-native-sbcl:client))
-
-Eventually there will be more tests, hopefully.
