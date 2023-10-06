@@ -20,7 +20,7 @@ After the last instruction is executed, the FASL has been fully loaded. Any rema
 
 # Changelog
 
-## 0.13 (pending)
+## 0.13
 
 * `fdesignator` and `progv` changed to have an environment parameter for first-class environment purposes.
 * `environment` fasl op to get the loader environment for `fdesignator`.
