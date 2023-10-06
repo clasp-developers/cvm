@@ -1317,12 +1317,8 @@
     ;; The 0 is a dumb KLUDGE to let the cleanup forms be compiled in
     ;; non-values contexts, which might be more efficient.
     ;; (We use 0 instead of NIL because NIL may not be bound.)
-    ;; We use an ignored &rest parameter so as to avoid compiling
-    ;; an arg count check.
-    (let ((rest (gensym "IGNORED")))
-      (compile-lambda-expression `(lambda (&rest ,rest) ,@cleanup 0)
-                                 env context
-                                 :declarations `((declare (ignore ,rest)))))
+    (compile-lambda-expression `(lambda () ,@cleanup 0)
+                               env context :declarations ())
     (assemble context m:protect)
     (compile-form protected env
                   (new-context context :dynenv '(:protect)))
