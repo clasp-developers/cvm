@@ -174,12 +174,14 @@
 
 (defun new-context (parent &key (receiving (context-receiving parent))
                              (dynenv nil) ; prepended
-                             (frame-end nil fep) ; added
+                             (frame-end (context-frame-end parent) fep)
                              (function (context-function parent)))
+  (when fep
+    (setf (cfunction-%nlocals function)
+          (max (cfunction-%nlocals function) frame-end)))
   (make-context :receiving receiving
                 :dynenv (append dynenv (context-dynenv parent))
-                :frame-end (+ (if fep frame-end 0)
-                              (context-frame-end parent))
+                :frame-end frame-end
                 :function function))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -614,8 +616,6 @@
          (var-count (length vars))
          (frame-end (+ frame-start var-count))
          (function (context-function context)))
-    (setf (cfunction-%nlocals function)
-          (max (cfunction-%nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (vars vars (rest vars))
          (new-vars (vars env)
@@ -624,7 +624,7 @@
                           new-vars)))
         ((>= index frame-end)
          (values (make-lexical-environment env :vars new-vars)
-                 (new-context context :frame-end var-count)))
+                 (new-context context :frame-end frame-end)))
       (when (constantp (first vars) env)
         (error 'bind-constant :name (first vars))))))
 
@@ -634,8 +634,6 @@
          (fun-count (length funs))
          (frame-end (+ frame-start fun-count))
          (function (context-function context)))
-    (setf (cfunction-%nlocals function)
-          (max (cfunction-%nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (funs funs (rest funs))
          (new-vars (funs env)
@@ -644,7 +642,7 @@
                           new-vars)))
         ((>= index frame-end)
          (values (make-lexical-environment env :funs new-vars)
-                 (new-context context :frame-end fun-count))))))
+                 (new-context context :frame-end frame-end))))))
 
 (defun add-macros (env macros)
   (make-lexical-environment env :funs (append macros (funs env))))
@@ -942,38 +940,80 @@
       (values binding nil)))
 
 (defmethod compile-special ((operator (eql 'let)) form env context)
+  ;; This is really long because we make an environment manually rather
+  ;; than use bind-vars, which would be even more awkward and cons more.
   (destructure-syntax (let bindings . body) (form)
     (unless (proper-list-p bindings)
       (error 'improper-bindings :bindings bindings))
     (multiple-value-bind (body decls) (parse-body body :whole form)
       (let* ((specials (extract-specials decls))
-             (lexical-binding-count 0)
-             (special-binding-count 0)
-             (post-binding-env (add-specials specials env))
              (frame-start (context-frame-end context))
-             ;; The values are compiled in a context with no extra
-             ;; frame slots used, since the BIND takes place after the
-             ;; values are evaluated.
-             (valf-context (new-context context :receiving 1)))
+             ;; This will be built up as we process the bindings, and then
+             ;; reduced as we generate the bind instructions.
+             (frame-end frame-start)
+             (cf (context-function context))
+             (valc (new-context context :receiving 1))
+             (special-binding-count 0)
+             new-bindings)
+        ;; First, go through the bindings. Compile all the value forms in order.
+        ;; This lets them be compiled in the same context with no extra locals,
+        ;; and more importantly computes the values in parallel as demanded
+        ;; by the standard. Anything bound to a lexical variable also gets a
+        ;; cell emission fixup.
+        ;; We collect conses (name . info).
         (dolist (binding bindings)
-          (multiple-value-bind (var valf) (canonicalize-binding binding)
-            (unless (symbolp var) (error 'variable-not-symbol :name var))
-            (compile-form valf env valf-context)
-            (cond ((or (member var specials)
-                       (globally-special-p var env))
-                   (incf special-binding-count)
-                   (emit-special-bind context var)
-		   (setf context
-			 (new-context context :dynenv '(:special))))
-                  (t
-                   (setf (values post-binding-env context)
-                         (bind-vars (list var) post-binding-env context))
-                   (incf lexical-binding-count)
-                   (maybe-emit-make-cell (var-info var post-binding-env)
-                                         context)))))
-        (emit-bind context lexical-binding-count frame-start)
-        (compile-progn body post-binding-env context)
-        (emit-unbind context special-binding-count)))))
+          (push (multiple-value-bind (var valf)
+                    (canonicalize-binding binding)
+                  (unless (symbolp var)
+                    (error 'variable-not-symbol :name var))
+                  (compile-form valf env valc)
+                  (cons var
+                        (cond
+                          ((or (member var specials)
+                               (globally-special-p var env))
+                           (incf special-binding-count)
+                           (make-instance 'trucler:local-special-variable-description
+                             :name var))
+                          (t ; lexical
+                           (let ((lex (make-lexical-variable
+                                       var frame-end cf)))
+                             (incf frame-end)
+                             (maybe-emit-make-cell lex context)
+                             lex)))))
+                new-bindings))
+        ;; That out of the way, we construct the environment and context
+        ;; for the body.
+        (let ((post-binding-env
+                (make-lexical-environment
+                 env :vars (append new-bindings (vars env))))
+              (post-binding-context
+                (new-context context
+                             :frame-end frame-end
+                             :dynenv (make-list special-binding-count
+                                                :initial-element :special))))
+          ;; Generate the bind and special-bind instructions.
+          ;; We generate one bind for each block of contiguous lexicals.
+          ;; We bind the most recently pushed values first, so in reverse order,
+          ;; which of course isn't actually visible in Lisp.
+          (loop with nlex = 0
+                for (name . info) in new-bindings
+                if (typep info 'trucler:lexical-variable-description)
+                  do (incf nlex)
+                else ; special
+                do ; first finish any lexical binding.
+                   (when (plusp nlex)
+                     (let ((new-frame-end (- frame-end nlex)))
+                       (emit-bind post-binding-context nlex new-frame-end)
+                       (setf frame-end new-frame-end nlex 0)))
+                   ;; now the special.
+                   (emit-special-bind post-binding-context name)
+                finally ; and the last special binding.
+                        (when (plusp nlex)
+                          (emit-bind post-binding-context nlex
+                                     (- frame-end nlex))))
+          ;; Finally, the actual body.
+          (compile-progn body post-binding-env post-binding-context)
+          (emit-unbind post-binding-context special-binding-count))))))
 
 (defun compile-let* (bindings decls body env context
                      &key (block-name nil block-name-p))

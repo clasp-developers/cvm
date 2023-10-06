@@ -171,3 +171,13 @@
   (macrolet ((%m (z) z))
     (let ((x (s:expand-in-current-env (%m 1)))) (+ x x x)))
   3)
+
+;;; Apparently not in ANSI: Special bindings are in parallel
+
+(deftest let.parallel
+  (let ((x 1) (y 2))
+    (declare (special x y))
+    (let ((x (+ y 8)) (y (+ x 13)))
+      (declare (special x y))
+      (values x y)))
+  10 14)
