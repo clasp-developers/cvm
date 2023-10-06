@@ -137,4 +137,5 @@
     (called-fdefinition 60 ((constant-arg 1)) ((constant-arg 2)))
     (protect 61)
     (cleanup 62)
+    (encell 63 (1) (2))
     (long 255)))

@@ -608,6 +608,12 @@ Pop a value from `stack`: it is a function accepting no arguments. Create a new 
 
 Pop a dynenv from `destack`: it is a protection dynenv. Call its thunk with no arguments. This ends a body protected by `cl:unwind-protect` when not performing a nonlocal exit.
 
+### encell #x3f (index misc)
+
+Grab the `index`th local value. Put it in a fresh cell. Put it back.
+
+This is equivalent to `ref index; make-cell; set index;` but is common enough to get its own instruction. And it makes analysis of bytecode a little simpler.
+
 ```lisp
 (funcall (protection-dynenv-thunk (pop DESTACK)))
 
@@ -631,7 +637,7 @@ bytecode can be analyzed coherently, there are many constraints on valid program
 * `values` is in an invalid state when `mv-call[-etc]`, `call[-etc]`, or `pop` is executed. Additionally it invalid before `exit` instructions if the target of the exit needs an invalid state.
 * Dynamic environments are properly nested; so for example `entry-close` is never executed when the most recently pushed dynamic environment was not an `entry`. The nature of the dynamic environment stack at least back up to the call at any position is knowable statically.
 * Dynamic environments are properly closed before any `return`.
-* `make-cell` never pops a cell (i.e. cells are not wrapped in cells).
+* `make-cell` never pops a cell (i.e. cells are not wrapped in cells). `encell` similarly never reads a local that already holds a cell.
 * Cells on the stack are only ever popped by the following instructions: `cell-ref`, `cell-set`, `make-closure`, `initialize-closure`.
 * `cell-ref` and `cell-set` only pop cells.
 * The literal referred to by `const` is not a function cell, variable cell, the environment, or template that needs a closure. The literals referred to by `make-closure` and `make-uninitialized-closure` are function templates. The literals referred to by `parse-key-args` are symbols. The literals referred to by `special-bind`, `symbol-value`, and `symbol-value-set` are variable cells. The literal referred to by `fdefinition` is a function cell. The literals referred to by `progv` and `fdesignator` are the environment.

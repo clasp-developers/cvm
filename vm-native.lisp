@@ -482,6 +482,9 @@
                    ((#.m:cleanup)
                     (incf ip)
                     (return))
+                   ((#.m:encell)
+                    (let ((index (next-code)))
+                      (setf (local index) (make-cell (local index)))))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const

@@ -410,17 +410,14 @@
   (defun maybe-emit-cell-ref (lexical-var context)
     (maybe-emit lexical-var m:cell-ref context)))
 
-;;; FIXME: This is probably a good candidate for a specialized
-;;; instruction.
-(defun maybe-emit-encage (lexical-var context)
+(defun maybe-emit-encell (lexical-var context)
   (let ((index (frame-offset lexical-var)))
     (flet ((emitter (fixup position code)
-             (assert (= (fixup-size fixup) 5))
-             (assemble-into code position
-                            m:ref index m:make-cell m:set index))
+             (assert (= (fixup-size fixup) 2))
+             (assemble-into code position m:encell index))
            (resizer (fixup)
              (declare (ignore fixup))
-             (if (indirect-lexical-p lexical-var) 5 0)))
+             (if (indirect-lexical-p lexical-var) 2 0)))
       (emit-fixup context (make-fixup lexical-var 0 #'emitter #'resizer)))))
 
 (defun emit-lexical-set (lexical-var context)
@@ -1570,7 +1567,7 @@
                    (emit-special-bind context var))
                  (incf special-binding-count))
                 (t
-                 (maybe-emit-encage (var-info var new-env) context))))
+                 (maybe-emit-encell (var-info var new-env) context))))
         (setq new-env (add-specials (intersection specials required) new-env)))
       ;; set the default env to have all the requireds bound,
       ;; but don't put in the optionals (yet).
@@ -1601,7 +1598,7 @@
                (incf special-binding-count 1)
                (setq new-env (add-specials (list rest) new-env)))
               (t
-               (maybe-emit-encage (var-info rest new-env) context))))
+               (maybe-emit-encell (var-info rest new-env) context))))
       (when key-p
         ;; Generate code to parse the key args. As with optionals, we don't do
         ;; defaulting yet.
@@ -1720,7 +1717,7 @@
                          (assemble-maybe-long context m:ref var-index)
                          (emit-special-bind context var))
                         (t
-                         (maybe-emit-encage info context))))
+                         (maybe-emit-encell info context))))
                  (t
                   ;; We compile in default-env but also context.
                   ;; The context already has space allocated for all
