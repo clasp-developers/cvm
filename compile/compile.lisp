@@ -5,7 +5,8 @@
 ;;; Functions, modules, LTV, contexts
 ;;;
 
-(defstruct (cfunction (:constructor make-cfunction (cmodule &key doc)))
+(defstruct (cfunction (:constructor make-cfunction
+                          (cmodule &key name doc)))
   (cmodule (error "missing arg") :read-only t)
   ;; Bytecode vector for this function.
   (bytecode (make-array 0 :element-type '(unsigned-byte 8)
@@ -26,6 +27,10 @@
   index
   ;; The loaded actual function for this cfunction.
   info
+  ;; A function name for debugging purposes (e.g. printing).
+  ;; NIL means no name provided. Hopefully you don't want to name
+  ;; a function NIL.
+  (name nil)
   ;; A docstring.
   (doc nil))
 
@@ -827,8 +832,8 @@
 ;;; as you would for #'(lambda ...).
 ;;; CONTEXT's number of return values is ignored.
 (defun compile-lambda-expression (lexpr env context
-                                  &rest keys &key block-name declarations)
-  (declare (ignore block-name declarations))
+                                  &rest keys &key name block-name declarations)
+  (declare (ignore name block-name declarations))
   ;; TODO: check car is actually LAMBDA
   (destructure-syntax (lambda lambda-list . body) (lexpr)
     (let* ((cfunction (apply #'compile-lambda lambda-list body
@@ -1011,7 +1016,8 @@
                  (definition :rest nil)
                (compile-lambda-expression
                 `(lambda ,lambda-list ,@body)
-                env context :block-name (fun-name-block-name name))))
+                env context :name `(flet ,name)
+                :block-name (fun-name-block-name name))))
     (emit-bind context (length definitions) (context-frame-end context))
     (multiple-value-call #'compile-locally body
       (bind-fvars (mapcar #'car definitions) env context))))
@@ -1037,6 +1043,7 @@
                              (list name
                                    (compile-lambda
                                     lambda-list body new-env module
+                                    :name `(labels ,name)
                                     :block-name bname))))
                      for literal-index = (cfunction-literal-index fun context)
                      if (zerop (length (cfunction-closed fun)))
@@ -1725,9 +1732,12 @@
 ;;; These options are provided so that compilation can proceed as if the body
 ;;; is wrapped in CL:BLOCK or CL:PROGN (respectively) without requiring that
 ;;; those operators actually be available in the compilation environment.
+;;; If NAME is provided, it is a function name used for debugging purposes
+;;; only, e.g. for printing and not for binding.
 (defun compile-lambda (lambda-list body env module
                        &rest keys
-                       &key block-name (declarations nil declsp) docstring)
+                       &key name block-name
+                         (declarations nil declsp) docstring)
   (declare (ignore block-name))
   (when declsp
     (check-type docstring (or string null) "a documentation string"))
@@ -1735,7 +1745,7 @@
       (if declsp
           (values body declarations docstring)
           (alexandria:parse-body body :documentation t))
-    (let* ((function (make-cfunction module :doc doc))
+    (let* ((function (make-cfunction module :name name :doc doc))
            (context (make-context :receiving t :function function))
            (env (make-lexical-environment env)))
       (setf (cfunction-index function)

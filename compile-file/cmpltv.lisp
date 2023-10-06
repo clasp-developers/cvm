@@ -205,6 +205,11 @@
    (%object :initarg :object :reader object :type creator)
    (%docstring :initarg :docstring :reader docstring :type creator)))
 
+(defclass name-attr (attribute)
+  ((%name :initform (ensure-constant "name"))
+   (%object :initarg :object :reader object :type creator)
+   (%objname :initarg :objname :reader objname :type creator)))
+
 ;;;
 
 ;;; Return true iff the value is similar to the existing creator.
@@ -644,7 +649,6 @@
 (defclass bytefunction-creator (creator)
   ((%cfunction :initarg :cfunction :reader cfunction)
    (%module :initarg :module :reader module)
-   (%name :initarg :name :reader name :type creator)
    (%lambda-list :initarg :lambda-list :reader lambda-list :type creator)
    (%nlocals :initarg :nlocals :reader nlocals :type (unsigned-byte 16))
    (%nclosed :initarg :nclosed :reader nclosed :type (unsigned-byte 16))
@@ -660,7 +664,6 @@
            (make-instance 'bytefunction-creator
              :cfunction value
              :module (ensure-module (cmp:cfunction-cmodule value))
-             :name (ensure-constant nil #+(or) (cmp:cfunction-name value))
              :lambda-list (ensure-constant
                            nil
                            #+(or) (cmp:cfunction-lambda-list value))
@@ -668,6 +671,11 @@
              :nclosed (length (cmp:cfunction-closed value))
              :entry-point (cmp:cfunction-final-entry-point value)
              :size (cmp:cfunction-final-size value)))))
+    (when (cmp:cfunction-name value)
+      (add-instruction (make-instance 'name-attr
+                         :object inst
+                         :objname (ensure-constant
+                                   (cmp:cfunction-name value)))))
     (when (cmp:cfunction-doc value)
       (add-instruction (make-instance 'docstring-attr
                          :object inst

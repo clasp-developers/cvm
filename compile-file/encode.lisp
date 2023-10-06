@@ -393,7 +393,6 @@
   (write-b16 (nlocals inst) stream)
   (write-b16 (nclosed inst) stream)
   (write-index (module inst) stream)
-  (write-index (name inst) stream)
   (write-index (lambda-list inst) stream))
 
 (defmethod encode ((inst bytemodule-creator) stream)
