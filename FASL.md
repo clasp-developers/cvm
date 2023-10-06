@@ -27,6 +27,7 @@ After the last instruction is executed, the FASL has been fully loaded. Any rema
 * New instructions `protect` and `cleanup` for implementing `cl:unwind-protect`.
 * Redundant indexing in FASLs is eliminated, reducing complexity and saving space.
 * Character encoding in FASLs changed from UTF-32 to UTF-8.
+* Docstrings are changed from a mandatory field for FASL functions to an optional standard attribute: "docstring".
 
 ## 0.12
 

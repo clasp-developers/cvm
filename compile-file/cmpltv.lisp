@@ -200,6 +200,11 @@
    ;; FIXME: Do this more cleanly.
    (%name :reader name :type creator)))
 
+(defclass docstring-attr (attribute)
+  ((%name :initform (ensure-constant "docstring"))
+   (%object :initarg :object :reader object :type creator)
+   (%docstring :initarg :docstring :reader docstring :type creator)))
+
 ;;;
 
 ;;; Return true iff the value is similar to the existing creator.
@@ -308,7 +313,7 @@
 ;;; Given a form, get a constant handle to a function that at load time will
 ;;; have the effect of evaluating the form in a null lexical environment.
 (defun add-form (form &optional (env *environment*))
-  ;; PROGN so that (declare ...) expressions for example correctly cause errors.
+  ;; FORMS-ONLY so that (declare ...) forms for example correctly cause errors.
   (add-function (bytecode-cf-compile-lexpr `(lambda () ,form) env t)))
 
 (defmethod add-constant ((value cons))
@@ -628,8 +633,10 @@
 
 (defun bytecode-cf-compile-lexpr (lambda-expression environment
                                   &optional forms-only)
-  (cmp:compile-into (cmp:make-cmodule) lambda-expression environment
-                    :forms-only forms-only))
+  (if forms-only
+      (cmp:compile-into (cmp:make-cmodule) lambda-expression environment
+                        :declarations nil)
+      (cmp:compile-into (cmp:make-cmodule) lambda-expression environment)))
 
 (defun compile-file-form (form env)
   (add-initializer-form form env))
@@ -639,7 +646,6 @@
    (%module :initarg :module :reader module)
    (%name :initarg :name :reader name :type creator)
    (%lambda-list :initarg :lambda-list :reader lambda-list :type creator)
-   (%docstring :initarg :docstring :reader docstring :type creator)
    (%nlocals :initarg :nlocals :reader nlocals :type (unsigned-byte 16))
    (%nclosed :initarg :nclosed :reader nclosed :type (unsigned-byte 16))
    (%entry-point :initarg :entry-point :reader entry-point
@@ -658,11 +664,15 @@
              :lambda-list (ensure-constant
                            nil
                            #+(or) (cmp:cfunction-lambda-list value))
-             :docstring (ensure-constant nil #+(or) (cmp:cfunction-doc value))
              :nlocals (cmp:cfunction-nlocals value)
              :nclosed (length (cmp:cfunction-closed value))
              :entry-point (cmp:cfunction-final-entry-point value)
              :size (cmp:cfunction-final-size value)))))
+    (when (cmp:cfunction-doc value)
+      (add-instruction (make-instance 'docstring-attr
+                         :object inst
+                         :docstring (ensure-constant
+                                     (cmp:cfunction-doc value)))))
     inst))
 
 (defclass bytemodule-creator (vcreator)

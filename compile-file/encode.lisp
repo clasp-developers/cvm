@@ -387,8 +387,6 @@
   (write-b16 0 stream))
 
 (defmethod encode ((inst bytefunction-creator) stream)
-  ;; four bytes for the entry point, two for the nlocals and nclosed,
-  ;; then indices. TODO: Source info.
   (write-mnemonic 'make-bytecode-function stream)
   (write-b32 (entry-point inst) stream)
   (write-b32 (size inst) stream)
@@ -396,8 +394,7 @@
   (write-b16 (nclosed inst) stream)
   (write-index (module inst) stream)
   (write-index (name inst) stream)
-  (write-index (lambda-list inst) stream)
-  (write-index (docstring inst) stream))
+  (write-index (lambda-list inst) stream))
 
 (defmethod encode ((inst bytemodule-creator) stream)
   ;; Write instructions.
@@ -422,6 +419,13 @@
 (defmethod encode :before ((attr attribute) stream)
   (write-mnemonic 'attribute stream)
   (write-index (name attr) stream))
+
+(defmethod encode ((attr docstring-attr) stream)
+  ;; Write the length.
+  (write-b32 (+ *index-bytes* *index-bytes*) stream)
+  ;; And the data.
+  (write-index (object attr) stream)
+  (write-index (docstring attr) stream))
 
 (defmethod encode ((init init-object-array) stream)
   (write-mnemonic 'init-object-array stream)
