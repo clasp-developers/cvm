@@ -10,7 +10,7 @@ Bytecode is organized into modules. A module contains the bytecode for one or mo
 
 Function cells and variable cells are implementation-defined objects that represent global bindings in some environment. A function or variable cell has an associated name; when the value bound to that environment's function or variable binding (respectively) of that name changes, or when the binding is made unbound, the cell reflects the change. When a bytecode module is loaded, the loader defines what environment it is loading into, and all function cells and variable cells are for bindings in this one environment.
 
-A bytecode function is made of a "template" and a closure vector. CVM uses flat closures, so closures do not need to maintain a chain of environments. Each element of the closure vector is either a value or a _cell_ (distinct from function and variable cells). A cell is an object that holds a value and may have that value changed; cells are used when a function can mutate lexical variables within another closure.
+Bytecode functions can be either closures or "templates". A closure is made up of a "template" and a closure vector. CVM uses flat closures, so closures do not need to maintain a chain of environments. Each element of the closure vector is either a value or a _cell_ (distinct from function and variable cells). A cell is an object that holds a value and may have that value changed; cells are used when a function can mutate lexical variables within another closure.
 
 All other information about a function is part of the template. Bytecode function templates contain the following information:
 
@@ -18,6 +18,8 @@ All other information about a function is part of the template. Bytecode functio
 * A count of simultaneously bound local variables.
 * A count of how many closure values and cells a function with this template has.
 * An entry point: the index, into the module's bytecode, of the function's first instruction.
+
+If a template has a closure count of zero, it is itself callable as a function. This allows the machine to skip allocation in the common case of non-closure functions. Templates that do need closures are never directly accessible in normal operation; they are only used for making closures.
 
 # Operation
 
@@ -632,7 +634,7 @@ bytecode can be analyzed coherently, there are many constraints on valid program
 * `make-cell` never pops a cell (i.e. cells are not wrapped in cells).
 * Cells on the stack are only ever popped by the following instructions: `cell-ref`, `cell-set`, `make-closure`, `initialize-closure`.
 * `cell-ref` and `cell-set` only pop cells.
-* The literal referred to by `const` is not a function or variable cell. The literals referred to by `make-closure` and `make-uninitialized-closure` are function templates. The literals referred to by `parse-key-args` are symbols. The literals referred to by `special-bind`, `symbol-value`, and `symbol-value-set` are variable cells. The literal referred to by `fdefinition` is a function cell. The literals referred to by `progv` and `fdesignator` are the environment.
+* The literal referred to by `const` is not a function cell, variable cell, the environment, or template that needs a closure. The literals referred to by `make-closure` and `make-uninitialized-closure` are function templates. The literals referred to by `parse-key-args` are symbols. The literals referred to by `special-bind`, `symbol-value`, and `symbol-value-set` are variable cells. The literal referred to by `fdefinition` is a function cell. The literals referred to by `progv` and `fdesignator` are the environment.
 * The object constructed by `make-uninitialized-closure` is not popped by any instructions besides `set`, `bind`, and `initialize-closure`. In particular, it is not called.
 * The object popped by `initialize-closure` was pushed by `make-uninitialized-closure`.
 * The argument parsing instructions are not used until the argument count has been checked.
@@ -647,7 +649,7 @@ bytecode can be analyzed coherently, there are many constraints on valid program
 
 A safe implementation may impose the following additional constraints. If they are violated, the implementation may reject the bytecode, or fix it for safety.
 
-* `call` and `mv-call` instruction callees are only ever the result of `fdefinition` or `fdesignator`. (To fix, an `fdesignator` instruction can be imposed before any call.)
+* `call` and `mv-call` instruction callees are only ever the result of `fdefinition` or `fdesignator`, or a `const` instruction pointing to a literal that is a bytecode function template in the same module that does not need a closure. (To fix, an `fdesignator` instruction can be imposed before any call.)
 
 # Versioning
 
