@@ -28,6 +28,7 @@ After the last instruction is executed, the FASL has been fully loaded. Any rema
 * Redundant indexing in FASLs is eliminated, reducing complexity and saving space.
 * Character encoding in FASLs changed from UTF-32 to UTF-8.
 * FASL function names, docstrings, and lambda lists are changed from mandatory fields to optional standard attributes: "name", "docstring", and "lambda list" respectively.
+* Arrays in FASLs may have any element type (provided the elements within can be dumped).
 
 ## 0.12
 

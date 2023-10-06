@@ -52,7 +52,7 @@
 (defclass array-creator (vcreator)
   ((%dimensions :initarg :dimensions :reader dimensions)
    (%packing-info :initarg :packing-info :reader packing-info)
-   (%uaet-code :initarg :uaet-code :reader uaet-code)))
+   (%element-type-info :initarg :element-type-info :reader element-type-info)))
 
 ;; row-major.
 (defclass setf-aref (effect)
@@ -335,20 +335,21 @@
                        :cons cons :value (ensure-constant (cdr value))))
     cons))
 
-;;; Arrays are encoded with two codes: One for the packing, and one
-;;; for the element type. The latter is in place so that, hopefully,
-;;; arrays can be dumped portably. These two codes do not necessarily
-;;; coincide: for example a general (T) array full of ub8s could be
-;;; encoded as ub8s but still be loaded as a general array.
-;;; (This is not done right now.)
-;;; FIXME: Not sure how to deal with nonportable element types, such
-;;; as clasp's vec3 arrays, or sbcl's ub7 etc. For now the similarity
-;;; of arrays is weaker than the language standard mandates.
-;;; The portability concern is that, for example, Clasp will have
-;;; array element type of ext:byte8 instead of (unsigned-byte 8). In
-;;; that case we want to dump as (unsigned-byte 8) and Clasp's loader
-;;; will upgrade to ext:byte8 no problem.
+;;; Arrays are encoded with a code describing how elements are packed.
+;;; This packing can be done independently of the element type, so
+;;; that choice of representation is not dependent on how the host
+;;; Lisp happens to represent arrays.
+;;; We also use codes for common array element types. This shaves some
+;;; bytes from FASLs, but is also important to avoid infinite recursion:
+;;; If we just dumped the element type, say BASE-CHAR, we'd have to dump
+;;; the symbol, which means having to dump the symbol name, and guess
+;;; what kind of object the symbol name is?
+;;; CLHS defines UPGRADED-ARRAY-ELEMENT-TYPE to return BASE-CHAR or
+;;; equivalent for base char arrays, so the code works fine there.
+;;; Ditto CHARACTER, and BIT but that's not as important.
 ;;; TODO: For version 1, put more thought into these IDs.
+(defconstant +other-uaet+   #b11111110)
+
 (defvar +array-packing-infos+
   '((nil                    #b00000000)
     (base-char              #b10000000)
@@ -375,33 +376,41 @@
     ((signed-byte 64)       #b10000111)
     (t                      #b11111111)))
 
-(defun %uaet-info (uaet)
-  (dolist (info +array-packing-infos+)
-    (when (subtypep uaet (first info))
-      (return-from %uaet-info info)))
-  ;; subtypep not doing so well. default to general.
-  (assoc t +array-packing-infos+))
-
-(defun find-uaet-code (uaet) (second (%uaet-info uaet)))
-
 (defun array-packing-info (array)
   ;; TODO? As mentioned above, we could pack arrays more efficiently
   ;; than suggested by their element type. Iterating over every array
   ;; checking might be a little too slow though?
   ;; Also wouldn't work for NIL arrays, but who's dumping NIL arrays?
-  (%uaet-info (array-element-type array)))
+  (let ((aet (array-element-type array)))
+    (dolist (info +array-packing-infos+)
+      (when (subtypep aet (first info))
+        (return-from array-packing-info info)))
+    (assoc t +array-packing-infos+)))
+
+(defun compute-element-type-info (array)
+  (let ((aet (array-element-type array)))
+    (dolist (info +array-packing-infos+)
+      ;; Check for actual type equality.
+      ;; We do type= instead of just equal because some implementations,
+      ;; like CLASP and ECL, return nonstandard specifiers from a-e-t.
+      (when (and (subtypep aet (first info))
+                 (subtypep (first info) aet))
+        (return-from compute-element-type-info info)))
+    ;; The element type is something we don't specially code for.
+    ;; Dump it as a constant and use +other-uaet+.
+    (list (ensure-constant aet) +other-uaet+)))
 
 (defmethod add-constant ((value array))
-  (let* ((uaet (array-element-type value))
+  (let* ((element-type-info (compute-element-type-info value))
          (info (array-packing-info value))
          (info-type (first info))
-         (uaet-code (find-uaet-code uaet))
          (arr (add-creator
                value
                (make-instance 'array-creator
                  :prototype value :dimensions (array-dimensions value)
-                 :packing-info info :uaet-code uaet-code))))
-    (when (eq info-type t) ; general - dump setf-arefs for elements.
+                 :packing-info info :element-type-info element-type-info))))
+    (when (or (eq info-type t) ; general - dump setf-arefs for elements.
+              (eql (second element-type-info) +other-uaet+))
       ;; (we have to separate initialization here in case the array
       ;;  contains itself. packed arrays can't contain themselves)
       (loop for i below (array-total-size value)
