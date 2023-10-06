@@ -247,10 +247,10 @@ Set the `nopt` locals beginning at `nreq` to be the arguments beginning at `nreq
 
 ### listify-rest-args #x11 (nfixed misc)
 
-Construct a list out of all the arguments beginning at `nfixed`, and push it. [FIXME: This instruction should probably assign directly to a local.]
+Construct a list out of all the arguments beginning at `nfixed`, and assign it to the `nfixed`th local.
 
 ```lisp
-(push (nthcdr nfixed ARGUMENTS) STACK)
+(setf (aref LOCALS nfixed) (nthcdr nfixed ARGUMENTS))
 ```
 
 

@@ -1551,7 +1551,6 @@
                   opt-key-indices))))
       (when rest
         (assemble-maybe-long context m:listify-rest-args max-count)
-        (assemble-maybe-long context m:set (context-frame-end context))
         (setf (values new-env context)
               (bind-vars (list rest) new-env context))
         (cond ((or (member rest specials)
