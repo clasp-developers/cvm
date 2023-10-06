@@ -11,7 +11,8 @@
   (:export #:bytecode-function #:make-bytecode-function
            #:bytecode-function-module #:bytecode-function-entry-pc
            #:bytecode-function-environment-size
-           #:bytecode-function-locals-frame-size)
+           #:bytecode-function-locals-frame-size
+           #:bytecode-function-name #:bytecode-function-lambda-list)
   (:export #:bytecode-closure #:make-bytecode-closure
            #:bytecode-closure-template #:bytecode-closure-env)
   (:export #:compute-instance-function)

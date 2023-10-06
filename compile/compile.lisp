@@ -36,6 +36,8 @@
   (lambda-list nil :read-only t)
   ;; Whether a lambda list was provided.
   ;; (This is needed since NIL is a valid lambda list.)
+  ;; We always provide a lambda list right now, but that might change,
+  ;; e.g. if we note low DEBUG and high SPACE optimize declarations.
   (lambda-list-p nil :read-only t)
   ;; A docstring.
   (doc nil :read-only t))
@@ -1923,9 +1925,13 @@
                       (cfunction-entry-point cfunction))
                      (cfunction-final-size cfunction))
           do (setf (cfunction-info cfunction) fun)
+          when (cfunction-name cfunction)
+            do (setf (m:bytecode-function-name fun) (cfunction-name cfunction))
           when (cfunction-doc cfunction)
-            ;; Sadly this doesn't actually do anything, at least in SBCL.
-            do (setf (documentation fun t) (cfunction-doc cfunction)))
+            do (setf (documentation fun t) (cfunction-doc cfunction))
+          when (cfunction-lambda-list-p cfunction)
+            do (setf (m:bytecode-function-lambda-list fun)
+                     (cfunction-lambda-list cfunction)))
     ;; Now replace the cfunctions in the cmodule literal vector with
     ;; real bytecode functions.
     ;; Also replace the load-time-value infos with the evaluated forms.
