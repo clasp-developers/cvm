@@ -471,7 +471,15 @@
                          (symbol (fdefinition fdesig)))))
                     (incf ip))
                    ((#.m:protect)
-                    (let ((cleanup-thunk (spop)))
+                    (let* ((template (constant (next-code)))
+                           (envsize
+                             (m:bytecode-function-environment-size template))
+                           (cleanup-thunk
+                             (if (zerop envsize)
+                                 template
+                                 (m:make-bytecode-closure
+                                  m:*client* template
+                                  (coerce (gather envsize) 'simple-vector)))))
                       (declare (type function cleanup-thunk))
                       (incf ip)
                       (unwind-protect

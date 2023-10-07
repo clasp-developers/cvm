@@ -627,7 +627,13 @@
                            desig)))))
                     (incf ip))
                    ((#.m:protect)
-                    (let* ((cleanup-thunk (spop))
+                    (let* ((template (constant (next-code)))
+                           (envsize
+                             (m:bytecode-function-environment-size template))
+                           (cleanup-thunk
+                             (m:make-bytecode-closure
+                              (vm-client vm) template
+                              (coerce (gather envsize) 'simple-vector)))
                            (de (make-protection-dynenv cleanup-thunk)))
                       (push de (vm-dynenv-stack vm)))
                     (incf ip))

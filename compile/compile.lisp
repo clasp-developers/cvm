@@ -831,27 +831,35 @@
   (reference-lexical-variable info context)
   (compile-call (rest form) env context))
 
-;;; Given a lambda expression, generate code to push it to the stack
-;;; as you would for #'(lambda ...).
-;;; CONTEXT's number of return values is ignored.
-(defun compile-lambda-expression (lexpr env context
-                                  &rest keys &key name block-name declarations)
-  (declare (ignore name block-name declarations))
-  ;; TODO: check car is actually LAMBDA
+;;; Given a lambda expression, compile it, and generate code to get the
+;;; values it closes over. Return the cfunction.
+;;; Used by both compile-lambda-expression and the unwind-protect compiler.
+(defun %compile-lambda-expression (lexpr env context &rest keys)
   (destructure-syntax (lambda lambda-list . body) (lexpr)
     (let* ((cfunction (apply #'compile-lambda lambda-list body
                              env (context-module context) keys))
            (closed (cfunction-closed cfunction)))
       (loop for info across closed
             do (reference-lexical-variable info context))
-      (if (zerop (length closed))
-          (emit-const context (cfunction-literal-index cfunction context))
-          (assemble context m:make-closure
-            (cfunction-literal-index cfunction context))))))
+      cfunction)))
+
+;;; Given a lambda expression, generate code to push it to the stack
+;;; as you would for #'(lambda ...).
+;;; CONTEXT's number of return values is ignored.
+(defun compile-lambda-expression (lexpr env context
+                                  &rest keys &key name block-name declarations)
+  (declare (ignore name block-name declarations))
+  (let ((cfunction
+          (apply #'%compile-lambda-expression lexpr env context keys)))
+    (if (zerop (length (cfunction-closed cfunction)))
+        (emit-const context (cfunction-literal-index cfunction context))
+        (assemble context m:make-closure
+          (cfunction-literal-index cfunction context)))))
 
 (defun compile-lambda-form (form env context)
   ;; FIXME: We can probably handle this more efficiently (without consing
   ;; a closure) by using compile-with-lambda-list instead.
+  ;; FIXME: Check lexpr is actually a lambda expression.
   (let ((lexpr (car form)) (args (rest form)))
     (compile-lambda-expression lexpr env context)
     (compile-call args env context)))
@@ -1349,14 +1357,14 @@
                             form env context)
   (destructure-syntax (unwind-protect protected . cleanup) (form)
     ;; Build a cleanup thunk.
-    ;; This will often/usually be a closure, which is why we
-    ;; can't just give M:PROTECT a constant argument.
     ;; The 0 is a dumb KLUDGE to let the cleanup forms be compiled in
     ;; non-values contexts, which might be more efficient.
     ;; (We use 0 instead of NIL because NIL may not be bound.)
-    (compile-lambda-expression `(lambda () ,@cleanup 0)
-                               env context :declarations ())
-    (assemble context m:protect)
+    (let ((cfunction
+            (%compile-lambda-expression `(lambda () ,@cleanup 0)
+                                        env context :declarations ())))
+      (assemble context m:protect
+        (cfunction-literal-index cfunction context)))
     (compile-form protected env
                   (new-context context :dynenv '(:protect)))
     (assemble context m:cleanup)))

@@ -93,7 +93,7 @@ The following operations are used in this pseudocode:
 * `(make-progv-dynenv vcells values)` creates a new dynamic environment entry representing a `progv` binding of the vcells to the values.
 * `(vcell-value vcell DESTACK)` accesses the binding of the variable cell in the given dynamic environment stack. When reading the value, if the vcell is unbound, an `unbound-variable` error is signaled. With the shallow binding used in this description, `vcell-value` would look through the `DESTACK` for any special binding or progv entries binding the variable, and if it didn't find any, would use the global binding.
 * `(make-protection-dynenv thunk)` creates a new dynamic environment entry representing a cleanup, from the `protect` instruction. `protection-dynenv-thunk` reads the thunk.
-* `(cleanup entry)` executes any cleanup actions required when unwinding a given dynamic environment entry. With the presentation here, the only required action is that `cleanup` of a protection dynenv will call its thunk.
+* `(cleanup entry)` executes any cleanup actions required when unwinding a given dynamic environment entry. With the presentation here, the only required action is that `cleanup` of a protection dynenv will call its thunk. Around calling this thunk, `VALUES` is saved.
 
 After any instruction that does not alter `ip`, `ip` is advanced to the next instruction (after the opcode and all of the parameters).
 
@@ -596,17 +596,25 @@ This is identical to `fdefinition`, except that it is guaranteed that the functi
 (push (fcell-function (aref LITERALS fcell)) STACK)
 ```
 
-### protect #x3d
+### protect #x3d (template literal)
 
-Pop a value from `stack`: it is a function accepting no arguments. Create a new protection dynenv with that function and push it to `destack`. Any exits through this dynenv will call the cleanup function, so this is used to implement `cl:unwind-protect`.
+`template` is a bytecode function template from this module for a function that accepts zero arguments. Pop as many values from the stack as it needs and make a closure from the template. Create a new protection dynenv with the resulting function and push it to `destack`. Any exits through this dynenv will call the cleanup function, so this is used to implement `cl:unwind-protect`.
+
+As the closure is only used for cleanups, it has dynamic extent. Implementations may choose to allocate it more efficiently, or to use the template as a "closure" when it doesn't close over anything.
 
 ```lisp
-(push (make-protection-dynenv (pop STACK)) DESTACK)
+(let* ((template (aref LITERALS template))
+       (closure (make-closure template (gather (closure-size template)))))
+  (push (make-protection-dynenv closure DESTACK)))
 ```
 
 ### cleanup #x3e
 
 Pop a dynenv from `destack`: it is a protection dynenv. Call its thunk with no arguments. This ends a body protected by `cl:unwind-protect` when not performing a nonlocal exit.
+
+```lisp
+(cleanup (pop DESTACK))
+```
 
 ### encell #x3f (index misc)
 
@@ -615,8 +623,7 @@ Grab the `index`th local value. Put it in a fresh cell. Put it back.
 This is equivalent to `ref index; make-cell; set index;` but is common enough to get its own instruction. And it makes analysis of bytecode a little simpler.
 
 ```lisp
-(funcall (protection-dynenv-thunk (pop DESTACK)))
-
+(setf (aref LOCALS index) (make-cell (aref LOCALS index)))
 ```
 
 ### long #xff
@@ -649,7 +656,7 @@ bytecode can be analyzed coherently, there are many constraints on valid program
 * The value put in `locals` by `save-sp` is not used by anything but `restore-sp`.
 * The dynamic environment created by `entry` is not accessed after the corresponding `entry-close`.
 * The value read by `restore-sp` was created by `save-sp`.
-* The value popped by `protect` originates from `constant` or `make-closure`, and is a function accepting zero arguments. [this one might need a bit of work]
+* The literal referred to by `protect` is a bytecode function template in the same module, that accepts zero arguments.
 
 ## Safety constraints
 
