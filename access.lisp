@@ -4,6 +4,8 @@
 
 (defgeneric symbol-value (client environment symbol))
 (defgeneric (setf symbol-value) (new client environment symbol))
+(defgeneric boundp (client environment symbol))
+(defgeneric makunbound (client environment symbol))
 (defgeneric call-with-progv (client environment symbols values thunk))
 
 (defmacro progv (client environment symbols values &body body)

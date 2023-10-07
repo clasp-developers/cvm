@@ -10,7 +10,7 @@ Bytecode is organized into modules. A module contains the bytecode for one or mo
 
 Function cells and variable cells are implementation-defined objects that represent global bindings in some environment. A function or variable cell has an associated name; when the value bound to that environment's function or variable binding (respectively) of that name changes, or when the binding is made unbound, the cell reflects the change. When a bytecode module is loaded, the loader defines what environment it is loading into, and all function cells and variable cells are for bindings in this one environment.
 
-A bytecode function is made of a "template" and a closure vector. CVM uses flat closures, so closures do not need to maintain a chain of environments. Each element of the closure vector is either a value or a _cell_ (distinct from function and variable cells). A cell is an object that holds a value and may have that value changed; cells are used when a function can mutate lexical variables within another closure.
+Bytecode functions can be either closures or "templates". A closure is made up of a "template" and a closure vector. CVM uses flat closures, so closures do not need to maintain a chain of environments. Each element of the closure vector is either a value or a _cell_ (distinct from function and variable cells). A cell is an object that holds a value and may have that value changed; cells are used when a function can mutate lexical variables within another closure.
 
 All other information about a function is part of the template. Bytecode function templates contain the following information:
 
@@ -18,6 +18,8 @@ All other information about a function is part of the template. Bytecode functio
 * A count of simultaneously bound local variables.
 * A count of how many closure values and cells a function with this template has.
 * An entry point: the index, into the module's bytecode, of the function's first instruction.
+
+If a template has a closure count of zero, it is itself callable as a function. This allows the machine to skip allocation in the common case of non-closure functions. Templates that do need closures are never directly accessible in normal operation; they are only used for making closures.
 
 # Operation
 
@@ -91,7 +93,7 @@ The following operations are used in this pseudocode:
 * `(make-progv-dynenv vcells values)` creates a new dynamic environment entry representing a `progv` binding of the vcells to the values.
 * `(vcell-value vcell DESTACK)` accesses the binding of the variable cell in the given dynamic environment stack. When reading the value, if the vcell is unbound, an `unbound-variable` error is signaled. With the shallow binding used in this description, `vcell-value` would look through the `DESTACK` for any special binding or progv entries binding the variable, and if it didn't find any, would use the global binding.
 * `(make-protection-dynenv thunk)` creates a new dynamic environment entry representing a cleanup, from the `protect` instruction. `protection-dynenv-thunk` reads the thunk.
-* `(cleanup entry)` executes any cleanup actions required when unwinding a given dynamic environment entry. With the presentation here, the only required action is that `cleanup` of a protection dynenv will call its thunk.
+* `(cleanup entry)` executes any cleanup actions required when unwinding a given dynamic environment entry. With the presentation here, the only required action is that `cleanup` of a protection dynenv will call its thunk. Around calling this thunk, `VALUES` is saved.
 
 After any instruction that does not alter `ip`, `ip` is advanced to the next instruction (after the opcode and all of the parameters).
 
@@ -245,10 +247,10 @@ Set the `nopt` locals beginning at `nreq` to be the arguments beginning at `nreq
 
 ### listify-rest-args #x11 (nfixed misc)
 
-Construct a list out of all the arguments beginning at `nfixed`, and push it. [FIXME: This instruction should probably assign directly to a local.]
+Construct a list out of all the arguments beginning at `nfixed`, and assign it to the `nfixed`th local.
 
 ```lisp
-(push (nthcdr nfixed ARGUMENTS) STACK)
+(setf (aref LOCALS nfixed) (nthcdr nfixed ARGUMENTS))
 ```
 
 
@@ -594,12 +596,16 @@ This is identical to `fdefinition`, except that it is guaranteed that the functi
 (push (fcell-function (aref LITERALS fcell)) STACK)
 ```
 
-### protect #x3d
+### protect #x3d (template literal)
 
-Pop a value from `stack`: it is a function accepting no arguments. Create a new protection dynenv with that function and push it to `destack`. Any exits through this dynenv will call the cleanup function, so this is used to implement `cl:unwind-protect`.
+`template` is a bytecode function template from this module for a function that accepts zero arguments. Pop as many values from the stack as it needs and make a closure from the template. Create a new protection dynenv with the resulting function and push it to `destack`. Any exits through this dynenv will call the cleanup function, so this is used to implement `cl:unwind-protect`.
+
+As the closure is only used for cleanups, it has dynamic extent. Implementations may choose to allocate it more efficiently, or to use the template as a "closure" when it doesn't close over anything.
 
 ```lisp
-(push (make-protection-dynenv (pop STACK)) DESTACK)
+(let* ((template (aref LITERALS template))
+       (closure (make-closure template (gather (closure-size template)))))
+  (push (make-protection-dynenv closure DESTACK)))
 ```
 
 ### cleanup #x3e
@@ -607,8 +613,17 @@ Pop a value from `stack`: it is a function accepting no arguments. Create a new 
 Pop a dynenv from `destack`: it is a protection dynenv. Call its thunk with no arguments. This ends a body protected by `cl:unwind-protect` when not performing a nonlocal exit.
 
 ```lisp
-(funcall (protection-dynenv-thunk (pop DESTACK)))
+(cleanup (pop DESTACK))
+```
 
+### encell #x3f (index misc)
+
+Grab the `index`th local value. Put it in a fresh cell. Put it back.
+
+This is equivalent to `ref index; make-cell; set index;` but is common enough to get its own instruction. And it makes analysis of bytecode a little simpler.
+
+```lisp
+(setf (aref LOCALS index) (make-cell (aref LOCALS index)))
 ```
 
 ### long #xff
@@ -629,10 +644,10 @@ bytecode can be analyzed coherently, there are many constraints on valid program
 * `values` is in an invalid state when `mv-call[-etc]`, `call[-etc]`, or `pop` is executed. Additionally it invalid before `exit` instructions if the target of the exit needs an invalid state.
 * Dynamic environments are properly nested; so for example `entry-close` is never executed when the most recently pushed dynamic environment was not an `entry`. The nature of the dynamic environment stack at least back up to the call at any position is knowable statically.
 * Dynamic environments are properly closed before any `return`.
-* `make-cell` never pops a cell (i.e. cells are not wrapped in cells).
+* `make-cell` never pops a cell (i.e. cells are not wrapped in cells). `encell` similarly never reads a local that already holds a cell.
 * Cells on the stack are only ever popped by the following instructions: `cell-ref`, `cell-set`, `make-closure`, `initialize-closure`.
 * `cell-ref` and `cell-set` only pop cells.
-* The literal referred to by `const` is not a function or variable cell. The literals referred to by `make-closure` and `make-uninitialized-closure` are function templates. The literals referred to by `parse-key-args` are symbols. The literals referred to by `special-bind`, `symbol-value`, and `symbol-value-set` are variable cells. The literal referred to by `fdefinition` is a function cell. The literals referred to by `progv` and `fdesignator` are the environment.
+* The literal referred to by `const` is not a function cell, variable cell, the environment, or template that needs a closure. The literals referred to by `make-closure` and `make-uninitialized-closure` are function templates. The literals referred to by `parse-key-args` are symbols. The literals referred to by `special-bind`, `symbol-value`, and `symbol-value-set` are variable cells. The literal referred to by `fdefinition` is a function cell. The literals referred to by `progv` and `fdesignator` are the environment.
 * The object constructed by `make-uninitialized-closure` is not popped by any instructions besides `set`, `bind`, and `initialize-closure`. In particular, it is not called.
 * The object popped by `initialize-closure` was pushed by `make-uninitialized-closure`.
 * The argument parsing instructions are not used until the argument count has been checked.
@@ -641,13 +656,13 @@ bytecode can be analyzed coherently, there are many constraints on valid program
 * The value put in `locals` by `save-sp` is not used by anything but `restore-sp`.
 * The dynamic environment created by `entry` is not accessed after the corresponding `entry-close`.
 * The value read by `restore-sp` was created by `save-sp`.
-* The value popped by `protect` originates from `constant` or `make-closure`, and is a function accepting zero arguments. [this one might need a bit of work]
+* The literal referred to by `protect` is a bytecode function template in the same module, that accepts zero arguments.
 
 ## Safety constraints
 
 A safe implementation may impose the following additional constraints. If they are violated, the implementation may reject the bytecode, or fix it for safety.
 
-* `call` and `mv-call` instruction callees are only ever the result of `fdefinition` or `fdesignator`. (To fix, an `fdesignator` instruction can be imposed before any call.)
+* `call` and `mv-call` instruction callees are only ever the result of `fdefinition` or `fdesignator`, or a `const` instruction pointing to a literal that is a bytecode function template in the same module that does not need a closure. (To fix, an `fdesignator` instruction can be imposed before any call.)
 
 # Versioning
 

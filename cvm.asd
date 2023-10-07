@@ -107,6 +107,7 @@
                   :components ((:file "similarity")
                                (:file "externalize")))
                  (:file "cleanliness" :depends-on ("suites" "rt" "packages"))
+                 (:file "cooperation" :depends-on ("suites" "rt" "packages"))
                  (:module "compiler-conditions"
                   :depends-on ("suites" "rt" "packages")
                   :components ((:file "reference")

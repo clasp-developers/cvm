@@ -75,6 +75,16 @@
 (defstruct (sbind-dynenv (:include dynenv)
                          (:constructor make-sbind-dynenv ())))
 
+(defun instruction-trace (bytecode literals stack ip bp sp frame-size)
+  (fresh-line *trace-output*)
+  (let ((*standard-output* *trace-output*))
+    (cvm.machine:display-instruction bytecode literals ip))
+  (let ((frame-end (+ bp frame-size)))
+    (format *trace-output* " ; bp ~d sp ~d locals ~s stack ~s~%"
+            bp sp (subseq stack bp frame-end)
+            ;; We take the max for partial frames.
+            (subseq stack frame-end (max sp frame-end)))))
+
 (defun vm (bytecode closure constants frame-size)
   (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
            (type (simple-array t (*)) closure constants)
@@ -96,6 +106,10 @@
                  #+sbcl
                  (declare (sb-ext:muffle-conditions sb-ext:compiler-note))
                  (setf (svref stack index) object))
+               (local (index)
+                 (svref stack (+ bp index)))
+               ((setf local) (object index)
+                 (setf (svref stack (+ bp index)) object))
                (spush (object)
                  (prog1 (setf (stack sp) object) (incf sp)))
                (spop () (stack (decf sp)))
@@ -140,19 +154,10 @@
               with trace = *trace*
               until (eql ip end)
               when trace
-                do (fresh-line *trace-output*)
-                   (let ((frame-end (+ bp frame-size))
-                         ; skip package prefixes on inst names.
-                         (*package* (find-package "CVM.MACHINE")))
-                     (prin1 (list (m:disassemble-instruction bytecode ip)
-                                  bp
-                                  sp
-                                  (subseq stack bp frame-end)
-                                  ;; We take the max for partial frames.
-                                  (subseq stack frame-end (max sp frame-end)))
-                            *trace-output*))
+                do (instruction-trace bytecode constants stack
+                                      ip bp sp frame-size)
               do (case (code)
-                   ((#.m:ref) (spush (stack (+ bp (next-code)))) (incf ip))
+                   ((#.m:ref) (spush (local (next-code))) (incf ip))
                    ((#.m:const) (spush (constant (next-code))) (incf ip))
                    ((#.m:closure) (spush (closure (next-code))) (incf ip))
                    ((#.m:call)
@@ -173,11 +178,11 @@
                     ;; Most recent push goes to the last local.
                     (let ((nvars (next-code)))
                       (loop repeat nvars
-                            for bsp downfrom (+ bp (next-code) nvars -1)
-                            do (setf (stack bsp) (spop))))
+                            for bsp downfrom (+ (next-code) nvars -1)
+                            do (setf (local bsp) (spop))))
                     (incf ip))
                    ((#.m:set)
-                    (setf (stack (+ bp (next-code))) (spop))
+                    (setf (local (next-code)) (spop))
                     (incf ip))
                    ((#.m:make-cell) (spush (make-cell (spop))) (incf ip))
                    ((#.m:cell-ref) (spush (cell-value (spop))) (incf ip))
@@ -202,7 +207,7 @@
                                (m:bytecode-function-environment-size template)))))
                     (incf ip))
                    ((#.m:initialize-closure)
-                    (let ((env (m:bytecode-closure-env (stack (+ bp (next-code))))))
+                    (let ((env (m:bytecode-closure-env (local (next-code)))))
                       (declare (type simple-vector env))
                       (loop for i from (1- (length env)) downto 0 do
                         (setf (aref env i) (spop))))
@@ -243,11 +248,11 @@
                                :min-nargs n :max-nargs n)))
                     (incf ip))
                    ((#.m:jump-if-supplied-8)
-                    (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
+                    (incf ip (if (typep (local (next-code)) 'unbound-marker)
                                  2
                                  (1- (next-code-signed)))))
                    ((#.m:jump-if-supplied-16)
-                    (incf ip (if (typep (stack (+ bp (next-code))) 'unbound-marker)
+                    (incf ip (if (typep (local (next-code)) 'unbound-marker)
                                  3
                                  (1- (next-code-signed-16)))))
                    ((#.m:bind-required-args)
@@ -255,9 +260,9 @@
                     (let* ((args (vm-args vm))
                            (args-end (+ args (next-code))))
                       (do ((arg-index args (1+ arg-index))
-                           (frame-slot bp (1+ frame-slot)))
+                           (frame-slot 0 (1+ frame-slot)))
                           ((>= arg-index args-end))
-                        (setf (stack frame-slot) (stack arg-index))))
+                        (setf (local frame-slot) (stack arg-index))))
                     (incf ip))
                    ((#.m:bind-optional-args)
                     (let* ((args (vm-args vm))
@@ -266,7 +271,7 @@
                            (optional-count (next-code))
                            (args-end (+ args (vm-arg-count vm)))
                            (end (+ optional-start optional-count))
-                           (optional-frame-offset (+ bp required-count))
+                           (optional-frame-offset required-count)
                            (optional-frame-end (+ optional-frame-offset optional-count)))
                       (if (<= args-end end)
                           ;; Could be coded as memcpy in C.
@@ -277,17 +282,19 @@
                                ;; pattern?)
                                (do ((frame-slot frame-slot (1+ frame-slot)))
                                    ((>= frame-slot optional-frame-end))
-                                 (setf (stack frame-slot) (make-unbound-marker))))
-                            (setf (stack frame-slot) (stack arg-index)))
+                                 (setf (local frame-slot) (make-unbound-marker))))
+                            (setf (local frame-slot) (stack arg-index)))
                           ;; Could also be coded as memcpy.
                           (do ((arg-index optional-start (1+ arg-index))
                                (frame-slot optional-frame-offset (1+ frame-slot)))
                               ((>= arg-index end))
-                            (setf (stack frame-slot) (stack arg-index))))
+                            (setf (local frame-slot) (stack arg-index))))
                       (incf ip)))
                    ((#.m:listify-rest-args)
-                    (spush (loop for index from (next-code) below (vm-arg-count vm)
-                                 collect (stack (+ (vm-args vm) index))))
+                    (let ((nfixed (next-code)))
+                      (setf (local nfixed)
+                            (loop for index from nfixed below (vm-arg-count vm)
+                                  collect (stack (+ (vm-args vm) index)))))
                     (incf ip))
                    ((#.m:parse-key-args)
                     (let* ((args (vm-args vm))
@@ -297,12 +304,12 @@
                            (key-count (logand key-count-info #x7f))
                            (key-literal-start (next-code))
                            (key-literal-end (+ key-literal-start key-count))
-                           (key-frame-start (+ bp (next-code)))
+                           (key-frame-start (next-code))
                            (unknown-keys nil)
                            (allow-other-keys-p nil))
                       ;; Initialize all key values to #<unbound-marker>
                       (loop for index from key-frame-start below (+ key-frame-start key-count)
-                            do (setf (stack index) (make-unbound-marker)))
+                            do (setf (local index) (make-unbound-marker)))
                       (when (> end more-start)
                         (do ((arg-index (- end 1) (- arg-index 2)))
                             ((< arg-index more-start)
@@ -319,7 +326,7 @@
                                   for offset of-type (unsigned-byte 16)
                                   from key-frame-start
                                   do (when (eq (constant key-index) key)
-                                       (setf (stack offset) (stack arg-index))
+                                       (setf (local offset) (stack arg-index))
                                        (return))
                                   finally (unless (or allow-other-keys-p
                                                       ;; aok is always allowed
@@ -332,14 +339,14 @@
                                :unrecognized-keywords unknown-keys)))
                     (incf ip))
                    ((#.m:save-sp)
-                    (setf (stack (+ bp (next-code))) sp)
+                    (setf (local (next-code)) sp)
                     (incf ip))
                    ((#.m:restore-sp)
-                    (setf sp (stack (+ bp (next-code))))
+                    (setf sp (local (next-code)))
                     (incf ip))
                    ((#.m:entry)
                       (tagbody
-                         (setf (stack (+ bp (next-code)))
+                         (setf (local (next-code))
                                (make-entry-dynenv
                                 (let ((old-sp sp)
                                       (old-bp bp))
@@ -465,7 +472,15 @@
                          (symbol (fdefinition fdesig)))))
                     (incf ip))
                    ((#.m:protect)
-                    (let ((cleanup-thunk (spop)))
+                    (let* ((template (constant (next-code)))
+                           (envsize
+                             (m:bytecode-function-environment-size template))
+                           (cleanup-thunk
+                             (if (zerop envsize)
+                                 template
+                                 (m:make-bytecode-closure
+                                  m:*client* template
+                                  (coerce (gather envsize) 'simple-vector)))))
                       (declare (type function cleanup-thunk))
                       (incf ip)
                       (unwind-protect
@@ -476,6 +491,9 @@
                    ((#.m:cleanup)
                     (incf ip)
                     (return))
+                   ((#.m:encell)
+                    (let ((index (next-code)))
+                      (setf (local index) (make-cell (local index)))))
                    ((#.m:long)
                     (ecase (next-code)
                       (#.m:const
@@ -502,6 +520,12 @@
 (defmethod (setf m:symbol-value) (new (client trucler-native:client) env symbol)
   (declare (ignore env))
   (setf (symbol-value symbol) new))
+(defmethod m:boundp ((client trucler-native:client) env symbol)
+  (declare (ignore env))
+  (boundp symbol))
+(defmethod m:makunbound ((client trucler-native:client) env symbol)
+  (declare (ignore env))
+  (makunbound symbol))
 
 (defmethod m:call-with-progv ((client trucler-native:client)
 			      env symbols values thunk)

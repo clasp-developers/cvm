@@ -174,12 +174,14 @@
 
 (defun new-context (parent &key (receiving (context-receiving parent))
                              (dynenv nil) ; prepended
-                             (frame-end nil fep) ; added
+                             (frame-end (context-frame-end parent) fep)
                              (function (context-function parent)))
+  (when fep
+    (setf (cfunction-%nlocals function)
+          (max (cfunction-%nlocals function) frame-end)))
   (make-context :receiving receiving
                 :dynenv (append dynenv (context-dynenv parent))
-                :frame-end (+ (if fep frame-end 0)
-                              (context-frame-end parent))
+                :frame-end frame-end
                 :function function))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -408,17 +410,14 @@
   (defun maybe-emit-cell-ref (lexical-var context)
     (maybe-emit lexical-var m:cell-ref context)))
 
-;;; FIXME: This is probably a good candidate for a specialized
-;;; instruction.
-(defun maybe-emit-encage (lexical-var context)
+(defun maybe-emit-encell (lexical-var context)
   (let ((index (frame-offset lexical-var)))
     (flet ((emitter (fixup position code)
-             (assert (= (fixup-size fixup) 5))
-             (assemble-into code position
-                            m:ref index m:make-cell m:set index))
+             (assert (= (fixup-size fixup) 2))
+             (assemble-into code position m:encell index))
            (resizer (fixup)
              (declare (ignore fixup))
-             (if (indirect-lexical-p lexical-var) 5 0)))
+             (if (indirect-lexical-p lexical-var) 2 0)))
       (emit-fixup context (make-fixup lexical-var 0 #'emitter #'resizer)))))
 
 (defun emit-lexical-set (lexical-var context)
@@ -614,8 +613,6 @@
          (var-count (length vars))
          (frame-end (+ frame-start var-count))
          (function (context-function context)))
-    (setf (cfunction-%nlocals function)
-          (max (cfunction-%nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (vars vars (rest vars))
          (new-vars (vars env)
@@ -624,7 +621,7 @@
                           new-vars)))
         ((>= index frame-end)
          (values (make-lexical-environment env :vars new-vars)
-                 (new-context context :frame-end var-count)))
+                 (new-context context :frame-end frame-end)))
       (when (constantp (first vars) env)
         (error 'bind-constant :name (first vars))))))
 
@@ -634,8 +631,6 @@
          (fun-count (length funs))
          (frame-end (+ frame-start fun-count))
          (function (context-function context)))
-    (setf (cfunction-%nlocals function)
-          (max (cfunction-%nlocals function) frame-end))
     (do ((index frame-start (1+ index))
          (funs funs (rest funs))
          (new-vars (funs env)
@@ -644,7 +639,7 @@
                           new-vars)))
         ((>= index frame-end)
          (values (make-lexical-environment env :funs new-vars)
-                 (new-context context :frame-end fun-count))))))
+                 (new-context context :frame-end frame-end))))))
 
 (defun add-macros (env macros)
   (make-lexical-environment env :funs (append macros (funs env))))
@@ -836,27 +831,35 @@
   (reference-lexical-variable info context)
   (compile-call (rest form) env context))
 
-;;; Given a lambda expression, generate code to push it to the stack
-;;; as you would for #'(lambda ...).
-;;; CONTEXT's number of return values is ignored.
-(defun compile-lambda-expression (lexpr env context
-                                  &rest keys &key name block-name declarations)
-  (declare (ignore name block-name declarations))
-  ;; TODO: check car is actually LAMBDA
+;;; Given a lambda expression, compile it, and generate code to get the
+;;; values it closes over. Return the cfunction.
+;;; Used by both compile-lambda-expression and the unwind-protect compiler.
+(defun %compile-lambda-expression (lexpr env context &rest keys)
   (destructure-syntax (lambda lambda-list . body) (lexpr)
     (let* ((cfunction (apply #'compile-lambda lambda-list body
                              env (context-module context) keys))
            (closed (cfunction-closed cfunction)))
       (loop for info across closed
             do (reference-lexical-variable info context))
-      (if (zerop (length closed))
-          (emit-const context (cfunction-literal-index cfunction context))
-          (assemble context m:make-closure
-            (cfunction-literal-index cfunction context))))))
+      cfunction)))
+
+;;; Given a lambda expression, generate code to push it to the stack
+;;; as you would for #'(lambda ...).
+;;; CONTEXT's number of return values is ignored.
+(defun compile-lambda-expression (lexpr env context
+                                  &rest keys &key name block-name declarations)
+  (declare (ignore name block-name declarations))
+  (let ((cfunction
+          (apply #'%compile-lambda-expression lexpr env context keys)))
+    (if (zerop (length (cfunction-closed cfunction)))
+        (emit-const context (cfunction-literal-index cfunction context))
+        (assemble context m:make-closure
+          (cfunction-literal-index cfunction context)))))
 
 (defun compile-lambda-form (form env context)
   ;; FIXME: We can probably handle this more efficiently (without consing
   ;; a closure) by using compile-with-lambda-list instead.
+  ;; FIXME: Check lexpr is actually a lambda expression.
   (let ((lexpr (car form)) (args (rest form)))
     (compile-lambda-expression lexpr env context)
     (compile-call args env context)))
@@ -942,38 +945,80 @@
       (values binding nil)))
 
 (defmethod compile-special ((operator (eql 'let)) form env context)
+  ;; This is really long because we make an environment manually rather
+  ;; than use bind-vars, which would be even more awkward and cons more.
   (destructure-syntax (let bindings . body) (form)
     (unless (proper-list-p bindings)
       (error 'improper-bindings :bindings bindings))
     (multiple-value-bind (body decls) (parse-body body :whole form)
       (let* ((specials (extract-specials decls))
-             (lexical-binding-count 0)
-             (special-binding-count 0)
-             (post-binding-env (add-specials specials env))
              (frame-start (context-frame-end context))
-             ;; The values are compiled in a context with no extra
-             ;; frame slots used, since the BIND takes place after the
-             ;; values are evaluated.
-             (valf-context (new-context context :receiving 1)))
+             ;; This will be built up as we process the bindings, and then
+             ;; reduced as we generate the bind instructions.
+             (frame-end frame-start)
+             (cf (context-function context))
+             (valc (new-context context :receiving 1))
+             (special-binding-count 0)
+             new-bindings)
+        ;; First, go through the bindings. Compile all the value forms in order.
+        ;; This lets them be compiled in the same context with no extra locals,
+        ;; and more importantly computes the values in parallel as demanded
+        ;; by the standard. Anything bound to a lexical variable also gets a
+        ;; cell emission fixup.
+        ;; We collect conses (name . info).
         (dolist (binding bindings)
-          (multiple-value-bind (var valf) (canonicalize-binding binding)
-            (unless (symbolp var) (error 'variable-not-symbol :name var))
-            (compile-form valf env valf-context)
-            (cond ((or (member var specials)
-                       (globally-special-p var env))
-                   (incf special-binding-count)
-                   (emit-special-bind context var)
-		   (setf context
-			 (new-context context :dynenv '(:special))))
-                  (t
-                   (setf (values post-binding-env context)
-                         (bind-vars (list var) post-binding-env context))
-                   (incf lexical-binding-count)
-                   (maybe-emit-make-cell (var-info var post-binding-env)
-                                         context)))))
-        (emit-bind context lexical-binding-count frame-start)
-        (compile-progn body post-binding-env context)
-        (emit-unbind context special-binding-count)))))
+          (push (multiple-value-bind (var valf)
+                    (canonicalize-binding binding)
+                  (unless (symbolp var)
+                    (error 'variable-not-symbol :name var))
+                  (compile-form valf env valc)
+                  (cons var
+                        (cond
+                          ((or (member var specials)
+                               (globally-special-p var env))
+                           (incf special-binding-count)
+                           (make-instance 'trucler:local-special-variable-description
+                             :name var))
+                          (t ; lexical
+                           (let ((lex (make-lexical-variable
+                                       var frame-end cf)))
+                             (incf frame-end)
+                             (maybe-emit-make-cell lex context)
+                             lex)))))
+                new-bindings))
+        ;; That out of the way, we construct the environment and context
+        ;; for the body.
+        (let ((post-binding-env
+                (make-lexical-environment
+                 env :vars (append new-bindings (vars env))))
+              (post-binding-context
+                (new-context context
+                             :frame-end frame-end
+                             :dynenv (make-list special-binding-count
+                                                :initial-element :special))))
+          ;; Generate the bind and special-bind instructions.
+          ;; We generate one bind for each block of contiguous lexicals.
+          ;; We bind the most recently pushed values first, so in reverse order,
+          ;; which of course isn't actually visible in Lisp.
+          (loop with nlex = 0
+                for (name . info) in new-bindings
+                if (typep info 'trucler:lexical-variable-description)
+                  do (incf nlex)
+                else ; special
+                do ; first finish any lexical binding.
+                   (when (plusp nlex)
+                     (let ((new-frame-end (- frame-end nlex)))
+                       (emit-bind post-binding-context nlex new-frame-end)
+                       (setf frame-end new-frame-end nlex 0)))
+                   ;; now the special.
+                   (emit-special-bind post-binding-context name)
+                finally ; and the last special binding.
+                        (when (plusp nlex)
+                          (emit-bind post-binding-context nlex
+                                     (- frame-end nlex))))
+          ;; Finally, the actual body.
+          (compile-progn body post-binding-env post-binding-context)
+          (emit-unbind post-binding-context special-binding-count))))))
 
 (defun compile-let* (bindings decls body env context
                      &key (block-name nil block-name-p))
@@ -1312,18 +1357,14 @@
                             form env context)
   (destructure-syntax (unwind-protect protected . cleanup) (form)
     ;; Build a cleanup thunk.
-    ;; This will often/usually be a closure, which is why we
-    ;; can't just give M:PROTECT a constant argument.
     ;; The 0 is a dumb KLUDGE to let the cleanup forms be compiled in
     ;; non-values contexts, which might be more efficient.
     ;; (We use 0 instead of NIL because NIL may not be bound.)
-    ;; We use an ignored &rest parameter so as to avoid compiling
-    ;; an arg count check.
-    (let ((rest (gensym "IGNORED")))
-      (compile-lambda-expression `(lambda (&rest ,rest) ,@cleanup 0)
-                                 env context
-                                 :declarations `((declare (ignore ,rest)))))
-    (assemble context m:protect)
+    (let ((cfunction
+            (%compile-lambda-expression `(lambda () ,@cleanup 0)
+                                        env context :declarations ())))
+      (assemble context m:protect
+        (cfunction-literal-index cfunction context)))
     (compile-form protected env
                   (new-context context :dynenv '(:protect)))
     (assemble context m:cleanup)))
@@ -1534,7 +1575,7 @@
                    (emit-special-bind context var))
                  (incf special-binding-count))
                 (t
-                 (maybe-emit-encage (var-info var new-env) context))))
+                 (maybe-emit-encell (var-info var new-env) context))))
         (setq new-env (add-specials (intersection specials required) new-env)))
       ;; set the default env to have all the requireds bound,
       ;; but don't put in the optionals (yet).
@@ -1555,7 +1596,6 @@
                   opt-key-indices))))
       (when rest
         (assemble-maybe-long context m:listify-rest-args max-count)
-        (assemble-maybe-long context m:set (context-frame-end context))
         (setf (values new-env context)
               (bind-vars (list rest) new-env context))
         (cond ((or (member rest specials)
@@ -1566,7 +1606,7 @@
                (incf special-binding-count 1)
                (setq new-env (add-specials (list rest) new-env)))
               (t
-               (maybe-emit-encage (var-info rest new-env) context))))
+               (maybe-emit-encell (var-info rest new-env) context))))
       (when key-p
         ;; Generate code to parse the key args. As with optionals, we don't do
         ;; defaulting yet.
@@ -1685,7 +1725,7 @@
                          (assemble-maybe-long context m:ref var-index)
                          (emit-special-bind context var))
                         (t
-                         (maybe-emit-encage info context))))
+                         (maybe-emit-encell info context))))
                  (t
                   ;; We compile in default-env but also context.
                   ;; The context already has space allocated for all

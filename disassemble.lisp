@@ -68,6 +68,46 @@
           do (incf ip nbytes)
           finally (cl:return (values (list* (first desc) longp args) ip)))))
 
+(defun %display-instruction (name longp args textify-operand)
+  (if (string= name "parse-key-args")
+      ;; We special case this despite the keys-arg thing because it's
+      ;; just pretty weird all around.
+      (let* ((more-start (second (first args)))
+             (kci (second (second args)))
+             (aokp (logbitp (if longp 15 7) kci))
+             (key-count (logand kci (if longp #x7fff #x7f)))
+             (keys (third args))
+             (framestart (second (fourth args))))
+        ;; Print
+        (format t "~&  ~:[~;long ~]~(~a~)~:[~;-aok~] ~d ~d '~s ~d"
+                longp name aokp more-start key-count
+                (funcall textify-operand keys key-count) framestart))
+      ;; Normal case
+      (format t "~&  ~:[~;long ~]~(~a~)~{ ~a~}"
+              longp name (mapcar textify-operand args))))
+
+(defun operand-textifier (literals)
+  (flet ((textify-operand (thing &optional key-count)
+           (destructuring-bind (kind value) thing
+             (cond ((cl:eq kind :constant)
+                    (format () "'~s" (aref literals value)))
+                   ((cl:eq kind :label) (format () "L~a" value))
+                   ((cl:eq kind :operand) (format () "~d" value))
+                   ((cl:eq kind :keys)
+                    (let ((keys cl:nil) (keystart value))
+                      (do ((i 0 (1+ i)))
+                          ((= i key-count) (setq keys (nreverse keys)))
+                        (cl:push (aref literals (+ keystart i)) keys))
+                      (format () "'~s" keys)))
+                   (t (error "Illegal kind ~a" kind))))))
+    #'textify-operand))
+
+;;; Used externally by tracers.
+(defun display-instruction (bytecode literals ip)
+  (destructuring-bind (name longp . args)
+      (disassemble-instruction bytecode ip)
+    (%display-instruction name longp args (operand-textifier literals))))
+
 (defun %disassemble-bytecode (bytecode start end)
   (let* ((labels (gather-labels bytecode start end))
          (ip start))
@@ -84,44 +124,19 @@
 
 (defun disassemble-bytecode (bytecode literals
                              &key (start 0) (end (length bytecode)))
-  (let ((dis (%disassemble-bytecode bytecode start end)))
-    (flet ((textify-operand (thing)
-             (destructuring-bind (kind value) thing
-               (cond ((cl:eq kind :constant) (format () "'~s" (aref literals value)))
-                     ((cl:eq kind :label) (format () "L~a" value))
-                     ((cl:eq kind :operand) (format () "~d" value))
-                     ;; :keys special cased below
-                     (t (error "Illegal kind ~a" kind))))))
-      (format t "~&---module---~%")
-      (dolist (item dis)
-        (cond
-          ((consp item)
-           ;; instruction
-           (destructuring-bind (name longp . args) item
-             (if (string= name "parse-key-args")
-                 ;; We special case this despite the keys-arg thing because it's
-                 ;; just pretty weird all around.
-                 (let* ((more-start (second (first args)))
-                        (kci (second (second args)))
-                        (aokp (logbitp (if longp 15 7) kci))
-                        (key-count (logand kci (if longp #x7fff #x7f)))
-                        (keystart (second (third args)))
-                        (keys cl:nil)
-                        (framestart (second (fourth args))))
-                   ;; Gather the keys
-                   (do ((i 0 (1+ i)))
-                       ((= i key-count) (setq keys (nreverse keys)))
-                     (cl:push (aref literals (+ keystart i)) keys))
-                   ;; Print
-                   (format t "~&  ~:[~;long ~]~(~a~)~:[~;-aok~] ~d ~d '~s ~d"
-                           longp name aokp more-start key-count keys framestart))
-                 ;; Normal case
-                 (format t "~&  ~:[~;long ~]~(~a~)~{ ~a~}~%"
-                         longp name (mapcar #'textify-operand args)))))
-          ((or (stringp item) (symbolp item))
-           ;; label
-           (format t "~&L~a:~%" item))
-          (t (error "Illegal item ~a" item))))))
+  (let ((dis (%disassemble-bytecode bytecode start end))
+        (textify-operand (operand-textifier literals)))
+    (format t "~&---module---~%")
+    (dolist (item dis)
+      (cond
+        ((consp item)
+         ;; instruction
+         (destructuring-bind (name longp . args) item
+           (%display-instruction name longp args textify-operand)))
+        ((or (stringp item) (symbolp item))
+         ;; label
+         (format t "~&L~a:~%" item))
+        (t (error "Illegal item ~a" item)))))
   (values))
 
 (defgeneric disassemble (object))

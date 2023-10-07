@@ -20,6 +20,12 @@ After the last instruction is executed, the FASL has been fully loaded. Any rema
 
 # Changelog
 
+## 0.14 (pending)
+
+* `listify-rest-args` now assigns directly to a local rather than pushing to the stack.
+* New `encell` instruction for a common lexical variable cell making operation.
+* `protect` now gets its function from the literals vector.
+
 ## 0.13
 
 * `fdesignator` and `progv` changed to have an environment parameter for first-class environment purposes.
