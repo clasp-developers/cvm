@@ -52,19 +52,20 @@ You can get a running trace of the machine state by binding `cvm.vm-native:*trac
 ```lisp
 (let ((cvm.vm-native:*trace* t)) (funcall *f* 3)) ; =>
 
-((CHECK-ARG-COUNT-= COMMON-LISP:NIL (:OPERAND 1)) 4 6 #(5 0) #())
-((BIND-REQUIRED-ARGS COMMON-LISP:NIL (:OPERAND 1)) 4 6 #(5 0) #())
-((CONST COMMON-LISP:NIL (:CONSTANT 0)) 4 6 #(3 0) #())
-((SET COMMON-LISP:NIL (:OPERAND 1)) 4 7 #(3 0) #(5))
-((FDEFINITION COMMON-LISP:NIL (:CONSTANT 1)) 4 6 #(3 5) #())
-((REF COMMON-LISP:NIL (:OPERAND 1)) 4 7 #(3 5) #(#<FUNCTION PRINT>))
-((CALL COMMON-LISP:NIL (:OPERAND 1)) 4 8 #(3 5) #(#<FUNCTION PRINT> 5))
+  check-arg-count-= 1 ; bp 1 sp 3 locals #(0 0) stack #()
+  bind-required-args 1 ; bp 1 sp 3 locals #(0 0) stack #()
+  const '5 ; bp 1 sp 3 locals #(3 0) stack #()
+  set 1 ; bp 1 sp 4 locals #(3 0) stack #(5)
+  fdefinition 'PRINT ; bp 1 sp 3 locals #(3 5) stack #()
+  ref 1 ; bp 1 sp 4 locals #(3 5) stack #(#<FUNCTION PRINT>)
+  call 1 ; bp 1 sp 5 locals #(3 5) stack #(#<FUNCTION PRINT> 5)
+
 5
-((REF COMMON-LISP:NIL (:OPERAND 1)) 4 6 #(3 5) #())
-((REF COMMON-LISP:NIL (:OPERAND 0)) 4 7 #(3 5) #(5))
-((MAKE-CLOSURE COMMON-LISP:NIL (:CONSTANT 3)) 4 8 #(3 5) #(5 3))
-((POP COMMON-LISP:NIL) 4 7 #(3 5) #(#<BYTECODE-CLOSURE {1002F681CB}>))
-((RETURN COMMON-LISP:NIL) 4 6 #(3 5) #())
+  ref 1 ; bp 1 sp 3 locals #(3 5) stack #()
+  ref 0 ; bp 1 sp 4 locals #(3 5) stack #(5)
+  make-closure '#<CVM.MACHINE:BYTECODE-FUNCTION NIL> ; bp 1 sp 5 locals #(3 5) stack #(5 3)
+  pop ; bp 1 sp 4 locals #(3 5) stack #(#<CVM.MACHINE:BYTECODE-CLOSURE NIL>)
+  return ; bp 1 sp 3 locals #(3 5) stack #()
 
 #<CVM.MACHINE:BYTECODE-CLOSURE {100C2D80CB}>
 ```

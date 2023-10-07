@@ -19,7 +19,7 @@
   (:export #:link-function #:link-variable #:link-environment)
   (:export #:boundp #:makunbound #:symbol-value #:call-with-progv #:progv
 	   #:fdefinition #:fmakunbound #:fboundp)
-  (:export #:disassemble #:disassemble-instruction))
+  (:export #:disassemble #:display-instruction))
 
 ;;;; Definition of the virtual machine, used by both the compiler and the VM.
 

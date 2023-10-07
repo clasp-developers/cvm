@@ -236,18 +236,15 @@
                (dest (catch-dynenv-dest de)))
           (unwind-to vm rtag dest (rest catch-de-stack))))))
 
-(defun instruction-trace (bytecode stack ip bp sp frame-size)
+(defun instruction-trace (bytecode literals stack ip bp sp frame-size)
   (fresh-line *trace-output*)
-  (let ((frame-end (+ bp frame-size))
-        ;; skip package prefixes on inst names.
-        (*package* (find-package "CVM.MACHINE")))
-    (prin1 (list (m:disassemble-instruction bytecode ip)
-                 bp
-                 sp
-                 (subseq stack bp frame-end)
-                 ;; We take the max for partial frames.
-                 (subseq stack frame-end (max sp frame-end)))
-           *trace-output*)))
+  (let ((*standard-output* *trace-output*))
+    (cvm.machine:display-instruction bytecode literals ip))
+  (let ((frame-end (+ bp frame-size)))
+    (format *trace-output* " ; bp ~d sp ~d locals ~s stack ~s~%"
+            bp sp (subseq stack bp frame-end)
+            ;; We take the max for partial frames.
+            (subseq stack frame-end (max sp frame-end)))))
 
 (defun vm (bytecode closure constants frame-size)
   (declare (type (simple-array (unsigned-byte 8) (*)) bytecode)
@@ -322,7 +319,7 @@
          (when (>= ip end)
            (error "Invalid bytecode: Reached end"))
          (when trace
-           (instruction-trace bytecode stack ip bp sp frame-size))
+           (instruction-trace bytecode constants stack ip bp sp frame-size))
          ;; The catch is for NLX. Without NLX, a (go loop) at the
          ;; bottom skips back up to the loop without setting IP.
          ;; When something NLXs to this frame, we throw the new IP
